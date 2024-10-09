@@ -1,0 +1,16 @@
+[package]
+name = "indexer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1.83"
+clap = "4.5.19"
+gasket = { version = "^0.7", features = ["derive"] }
+gasket-prometheus = { version = "^0.7" }
+oura = { git = "https://github.com/smaugpool/oura", branch = "parse-cbor-block" }
+pallas = "0.30.2"
+serde = "1.0.210"
+tokio = { version = "1.40.0", features = ["full"] }
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
