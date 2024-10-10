@@ -83,7 +83,9 @@ pub fn run(args: Args) -> Result<(), Error> {
         peers: args.peers.clone(),
     });
     let filter_configs = vec![filters::Config::ParseCbor(filters::parse_cbor::Config {})];
-    let sink_config = sink::Config;
+    let sink_config = sink::Config {
+        db_url: args.db.replace("NETWORK", &args.network.to_string()),
+    };
 
     let cursor_config = cursor::file::Config {
         path: Some([&args.output, &"cursor.json".to_string()].iter().collect()),

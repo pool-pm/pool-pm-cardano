@@ -1,14 +1,40 @@
 use gasket::framework::*;
 use oura::framework::*;
+use pallas::network::miniprotocols::Point;
 use serde::Deserialize;
-use tracing::warn;
+use std::collections::HashMap;
+use tracing::{debug, info};
 
-pub struct Worker {}
+use crate::dbsync::DbSync;
+use crate::model::Pool;
+
+pub struct Worker {
+    db: DbSync,
+    pools: HashMap<String, Pool>,
+}
+
+impl Worker {
+    async fn reset(&mut self, point: &Point) -> Result<(), WorkerError> {
+        info!("Reset to {:?}", point);
+        let slot = point.slot_or_default();
+        let max_tx_id = self.db.max_tx_id(slot).await.or_panic()?;
+        info!("Last tx id: {max_tx_id}");
+
+        info!("Fetching pools...");
+        self.pools = self.db.pools(max_tx_id).await.or_panic()?;
+        info!("{} pools retrieved", self.pools.len());
+
+        Ok(())
+    }
+}
 
 #[async_trait::async_trait(?Send)]
 impl gasket::framework::Worker<Stage> for Worker {
-    async fn bootstrap(_: &Stage) -> Result<Self, WorkerError> {
-        Ok(Self {})
+    async fn bootstrap(stage: &Stage) -> Result<Self, WorkerError> {
+        Ok(Self {
+            db: DbSync::new(&stage.config.db_url).await.or_retry()?,
+            pools: HashMap::new(),
+        })
     }
 
     async fn schedule(
@@ -24,16 +50,16 @@ impl gasket::framework::Worker<Stage> for Worker {
 
         match unit {
             ChainEvent::Reset(point) => {
-                println!("Reset to {:?}", point);
+                self.reset(point).await?;
             }
             ChainEvent::Apply(point, Record::ParsedBlock(_block)) => {
-                println!("Apply block {:?}", point);
+                debug!("Apply block {:?}", point);
             }
             ChainEvent::Undo(point, Record::ParsedBlock(_block)) => {
-                println!("Undo block {:?}", point);
+                debug!("Undo block {:?}", point);
             }
             event => {
-                warn!("Unexpected chain event {:?}", event);
+                debug!("Unexpected chain event {:?}", event);
             }
         }
 
@@ -48,6 +74,8 @@ impl gasket::framework::Worker<Stage> for Worker {
 #[derive(Stage)]
 #[stage(name = "sink", unit = "ChainEvent", worker = "Worker")]
 pub struct Stage {
+    config: Config,
+
     pub input: MapperInputPort,
     pub cursor: SinkCursorPort,
 
@@ -59,11 +87,14 @@ pub struct Stage {
 }
 
 #[derive(Default, Debug, Deserialize)]
-pub struct Config;
+pub struct Config {
+    pub db_url: String,
+}
 
 impl Config {
     pub fn bootstrapper(self, _: &Context) -> Result<Stage, Error> {
         let stage = Stage {
+            config: self,
             ops_count: Default::default(),
             latest_block: Default::default(),
             input: Default::default(),

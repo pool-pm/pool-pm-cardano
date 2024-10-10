@@ -5,6 +5,8 @@ use std::process;
 
 mod args;
 mod daemon;
+mod dbsync;
+mod model;
 mod sink;
 
 fn main() {

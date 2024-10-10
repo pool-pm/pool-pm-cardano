@@ -13,6 +13,14 @@ use std::{
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
 pub struct Args {
+    /// Cardano-db-sync database connect URL
+    #[clap(
+        short,
+        long,
+        default_value = "postgresql:///NETWORK?host=/var/run/postgresql"
+    )]
+    pub db: String,
+
     /// Cardano node peers
     #[clap(short, long, value_delimiter = ' ', num_args = 1..)]
     pub peers: Vec<String>,
@@ -103,6 +111,17 @@ impl FromStr for Chain {
             "preprod" => Ok(Chain(ChainConfig::PreProd)),
             "preview" => Ok(Chain(ChainConfig::Preview)),
             _ => Err(ChainParseError),
+        }
+    }
+}
+
+impl ToString for Chain {
+    fn to_string(&self) -> String {
+        match self {
+            Chain(ChainConfig::Mainnet) => "mainnet".to_string(),
+            Chain(ChainConfig::PreProd) => "preprod".to_string(),
+            Chain(ChainConfig::Preview) => "preview".to_string(),
+            _ => "".to_string(),
         }
     }
 }
