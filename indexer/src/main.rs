@@ -4,10 +4,12 @@ use std::fs;
 use std::process;
 
 mod args;
+mod chain;
 mod daemon;
 mod dbsync;
 mod model;
 mod sink;
+mod utxorpc;
 
 fn main() {
     let args = Args::parse();

@@ -1426,6 +1426,7 @@ dependencies = [
  "gasket",
  "gasket-prometheus",
  "hex",
+ "log",
  "oura",
  "pallas",
  "serde",
@@ -1433,6 +1434,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

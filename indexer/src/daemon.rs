@@ -93,11 +93,11 @@ pub fn run(args: Args) -> Result<(), Error> {
     };
 
     let ctx = Context {
-        chain: args.chain(),
+        chain: args.network.config().clone(),
         intersect: IntersectConfig::Tip,
         finalize: None,
         current_dir: PathBuf::from(args.output),
-        breadcrumbs: Breadcrumbs::new(10),
+        breadcrumbs: cursor_config.initial_load()?,
     };
 
     let source = source_config.bootstrapper(&ctx)?;
