@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use tokio::time::Duration;
 use url::Url;
 
-use crate::model::Pool;
+use crate::model::{Pool, TxOutput};
 
 pub struct DbSync {
     db: sqlx::Pool<sqlx::Postgres>,
@@ -37,6 +37,35 @@ impl DbSync {
         .await?;
 
         Ok(tx.id)
+    }
+
+    pub async fn utxos(
+        &self,
+        last_tx_id: i64,
+    ) -> Result<HashMap<(Vec<u8>, i16), TxOutput>, sqlx::Error> {
+        let mut rows = sqlx::query!(
+            r#"SELECT tx.hash, index, value, address
+            FROM tx_out
+            JOIN tx ON tx.id=tx_id
+            WHERE consumed_by_tx_id IS NULL
+            OR consumed_by_tx_id > $1
+            "#,
+            last_tx_id
+        )
+        .fetch(&self.db);
+
+        let mut utxos: HashMap<(Vec<u8>, i16), TxOutput> = HashMap::new();
+        while let Some(row) = rows.try_next().await? {
+            utxos.insert(
+                (row.hash, row.index),
+                TxOutput {
+                    lovelaces: row.value,
+                    address: row.address,
+                },
+            );
+        }
+
+        Ok(utxos)
     }
 
     pub async fn pools(&self, last_tx_id: i64) -> Result<HashMap<String, Pool>, sqlx::Error> {

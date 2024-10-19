@@ -8,7 +8,7 @@ use tracing::{debug, info, warn};
 use url::Url;
 
 use crate::dbsync::DbSync;
-use crate::model::Pool;
+use crate::model::{Pool, TxOutput};
 use crate::utxorpc::BlockExt;
 
 pub struct Worker {
@@ -17,6 +17,7 @@ pub struct Worker {
     pools: HashMap<String, Pool>,
     delegations: HashMap<Vec<u8>, Vec<u8>>,
     delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
+    utxos: HashMap<(Vec<u8>, i16), TxOutput>,
 }
 
 impl Worker {
@@ -36,6 +37,10 @@ impl Worker {
             self.delegations.len(),
             self.delegators.len()
         );
+
+        info!("Fetching utxos...");
+        self.utxos = self.db.utxos(last_tx_id).await.or_panic()?;
+        info!("{} utxos retrieved", self.utxos.len());
 
         Ok(())
     }
@@ -75,6 +80,12 @@ impl Worker {
 
         Ok(())
     }
+
+    async fn apply_inputs(&mut self, block: &Block) -> Result<(), WorkerError> {
+        for tx in block.txs() {}
+
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -88,6 +99,7 @@ impl gasket::framework::Worker<Stage> for Worker {
             pools: HashMap::new(),
             delegations: HashMap::new(),
             delegators: HashMap::new(),
+            utxos: HashMap::new(),
         })
     }
 
@@ -109,6 +121,7 @@ impl gasket::framework::Worker<Stage> for Worker {
             }
             ChainEvent::Apply(point, Record::ParsedBlock(block)) => {
                 info!("Apply block {:?}", point);
+                self.apply_inputs(block).await?;
                 self.apply_stake_delegations(block).await?;
                 self.apply_stake_deregistrations(block).await?;
             }

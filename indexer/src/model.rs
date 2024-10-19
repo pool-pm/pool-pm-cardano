@@ -8,3 +8,8 @@ pub struct Pool {
     pub margin: f64,
     pub fixed_cost: Decimal,
 }
+
+pub struct TxOutput {
+    pub lovelaces: Decimal,
+    pub address: String,
+}
