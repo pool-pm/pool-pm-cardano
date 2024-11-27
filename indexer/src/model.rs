@@ -11,5 +11,5 @@ pub struct Pool {
 
 pub struct TxOutput {
     pub lovelaces: Decimal,
-    pub address: String,
+    pub address: Vec<u8>,
 }

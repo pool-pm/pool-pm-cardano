@@ -1,6 +1,9 @@
 use futures::TryStreamExt;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::ConnectOptions;
+use sqlx::{
+    postgres::{PgConnectOptions, PgPoolOptions},
+    types::Decimal,
+    ConnectOptions,
+};
 use std::collections::{HashMap, HashSet};
 use tokio::time::Duration;
 use url::Url;
@@ -42,11 +45,12 @@ impl DbSync {
     pub async fn utxos(
         &self,
         last_tx_id: i64,
-    ) -> Result<HashMap<(Vec<u8>, i16), TxOutput>, sqlx::Error> {
+    ) -> Result<(HashMap<(Vec<u8>, i16), TxOutput>, HashMap<Vec<u8>, Decimal>), sqlx::Error> {
         let mut rows = sqlx::query!(
-            r#"SELECT tx.hash, index, value, address
+            r#"SELECT tx.hash, tx_out.index, tx_out.value, stake_address.hash_raw
             FROM tx_out
             JOIN tx ON tx.id=tx_id
+            JOIN stake_address ON stake_address.id=stake_address_id
             WHERE consumed_by_tx_id IS NULL
             OR consumed_by_tx_id > $1
             "#,
@@ -55,17 +59,20 @@ impl DbSync {
         .fetch(&self.db);
 
         let mut utxos: HashMap<(Vec<u8>, i16), TxOutput> = HashMap::new();
+        let mut stakes: HashMap<Vec<u8>, Decimal> = HashMap::new();
+
         while let Some(row) = rows.try_next().await? {
             utxos.insert(
                 (row.hash, row.index),
                 TxOutput {
                     lovelaces: row.value,
-                    address: row.address,
+                    address: row.hash_raw.clone(),
                 },
             );
+            *stakes.entry(row.hash_raw).or_default() += row.value;
         }
 
-        Ok(utxos)
+        Ok((utxos, stakes))
     }
 
     pub async fn pools(&self, last_tx_id: i64) -> Result<HashMap<String, Pool>, sqlx::Error> {

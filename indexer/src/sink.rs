@@ -1,8 +1,8 @@
 use gasket::framework::*;
 use oura::framework::*;
-use pallas::interop::utxorpc::spec::cardano::Block;
-use pallas::network::miniprotocols::Point;
+use pallas::{interop::utxorpc::spec::cardano::Block, network::miniprotocols::Point};
 use serde::Deserialize;
+use sqlx::types::Decimal;
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, info, warn};
 use url::Url;
@@ -18,6 +18,7 @@ pub struct Worker {
     delegations: HashMap<Vec<u8>, Vec<u8>>,
     delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
     utxos: HashMap<(Vec<u8>, i16), TxOutput>,
+    stakes: HashMap<Vec<u8>, Decimal>,
 }
 
 impl Worker {
@@ -39,8 +40,12 @@ impl Worker {
         );
 
         info!("Fetching utxos...");
-        self.utxos = self.db.utxos(last_tx_id).await.or_panic()?;
-        info!("{} utxos retrieved", self.utxos.len());
+        (self.utxos, self.stakes) = self.db.utxos(last_tx_id).await.or_panic()?;
+        info!(
+            "{} utxos and {} stakes retrieved",
+            self.utxos.len(),
+            self.stakes.len()
+        );
 
         Ok(())
     }
@@ -100,6 +105,7 @@ impl gasket::framework::Worker<Stage> for Worker {
             delegations: HashMap::new(),
             delegators: HashMap::new(),
             utxos: HashMap::new(),
+            stakes: HashMap::new(),
         })
     }
 
