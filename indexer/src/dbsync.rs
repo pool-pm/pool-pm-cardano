@@ -1,10 +1,10 @@
 use futures::TryStreamExt;
+use im::{hashmap::HashMap, hashset::HashSet};
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
     types::Decimal,
     ConnectOptions,
 };
-use std::collections::{HashMap, HashSet};
 use tokio::time::Duration;
 use url::Url;
 
@@ -17,7 +17,7 @@ pub struct DbSync {
 impl DbSync {
     pub async fn new(url: &Url) -> Result<Self, sqlx::Error> {
         let options = PgConnectOptions::from_url(&url)?
-            .log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(10));
+            .log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(15));
 
         let db = PgPoolOptions::new()
             .max_connections(8)

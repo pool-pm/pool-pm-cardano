@@ -10,6 +10,7 @@ futures = "0.3.31"
 gasket = { version = "^0.7", features = ["derive"] }
 gasket-prometheus = { version = "^0.7" }
 hex = "0.4.3"
+im = { version = "15.1.0", features = ["serde"] }
 log = "0.4.22"
 oura = { git = "https://github.com/txpipe/oura", branch = "main" }
 pallas = { git = "https://github.com/txpipe/pallas", features = ["hardano"] }
