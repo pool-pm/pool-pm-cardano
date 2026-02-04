@@ -4,6 +4,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use tracing::info;
 
 use crate::args::{Args, Metrics};
+use crate::mempool;
 use crate::sink;
 
 fn define_gasket_policy() -> gasket::runtime::Policy {
@@ -27,6 +28,7 @@ fn connect_stages(
     mut source: sources::Bootstrapper,
     mut sink: sink::Stage,
     mut cursor: cursor::Bootstrapper,
+    mempool: mempool::Stage,
     policy: gasket::runtime::Policy,
 ) -> Result<Daemon, Error> {
     let prev = source.borrow_output();
@@ -39,7 +41,8 @@ fn connect_stages(
     let mut tethers = vec![];
     tethers.push(source.spawn(policy.clone()));
     tethers.push(gasket::runtime::spawn_stage(sink, policy.clone()));
-    tethers.push(cursor.spawn(policy));
+    tethers.push(cursor.spawn(policy.clone()));
+    tethers.push(gasket::runtime::spawn_stage(mempool, policy));
 
     let runtime = Daemon(tethers);
 
@@ -72,11 +75,15 @@ async fn serve_prometheus(daemon: Arc<Daemon>, metrics: Option<Metrics>) -> Resu
 pub fn run(args: Args) -> Result<(), Error> {
     setup_tracing(args.verbose);
 
-    let source_config = sources::Config::N2N(sources::n2n::Config {
-        peers: args.peers.clone(),
+    let source_config = sources::Config::N2C(sources::n2c::Config {
+        socket_path: args.socket.clone(),
     });
     let sink_config = sink::Config {
         db_url: args.db.replace("NETWORK", &args.network.to_string()),
+    };
+    let mempool_config = mempool::Config {
+        socket_path: args.socket.clone(),
+        magic: args.network.magic(),
     };
 
     let cursor_config = cursor::file::Config {
@@ -95,8 +102,9 @@ pub fn run(args: Args) -> Result<(), Error> {
     let source = source_config.bootstrapper(&ctx)?;
     let sink = sink_config.bootstrapper(&ctx)?;
     let cursor = cursor::Bootstrapper::File(cursor_config.bootstrapper(&ctx)?);
+    let mempool = mempool_config.bootstrapper();
     let retries = define_gasket_policy();
-    let daemon = connect_stages(source, sink, cursor, retries)?;
+    let daemon = connect_stages(source, sink, cursor, mempool, retries)?;
 
     info!("daemon is running");
 

@@ -84,7 +84,7 @@ impl gasket::framework::Worker<Stage> for Worker {
                 self.reset(point).await?;
             }
             ChainEvent::Apply(point, Record::CborBlock(cbor)) => {
-                let block = MultiEraBlock::decode(&cbor).or_panic()?;
+                let _block = MultiEraBlock::decode(&cbor).or_panic()?;
                 info!("Apply block {:?}", point);
             }
             event => {

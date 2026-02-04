@@ -1,9 +1,8 @@
 use clap::Parser;
 use serde::Deserialize;
 use std::{
-    error::Error,
-    fmt::{self, Display},
     net::{AddrParseError, SocketAddr},
+    path::PathBuf,
     str::FromStr,
 };
 
@@ -21,9 +20,9 @@ pub struct Args {
     )]
     pub db: String,
 
-    /// Cardano node peers
-    #[clap(short, long, value_delimiter = ' ', num_args = 1..)]
-    pub peers: Vec<String>,
+    /// Cardano node socket path
+    #[clap(short, long)]
+    pub socket: PathBuf,
 
     /// Enable Prometheus metrics{n} (ADDR:PORT or 'default' for 127.0.0.1:9188)
     #[clap(short, long)]
@@ -44,21 +43,6 @@ pub struct Args {
 
 #[derive(Clone, Deserialize)]
 pub struct Metrics(pub SocketAddr);
-
-#[derive(Debug)]
-pub struct MetricsParseError;
-
-impl Display for MetricsParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "expecting ADDR:PORT (ex: 0.0.0.0:9188)")
-    }
-}
-
-impl Error for MetricsParseError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        None
-    }
-}
 
 impl FromStr for Metrics {
     type Err = AddrParseError;

@@ -1,4 +1,4 @@
-use oura::framework::ChainConfig;
+use oura::framework::{ChainConfig, GenesisValues};
 use std::{
     error::Error,
     fmt::{self, Display},
@@ -12,6 +12,10 @@ pub struct Chain(ChainConfig);
 impl Chain {
     pub fn config(&self) -> &ChainConfig {
         return &self.0;
+    }
+
+    pub fn magic(&self) -> u64 {
+        GenesisValues::from(self.0.clone()).magic
     }
 }
 

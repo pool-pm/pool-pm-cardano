@@ -7,6 +7,7 @@ mod args;
 mod chain;
 mod daemon;
 mod dbsync;
+mod mempool;
 mod model;
 mod sink;
 
