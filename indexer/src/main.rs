@@ -9,7 +9,6 @@ mod daemon;
 mod dbsync;
 mod model;
 mod sink;
-mod utxorpc;
 
 fn main() {
     let args = Args::parse();

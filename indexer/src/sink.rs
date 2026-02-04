@@ -1,15 +1,15 @@
 use gasket::framework::*;
 use im::{hashmap::HashMap, hashset::HashSet};
 use oura::framework::*;
-use pallas::{interop::utxorpc::spec::cardano::Block, network::miniprotocols::Point};
+use pallas::ledger::traverse::MultiEraBlock;
+use pallas::network::miniprotocols::Point;
 use serde::Deserialize;
 use sqlx::types::Decimal;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use url::Url;
 
 use crate::dbsync::DbSync;
 use crate::model::{Pool, TxOutput};
-use crate::utxorpc::BlockExt;
 
 pub struct Worker {
     db: DbSync,
@@ -49,48 +49,6 @@ impl Worker {
 
         Ok(())
     }
-
-    async fn apply_stake_delegations(&mut self, block: &Block) -> Result<(), WorkerError> {
-        for delegation in block.stake_delegations(&self.chain).into_iter() {
-            debug!(
-                "delegation from stake {} to pool {}",
-                hex::encode(&delegation.addr),
-                hex::encode(&delegation.pool_keyhash)
-            );
-            self.delegations
-                .insert(delegation.addr.clone(), delegation.pool_keyhash.clone())
-                .map(|prev_pool| {
-                    self.delegators.entry(prev_pool).and_modify(|delegators| {
-                        delegators.remove(&delegation.addr);
-                    });
-                });
-            self.delegators
-                .entry(delegation.pool_keyhash)
-                .or_default()
-                .insert(delegation.addr);
-        }
-
-        Ok(())
-    }
-
-    async fn apply_stake_deregistrations(&mut self, block: &Block) -> Result<(), WorkerError> {
-        for addr in block.stake_deregistrations(&self.chain).into_iter() {
-            debug!("deregistration from stake {}", hex::encode(&addr));
-            self.delegations.remove(&addr).map(|pool| {
-                self.delegators.entry(pool).and_modify(|delegators| {
-                    delegators.remove(&addr);
-                });
-            });
-        }
-
-        Ok(())
-    }
-
-    async fn apply_inputs(&mut self, block: &Block) -> Result<(), WorkerError> {
-        for tx in block.txs() {}
-
-        Ok(())
-    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -125,11 +83,9 @@ impl gasket::framework::Worker<Stage> for Worker {
                 info!("Reset to {:?}", point);
                 self.reset(point).await?;
             }
-            ChainEvent::Apply(point, Record::ParsedBlock(block)) => {
+            ChainEvent::Apply(point, Record::CborBlock(cbor)) => {
+                let block = MultiEraBlock::decode(&cbor).or_panic()?;
                 info!("Apply block {:?}", point);
-                self.apply_inputs(block).await?;
-                self.apply_stake_delegations(block).await?;
-                self.apply_stake_deregistrations(block).await?;
             }
             event => {
                 warn!("Unexpected chain event {:?}", event);
@@ -145,7 +101,7 @@ impl gasket::framework::Worker<Stage> for Worker {
 }
 
 #[derive(Stage)]
-#[stage(name = "sink", unit = "ChainEvent", worker = "Worker")]
+#[stage(name = "sink-fetcher", unit = "ChainEvent", worker = "Worker")]
 pub struct Stage {
     config: Config,
     chain: ChainConfig,

@@ -1,5 +1,5 @@
 use gasket::daemon::Daemon;
-use oura::{cursor, filters, framework::*, sources};
+use oura::{cursor, framework::*, sources};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tracing::info;
 
@@ -25,17 +25,11 @@ fn define_gasket_policy() -> gasket::runtime::Policy {
 
 fn connect_stages(
     mut source: sources::Bootstrapper,
-    mut filters: Vec<filters::Bootstrapper>,
     mut sink: sink::Stage,
     mut cursor: cursor::Bootstrapper,
     policy: gasket::runtime::Policy,
 ) -> Result<Daemon, Error> {
-    let mut prev = source.borrow_output();
-
-    for filter in filters.iter_mut() {
-        gasket::messaging::tokio::connect_ports(prev, filter.borrow_input(), 100);
-        prev = filter.borrow_output();
-    }
+    let prev = source.borrow_output();
 
     gasket::messaging::tokio::connect_ports(prev, &mut sink.input, 100);
     let prev = &mut sink.cursor;
@@ -44,7 +38,6 @@ fn connect_stages(
 
     let mut tethers = vec![];
     tethers.push(source.spawn(policy.clone()));
-    tethers.extend(filters.into_iter().map(|x| x.spawn(policy.clone())));
     tethers.push(gasket::runtime::spawn_stage(sink, policy.clone()));
     tethers.push(cursor.spawn(policy));
 
@@ -53,8 +46,8 @@ fn connect_stages(
     Ok(runtime)
 }
 
-fn setup_tracing(args: &Args) {
-    let level = match args.verbose {
+fn setup_tracing(verbose: bool) {
+    let level = match verbose {
         true => tracing::Level::DEBUG,
         false => tracing::Level::INFO,
     };
@@ -77,12 +70,11 @@ async fn serve_prometheus(daemon: Arc<Daemon>, metrics: Option<Metrics>) -> Resu
 }
 
 pub fn run(args: Args) -> Result<(), Error> {
-    setup_tracing(&args);
+    setup_tracing(args.verbose);
 
     let source_config = sources::Config::N2N(sources::n2n::Config {
         peers: args.peers.clone(),
     });
-    let filter_configs = vec![filters::Config::ParseCbor(filters::parse_cbor::Config {})];
     let sink_config = sink::Config {
         db_url: args.db.replace("NETWORK", &args.network.to_string()),
     };
@@ -101,16 +93,12 @@ pub fn run(args: Args) -> Result<(), Error> {
     };
 
     let source = source_config.bootstrapper(&ctx)?;
-    let filters = filter_configs
-        .into_iter()
-        .map(|x| x.bootstrapper(&ctx))
-        .collect::<Result<_, _>>()?;
     let sink = sink_config.bootstrapper(&ctx)?;
     let cursor = cursor::Bootstrapper::File(cursor_config.bootstrapper(&ctx)?);
     let retries = define_gasket_policy();
-    let daemon = connect_stages(source, filters, sink, cursor, retries)?;
+    let daemon = connect_stages(source, sink, cursor, retries)?;
 
-    info!("fetcher is running");
+    info!("daemon is running");
 
     let daemon = Arc::new(daemon);
 
@@ -124,7 +112,7 @@ pub fn run(args: Args) -> Result<(), Error> {
 
     daemon.block();
 
-    info!("oura is stopping");
+    info!("daemon is stopping");
 
     daemon.teardown();
     prometheus.abort();
