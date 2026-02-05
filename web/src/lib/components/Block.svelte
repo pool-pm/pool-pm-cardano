@@ -62,6 +62,7 @@
 		border-radius: 8px;
 		padding: 10px;
 		width: min(var(--ideal-width), 100%);
+		margin: 0 auto;
 		display: flex;
 		flex-direction: column;
 	}
