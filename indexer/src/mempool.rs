@@ -1,13 +1,13 @@
 use gasket::framework::*;
 use im::hashmap::HashMap;
-use pallas::crypto::hash::Hasher;
+use pallas::ledger::traverse::MultiEraTx;
 use pallas::network::facades::NodeClient;
 use std::path::PathBuf;
 use tracing::info;
 
 pub struct Worker {
     client: NodeClient,
-    pending: HashMap<Vec<u8>, Vec<u8>>,
+    pending: HashMap<String, Vec<u8>>,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -32,12 +32,26 @@ impl gasket::framework::Worker<Stage> for Worker {
 
         let slot = monitor.acquire().await.or_retry()?;
 
-        let mut pending: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut pending: HashMap<String, Vec<u8>> = HashMap::new();
 
         while let Some((_era, tagged_body)) = monitor.query_next_tx().await.or_retry()? {
-            let body = tagged_body.0;
-            let hash = Hasher::<256>::hash(&body);
-            pending.insert(hash.to_vec(), body.to_vec());
+            let body = tagged_body.0.to_vec();
+            let tx = MultiEraTx::decode(&body).or_panic()?;
+            let hash = tx.hash().to_string();
+
+            if !self.pending.contains_key(&hash) {
+                info!(
+                    hash,
+                    era = %tx.era(),
+                    fee = tx.fee(),
+                    inputs = tx.inputs().len(),
+                    outputs = tx.outputs().len(),
+                    size = tx.size(),
+                    "new mempool tx"
+                );
+            }
+
+            pending.insert(hash, body);
         }
 
         let count = pending.len();
