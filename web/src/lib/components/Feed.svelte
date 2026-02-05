@@ -70,7 +70,7 @@
 		</div>
 	{/if}
 	{#each sortedBlocks as block (block.hash)}
-		<div animate:flip={{ duration: 300 }}>
+		<div class="block-wrapper" animate:flip={{ duration: 300 }}>
 			<Block {block} />
 		</div>
 	{/each}
@@ -87,7 +87,8 @@
 		gap: 8px;
 	}
 
-	.mempool-section {
+	.mempool-section,
+	.block-wrapper {
 		width: 100%;
 	}
 </style>
