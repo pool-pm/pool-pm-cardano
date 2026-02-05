@@ -59,10 +59,9 @@ impl Worker {
             }
         }
 
-        let genesis = GenesisValues::from(stage.chain.clone());
-        let timestamp = genesis.shelley_known_time
-            + slot.saturating_sub(genesis.shelley_known_slot)
-                * genesis.shelley_slot_length as u64;
+        let timestamp = stage.genesis.shelley_known_time
+            + slot.saturating_sub(stage.genesis.shelley_known_slot)
+                * stage.genesis.shelley_slot_length as u64;
 
         {
             let mut state = stage.state.write().await;
@@ -125,7 +124,7 @@ impl gasket::framework::Worker<Stage> for Worker {
 #[derive(Stage)]
 #[stage(name = "sink-fetcher", unit = "ChainEvent", worker = "Worker")]
 pub struct Stage {
-    chain: ChainConfig,
+    genesis: GenesisValues,
     event_tx: broadcast::Sender<Event>,
     state: Arc<RwLock<State>>,
 
@@ -145,7 +144,7 @@ pub fn bootstrapper(
     state: Arc<RwLock<State>>,
 ) -> Result<Stage, Error> {
     Ok(Stage {
-        chain: context.chain.clone(),
+        genesis: GenesisValues::from(context.chain.clone()),
         event_tx,
         state,
         ops_count: Default::default(),
