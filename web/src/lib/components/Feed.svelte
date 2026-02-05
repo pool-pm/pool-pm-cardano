@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { flip } from 'svelte/animate';
 	import { mempoolTxs, blocks } from '../stores';
 	import Transaction from './Transaction.svelte';
 	import Block from './Block.svelte';
@@ -52,11 +53,15 @@
 <div class="feed">
 	<div class="mempool-txs">
 		{#each sortedTxs as tx (tx.hash)}
-			<Transaction {tx} />
+			<div animate:flip={{ duration: 300 }}>
+				<Transaction {tx} />
+			</div>
 		{/each}
 	</div>
 	{#each sortedBlocks as block (block.hash)}
-		<Block {block} />
+		<div animate:flip={{ duration: 300 }}>
+			<Block {block} />
+		</div>
 	{/each}
 </div>
 
