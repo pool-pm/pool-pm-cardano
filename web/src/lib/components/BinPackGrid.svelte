@@ -25,7 +25,7 @@
 	const offsetX = $derived(Math.max(0, (containerWidth - gridWidth) / 2));
 
 	function measure() {
-		if (!container || items.length === 0) {
+		if (!container || items.length === 0 || containerWidth === 0) {
 			containerHeight = 0;
 			return;
 		}
@@ -85,6 +85,7 @@
 	$effect(() => {
 		// Track these dependencies
 		items;
+		containerWidth;
 		colCount;
 		offsetX;
 		untrack(() => {
@@ -101,9 +102,10 @@
 	{#each items as item (key(item))}
 		{@const k = key(item)}
 		{@const pos = itemPositions.get(k)}
+		{@const defaultX = Math.max(0, (containerWidth - itemWidth) / 2)}
 		<div
 			class="bin-pack-item"
-			style="transform: translate({pos?.x ?? 0}px, {pos?.y ?? 0}px)"
+			style="transform: translate({pos?.x ?? defaultX}px, {pos?.y ?? 0}px)"
 			use:registerRef={{ k, register: registerItem, unregister: unregisterItem }}
 			animate:flip={{ duration: 300 }}
 		>
