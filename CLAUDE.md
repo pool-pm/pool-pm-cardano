@@ -85,4 +85,6 @@ The frontend is a Svelte 5 + TypeScript app built with Vite.
 ### Coding Guidelines
 
 - **Animations**: Prefer Svelte's built-in animation features (`svelte/animate`, `svelte/transition`) over pure CSS when they provide a better, smoother, or simpler solution. Use `animate:flip` for list reordering, transitions for enter/exit animations.
+- **Package versions**: Use LTS or stable versions when possible, particularly for TypeScript, JavaScript runtimes, and Svelte.
+- **Type safety**: Avoid `any` as much as possible unless it significantly simplifies very complex types.
 
