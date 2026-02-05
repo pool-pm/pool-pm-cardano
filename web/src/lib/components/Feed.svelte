@@ -42,10 +42,11 @@
 	type FeedRow = { ts: number; items: FeedItem[] };
 
 	let rows: FeedRow[] = $derived.by(() => {
-		const flat: FeedItem[] = [];
+		const txItems: FeedItem[] = [];
+		const blockItems: FeedItem[] = [];
 
 		for (const [hash, tx] of $mempoolTxs) {
-			flat.push({
+			txItems.push({
 				kind: 'tx',
 				key: `tx-${hash}`,
 				receivedAt: tx.receivedAt,
@@ -54,7 +55,7 @@
 		}
 
 		for (const [hash, block] of $blocks) {
-			flat.push({
+			blockItems.push({
 				kind: 'block',
 				key: `blk-${hash}`,
 				receivedAt: block.receivedAt,
@@ -63,20 +64,28 @@
 		}
 
 		// newest first
-		flat.sort((a, b) => b.receivedAt - a.receivedAt);
+		txItems.sort((a, b) => b.receivedAt - a.receivedAt);
+		blockItems.sort((a, b) => b.receivedAt - a.receivedAt);
 
-		// group items within the same second
-		const result: FeedRow[] = [];
-		for (const item of flat) {
-			const last = result[result.length - 1];
+		// group mempool txs within the same second into rows
+		const txRows: FeedRow[] = [];
+		for (const item of txItems) {
+			const last = txRows[txRows.length - 1];
 			if (last && Math.abs(item.receivedAt - last.ts) < GROUP_WINDOW_MS) {
 				last.items.push(item);
 			} else {
-				result.push({ ts: item.receivedAt, items: [item] });
+				txRows.push({ ts: item.receivedAt, items: [item] });
 			}
 		}
 
-		return result;
+		// blocks always get their own row
+		const blockRows: FeedRow[] = blockItems.map((item) => ({
+			ts: item.receivedAt,
+			items: [item],
+		}));
+
+		// mempool txs first, then blocks
+		return [...txRows, ...blockRows];
 	});
 </script>
 

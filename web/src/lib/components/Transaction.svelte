@@ -43,7 +43,7 @@
 		{/if}
 	</div>
 
-	<div class="arrow">\u2193</div>
+	<div class="arrow">↓</div>
 
 	<div class="addr-list">
 		{#each tx.outputs.slice(0, 3) as output}
@@ -81,6 +81,7 @@
 		padding: 8px 10px;
 		width: 180px;
 		font-size: 11px;
+		text-align: center;
 	}
 
 	.tx-hash {
@@ -91,12 +92,14 @@
 	.addr-list {
 		display: flex;
 		flex-direction: column;
+		align-items: center;
 		gap: 2px;
 	}
 
 	.addr-item {
 		display: flex;
 		flex-direction: column;
+		align-items: center;
 	}
 
 	.ada {
@@ -125,6 +128,7 @@
 		display: flex;
 		gap: 2px;
 		margin-top: 2px;
+		justify-content: center;
 	}
 
 	.asset-thumb {
