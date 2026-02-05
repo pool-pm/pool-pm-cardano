@@ -1,4 +1,5 @@
 use gasket::framework::*;
+use imbl::hashmap::HashMap;
 use oura::framework::*;
 use pallas::ledger::traverse::MultiEraBlock;
 use pallas::network::miniprotocols::Point;
@@ -36,13 +37,17 @@ impl Worker {
             delegators.len()
         );
 
-        info!("Fetching UTXOs...");
-        let (utxos, stakes) = self.db.utxos(last_tx_id).await.or_panic()?;
-        info!("{} UTXOs retrieved", utxos.len());
-
         {
             let mut state = stage.state.write().await;
-            state.reset(slot, 0, utxos, pools, delegations, delegators, stakes);
+            state.reset(
+                slot,
+                0,
+                HashMap::new(),
+                pools,
+                delegations,
+                delegators,
+                HashMap::new(),
+            );
         }
 
         let _ = stage.event_tx.send(Event::Rollback { slot });

@@ -87,12 +87,14 @@ pub fn run(args: Args) -> Result<(), Error> {
     let source_config = sources::Config::N2C(sources::n2c::Config {
         socket_path: args.socket.clone(),
     });
+    let db_url = args.db.replace("NETWORK", &args.network.to_string());
     let sink_config = sink::Config {
-        db_url: args.db.replace("NETWORK", &args.network.to_string()),
+        db_url: db_url.clone(),
     };
     let mempool_config = mempool::Config {
         socket_path: args.socket.clone(),
         magic: args.network.magic(),
+        db_url,
     };
 
     let cursor_config = cursor::file::Config {

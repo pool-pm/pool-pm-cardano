@@ -1,4 +1,4 @@
-use im::{hashmap::HashMap, hashset::HashSet};
+use imbl::{hashmap::HashMap, hashset::HashSet};
 use sqlx::types::Decimal;
 
 use crate::model::{Pool, TxOutput};
@@ -80,6 +80,11 @@ impl State {
             delegators: prev.delegators.clone(),
             stakes: prev.stakes.clone(),
         });
+
+        const MAX_HISTORY: usize = 2160;
+        if self.history.len() > MAX_HISTORY {
+            self.history.drain(..self.history.len() - MAX_HISTORY);
+        }
     }
 
     /// Rollback to the given slot: drop all snapshots after it.

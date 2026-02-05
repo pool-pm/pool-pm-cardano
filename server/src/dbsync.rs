@@ -1,14 +1,13 @@
 use futures::TryStreamExt;
-use im::{hashmap::HashMap, hashset::HashSet};
+use imbl::{hashmap::HashMap, hashset::HashSet};
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
-    types::Decimal,
     ConnectOptions,
 };
 use tokio::time::Duration;
 use url::Url;
 
-use crate::model::{Pool, TxOutput};
+use crate::model::Pool;
 
 pub struct DbSync {
     db: sqlx::Pool<sqlx::Postgres>,
@@ -42,37 +41,23 @@ impl DbSync {
         Ok(tx.id)
     }
 
-    pub async fn utxos(
+    pub async fn resolve_utxo(
         &self,
-        last_tx_id: i64,
-    ) -> Result<(HashMap<(Vec<u8>, i16), TxOutput>, HashMap<Vec<u8>, Decimal>), sqlx::Error> {
-        let mut rows = sqlx::query!(
-            r#"SELECT tx.hash, tx_out.index, tx_out.value, stake_address.hash_raw
+        tx_hash: &[u8],
+        index: i16,
+    ) -> Result<Option<(String, sqlx::types::Decimal)>, sqlx::Error> {
+        let row = sqlx::query!(
+            r#"SELECT tx_out.address, tx_out.value
             FROM tx_out
-            JOIN tx ON tx.id=tx_id
-            JOIN stake_address ON stake_address.id=stake_address_id
-            WHERE consumed_by_tx_id IS NULL
-            OR consumed_by_tx_id > $1
-            "#,
-            last_tx_id
+            JOIN tx ON tx.id = tx_out.tx_id
+            WHERE tx.hash = $1 AND tx_out.index = $2"#,
+            tx_hash,
+            index
         )
-        .fetch(&self.db);
+        .fetch_optional(&self.db)
+        .await?;
 
-        let mut utxos: HashMap<(Vec<u8>, i16), TxOutput> = HashMap::new();
-        let mut stakes: HashMap<Vec<u8>, Decimal> = HashMap::new();
-
-        while let Some(row) = rows.try_next().await? {
-            utxos.insert(
-                (row.hash, row.index),
-                TxOutput {
-                    lovelaces: row.value,
-                    address: row.hash_raw.clone(),
-                },
-            );
-            *stakes.entry(row.hash_raw).or_default() += row.value;
-        }
-
-        Ok((utxos, stakes))
+        Ok(row.map(|r| (r.address, r.value)))
     }
 
     pub async fn pools(&self, last_tx_id: i64) -> Result<HashMap<String, Pool>, sqlx::Error> {
