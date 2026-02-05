@@ -11,12 +11,10 @@ use crate::event::Event;
 use crate::model::TxOutput;
 use crate::state::State;
 
-pub struct Worker {
-    chain: ChainConfig,
-}
+pub struct Worker;
 
 impl Worker {
-    async fn handle_reset(&mut self, point: &Point, stage: &Stage) -> Result<(), WorkerError> {
+    async fn handle_reset(&self, point: &Point, stage: &Stage) -> Result<(), WorkerError> {
         let slot = point.slot_or_default();
 
         {
@@ -29,7 +27,7 @@ impl Worker {
         Ok(())
     }
 
-    async fn handle_apply(&mut self, cbor: &[u8], stage: &Stage) -> Result<(), WorkerError> {
+    async fn handle_apply(&self, cbor: &[u8], stage: &Stage) -> Result<(), WorkerError> {
         let block = MultiEraBlock::decode(cbor).or_panic()?;
         let slot = block.slot();
         let height = block.number();
@@ -61,7 +59,7 @@ impl Worker {
             }
         }
 
-        let genesis = GenesisValues::from(self.chain.clone());
+        let genesis = GenesisValues::from(stage.chain.clone());
         let timestamp = genesis.shelley_known_time
             + slot.saturating_sub(genesis.shelley_known_slot)
                 * genesis.shelley_slot_length as u64;
@@ -88,10 +86,8 @@ impl Worker {
 
 #[async_trait::async_trait(?Send)]
 impl gasket::framework::Worker<Stage> for Worker {
-    async fn bootstrap(stage: &Stage) -> Result<Self, WorkerError> {
-        Ok(Self {
-            chain: stage.chain.clone(),
-        })
+    async fn bootstrap(_stage: &Stage) -> Result<Self, WorkerError> {
+        Ok(Self)
     }
 
     async fn schedule(
