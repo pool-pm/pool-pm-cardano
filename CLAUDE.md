@@ -77,3 +77,11 @@ The server is configured via CLI args:
 - `-v, --verbose` — Enable DEBUG-level logging
 
 Requires a running cardano-db-sync PostgreSQL database for the target network.
+
+## Frontend (web/)
+
+The frontend is a Svelte 5 + TypeScript app built with Vite.
+
+### Coding Guidelines
+
+- **Animations**: Prefer Svelte's built-in animation features (`svelte/animate`, `svelte/transition`) over pure CSS when they provide a better, smoother, or simpler solution. Use `animate:flip` for list reordering, transitions for enter/exit animations.
