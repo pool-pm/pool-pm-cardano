@@ -6,7 +6,6 @@ use std::process;
 mod args;
 mod chain;
 mod daemon;
-mod dbsync;
 mod event;
 mod mempool;
 mod model;

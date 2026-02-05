@@ -1,8 +1,10 @@
+mod dbsync;
+
 use imbl::{hashmap::HashMap, hashset::HashSet};
 use sqlx::types::Decimal;
 use url::Url;
 
-use crate::dbsync::DbSync;
+use dbsync::DbSync;
 use crate::event::TxInput;
 use crate::model::{Pool, TxOutput};
 
