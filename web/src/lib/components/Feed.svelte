@@ -8,6 +8,7 @@
 	import type { FeedTx, FeedBlock } from '../types';
 
 	const MAX_AGE_MS = 600_000;
+	const MAX_BLOCKS = 30;
 
 	// Crossfade for tx moving from mempool to block
 	const [send, receive] = crossfade({
@@ -48,6 +49,12 @@
 						map.delete(hash);
 						changed = true;
 					}
+				}
+				// Enforce max block count
+				if (map.size > MAX_BLOCKS) {
+					const sorted = [...map.entries()].sort((a, b) => b[1].receivedAt - a[1].receivedAt);
+					map = new Map(sorted.slice(0, MAX_BLOCKS));
+					changed = true;
 				}
 				return changed ? new Map(map) : map;
 			});
