@@ -85,3 +85,12 @@ The frontend is a Svelte 5 + TypeScript app built with Vite.
 ### Coding Guidelines
 
 - **Animations**: Prefer Svelte's built-in animation features (`svelte/animate`, `svelte/transition`) over pure CSS when they provide a better, smoother, or simpler solution. Use `animate:flip` for list reordering, transitions for enter/exit animations.
+
+## Pending Specs
+
+### Feed Limits
+
+To prevent unbounded memory growth and performance degradation, the feed should enforce limits:
+
+- **Time-based cleanup**: Remove items older than 10 minutes (already implemented)
+- **Block cap**: Max 30 blocks (~10 minutes at normal Cardano block rate of ~1 block/20s), drop oldest first
