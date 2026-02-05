@@ -4,20 +4,8 @@
 	import Block from './Block.svelte';
 	import type { FeedTx, FeedBlock } from '../types';
 
-	const PX_PER_SEC = 1;
 	const MAX_AGE_MS = 600_000;
-
-	let now = $state(Date.now());
-
-	$effect(() => {
-		let id: number;
-		function tick() {
-			now = Date.now();
-			id = requestAnimationFrame(tick);
-		}
-		id = requestAnimationFrame(tick);
-		return () => cancelAnimationFrame(id);
-	});
+	const GROUP_WINDOW_MS = 1000;
 
 	// Clean up old items periodically
 	$effect(() => {
@@ -51,11 +39,13 @@
 		| { kind: 'tx'; key: string; receivedAt: number; data: FeedTx }
 		| { kind: 'block'; key: string; receivedAt: number; data: FeedBlock };
 
-	let items: FeedItem[] = $derived.by(() => {
-		const result: FeedItem[] = [];
+	type FeedRow = { ts: number; items: FeedItem[] };
+
+	let rows: FeedRow[] = $derived.by(() => {
+		const flat: FeedItem[] = [];
 
 		for (const [hash, tx] of $mempoolTxs) {
-			result.push({
+			flat.push({
 				kind: 'tx',
 				key: `tx-${hash}`,
 				receivedAt: tx.receivedAt,
@@ -64,7 +54,7 @@
 		}
 
 		for (const [hash, block] of $blocks) {
-			result.push({
+			flat.push({
 				kind: 'block',
 				key: `blk-${hash}`,
 				receivedAt: block.receivedAt,
@@ -72,23 +62,34 @@
 			});
 		}
 
-		result.sort((a, b) => a.receivedAt - b.receivedAt);
+		// newest first
+		flat.sort((a, b) => b.receivedAt - a.receivedAt);
+
+		// group items within the same second
+		const result: FeedRow[] = [];
+		for (const item of flat) {
+			const last = result[result.length - 1];
+			if (last && Math.abs(item.receivedAt - last.ts) < GROUP_WINDOW_MS) {
+				last.items.push(item);
+			} else {
+				result.push({ ts: item.receivedAt, items: [item] });
+			}
+		}
+
 		return result;
 	});
 </script>
 
 <div class="feed">
-	{#each items as item (item.key)}
-		{@const ageSec = (now - item.receivedAt) / 1000}
-		<div
-			class="feed-item"
-			style="transform: translateY({ageSec * PX_PER_SEC}px)"
-		>
-			{#if item.kind === 'tx'}
-				<Transaction tx={item.data} />
-			{:else}
-				<Block block={item.data} />
-			{/if}
+	{#each rows as row (row.ts)}
+		<div class="feed-row">
+			{#each row.items as item (item.key)}
+				{#if item.kind === 'tx'}
+					<Transaction tx={item.data} />
+				{:else}
+					<Block block={item.data} />
+				{/if}
+			{/each}
 		</div>
 	{/each}
 </div>
@@ -96,16 +97,18 @@
 <style>
 	.feed {
 		flex: 1;
-		position: relative;
-		overflow: hidden;
+		overflow-y: auto;
 		padding: 16px 20px;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 8px;
 	}
 
-	.feed-item {
-		position: absolute;
-		top: 0;
-		left: 20px;
-		right: 20px;
-		will-change: transform;
+	.feed-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		justify-content: center;
 	}
 </style>

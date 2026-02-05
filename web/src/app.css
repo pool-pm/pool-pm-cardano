@@ -42,6 +42,7 @@ main > h1 {
 	font-weight: 600;
 	border-bottom: 1px solid var(--border);
 	flex-shrink: 0;
+	text-align: center;
 }
 
 code,

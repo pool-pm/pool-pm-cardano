@@ -52,7 +52,6 @@
 		border-left: 4px solid;
 		border-radius: 8px;
 		padding: 12px 14px;
-		margin-bottom: 8px;
 	}
 
 	.block-header {
