@@ -1,11 +1,31 @@
 <script lang="ts">
 	import { flip } from 'svelte/animate';
+	import { crossfade } from 'svelte/transition';
+	import { quintOut } from 'svelte/easing';
 	import { mempoolTxs, blocks } from '../stores';
 	import Transaction from './Transaction.svelte';
 	import Block from './Block.svelte';
 	import type { FeedTx, FeedBlock } from '../types';
 
 	const MAX_AGE_MS = 600_000;
+
+	// Crossfade for tx moving from mempool to block
+	const [send, receive] = crossfade({
+		duration: 400,
+		easing: quintOut,
+		fallback(node) {
+			const style = getComputedStyle(node);
+			const transform = style.transform === 'none' ? '' : style.transform;
+			return {
+				duration: 300,
+				easing: quintOut,
+				css: (t) => `
+					transform: ${transform} scale(${t});
+					opacity: ${t}
+				`,
+			};
+		},
+	});
 
 	// Clean up old items periodically
 	$effect(() => {
@@ -48,19 +68,22 @@
 		blks.sort((a, b) => b.receivedAt - a.receivedAt);
 		return blks;
 	});
+
+	// Export send/receive for Block component
+	export { send, receive };
 </script>
 
 <div class="feed">
 	<div class="mempool-txs">
 		{#each sortedTxs as tx (tx.hash)}
-			<div animate:flip={{ duration: 300 }}>
+			<div animate:flip={{ duration: 300 }} in:receive={{ key: tx.hash }} out:send={{ key: tx.hash }}>
 				<Transaction {tx} />
 			</div>
 		{/each}
 	</div>
 	{#each sortedBlocks as block (block.hash)}
 		<div animate:flip={{ duration: 300 }}>
-			<Block {block} />
+			<Block {block} {send} {receive} />
 		</div>
 	{/each}
 </div>

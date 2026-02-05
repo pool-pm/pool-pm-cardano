@@ -1,8 +1,12 @@
 <script lang="ts">
+	import { flip } from 'svelte/animate';
 	import type { FeedBlock } from '../types';
+	import type { TransitionConfig } from 'svelte/transition';
 	import Transaction from './Transaction.svelte';
 
-	let { block }: { block: FeedBlock } = $props();
+	type CrossfadeFn = (node: Element, params: { key: string }) => () => TransitionConfig;
+
+	let { block, send, receive }: { block: FeedBlock; send: CrossfadeFn; receive: CrossfadeFn } = $props();
 
 	function blockColor(hash: string): string {
 		return '#' + hash.slice(0, 6);
@@ -16,31 +20,31 @@
 	}
 
 	const color = $derived(blockColor(block.hash));
+
+	// Reverse order: first tx in block appears last visually
+	const reversedTxs = $derived([...block.txs].reverse());
 </script>
 
-<div class="block-card" style="border-left-color: {color}">
+<div class="block-card" style="border-color: {color}">
 	<div class="block-header">
 		<span class="block-number" style="color: {color}">
-			Block #{block.number}
+			#{block.number}
 		</span>
 		<span class="block-slot mono">slot {block.slot}</span>
 		<span class="block-time">{timeAgo(block.timestamp)}</span>
 	</div>
 
-	<div class="block-meta">
-		<span>{block.tx_hashes.length} transactions</span>
-	</div>
-
-	{#if block.txs.length > 0}
+	{#if reversedTxs.length > 0}
 		<div class="block-txs">
-			{#each block.txs.slice(0, 5) as tx (tx.hash)}
-				<Transaction {tx} />
-			{/each}
-			{#if block.txs.length > 5}
-				<div class="more muted">
-					+{block.txs.length - 5} more transactions
+			{#each reversedTxs as tx (tx.hash)}
+				<div animate:flip={{ duration: 300 }} in:receive={{ key: tx.hash }} out:send={{ key: tx.hash }}>
+					<Transaction {tx} />
 				</div>
-			{/if}
+			{/each}
+		</div>
+	{:else}
+		<div class="block-meta muted">
+			{block.tx_hashes.length} transactions
 		</div>
 	{/if}
 </div>
@@ -48,17 +52,23 @@
 <style>
 	.block-card {
 		background: var(--surface);
-		border: 1px solid var(--border);
-		border-left: 4px solid;
+		border: 2px solid;
 		border-radius: 8px;
-		padding: 12px 14px;
+		padding: 10px;
+		aspect-ratio: 1 / 1;
+		max-width: 100%;
+		width: fit-content;
+		min-width: 200px;
+		display: flex;
+		flex-direction: column;
 	}
 
 	.block-header {
 		display: flex;
 		align-items: center;
-		gap: 12px;
-		margin-bottom: 6px;
+		gap: 8px;
+		margin-bottom: 8px;
+		flex-shrink: 0;
 	}
 
 	.block-number {
@@ -78,20 +88,22 @@
 	}
 
 	.block-meta {
-		color: var(--text-muted);
 		font-size: 12px;
-		margin-bottom: 8px;
+		text-align: center;
+		flex: 1;
+		display: flex;
+		align-items: center;
+		justify-content: center;
 	}
 
 	.block-txs {
-		border-top: 1px solid var(--border);
-		padding-top: 8px;
-	}
-
-	.more {
-		text-align: center;
-		font-size: 12px;
-		padding: 4px;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		justify-content: center;
+		align-content: flex-start;
+		flex: 1;
+		overflow: hidden;
 	}
 
 	.muted {
