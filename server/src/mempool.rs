@@ -1,5 +1,5 @@
 use gasket::framework::*;
-use imbl::hashmap::HashMap;
+use imbl::HashSet;
 use pallas::ledger::traverse::MultiEraTx;
 use pallas::network::facades::NodeClient;
 use std::path::PathBuf;
@@ -77,7 +77,7 @@ async fn extract_tx(tx: &MultiEraTx<'_>, state_lock: &Arc<RwLock<State>>) -> Eve
 
 pub struct Worker {
     client: NodeClient,
-    pending: HashMap<String, ()>,
+    pending: HashSet<String>,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -89,7 +89,7 @@ impl gasket::framework::Worker<Stage> for Worker {
 
         Ok(Self {
             client,
-            pending: HashMap::new(),
+            pending: HashSet::new(),
         })
     }
 
@@ -102,14 +102,14 @@ impl gasket::framework::Worker<Stage> for Worker {
 
         let slot = monitor.acquire().await.or_retry()?;
 
-        let mut pending: HashMap<String, ()> = HashMap::new();
+        let mut pending: HashSet<String> = HashSet::new();
 
         while let Some((_era, tagged_body)) = monitor.query_next_tx().await.or_retry()? {
             let body = tagged_body.0.to_vec();
             let tx = MultiEraTx::decode(&body).or_panic()?;
             let hash = tx.hash().to_string();
 
-            if !self.pending.contains_key(&hash) {
+            if !self.pending.contains(&hash) {
                 let event = extract_tx(&tx, &stage.state).await;
                 let _ = stage.event_tx.send(event);
 
@@ -122,7 +122,7 @@ impl gasket::framework::Worker<Stage> for Worker {
                 );
             }
 
-            pending.insert(hash, ());
+            pending.insert(hash);
         }
 
         let count = pending.len();
