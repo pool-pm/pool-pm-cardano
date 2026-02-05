@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-pool-pm-cardano is a Cardano blockchain indexer written in Rust. It connects to Cardano peer nodes via the N2N protocol (using Oura/Pallas), processes chain events (blocks and rollbacks), and tracks stake pools, delegations, UTXOs, and stake information. Data is queried from a PostgreSQL database populated by cardano-db-sync.
+pool-pm-cardano is a Cardano blockchain indexer and real-time event server written in Rust. It connects to a Cardano node via N2C (node-to-client) protocol using Oura/Pallas, processes chain events (blocks and rollbacks), monitors the mempool for pending transactions, and streams events to web clients via SSE (Server-Sent Events). Data is queried from a PostgreSQL database populated by cardano-db-sync.
 
 ## Build Commands
 
@@ -20,44 +20,58 @@ There are no tests in this project currently.
 
 ## Architecture
 
-The project is a Cargo workspace with a single package (`indexer/`).
+The project is a Cargo workspace with a single package (`server/`).
 
 ### Stream Processing Pipeline
 
-The indexer uses the **Gasket** framework to build a multi-stage stream processing pipeline:
+The server uses the **Gasket** framework to build a multi-stage stream processing pipeline:
 
 ```
-Cardano Peers (N2N) → Source Stage (Oura) → Sink Stage → Cursor Stage (JSON file)
-                                                ↕
-                                        PostgreSQL (cardano-db-sync)
+Cardano Node (N2C) → Source Stage (Oura) → Sink Stage → Cursor Stage (JSON file)
+                                               ↕
+                                       PostgreSQL (cardano-db-sync)
+                   → Mempool Monitor Stage
+                                               ↓
+                                    broadcast::Sender<Event>
+                                               ↓
+                                    axum SSE server (/events)
 ```
 
-- **Source**: Oura N2N source connects to Cardano peer nodes and emits `ChainEvent`s (blocks or rollback points). Configured in `chain.rs`.
-- **Sink** (`sink.rs`): The core processing stage. A Gasket `Worker` that receives chain events and maintains in-memory state using immutable data structures (`im` crate `HashMap`/`HashSet`). On each block it fetches pools from the DB, tracks delegations, and tracks UTXOs/stakes.
+- **Source**: Oura N2C source connects to a Cardano node and emits `ChainEvent`s (blocks or rollback points).
+- **Sink** (`sink.rs`): Processes chain events, maintains versioned in-memory state using immutable data structures (`im` crate) with structural sharing. On blocks: updates UTXOs, sends `Event::Block`. On rollback: reverts state, sends `Event::Rollback`.
+- **Mempool** (`mempool.rs`): Monitors the node mempool via LocalTxMonitor mini-protocol. Decodes transactions, resolves input addresses from UTXO state, computes CIP-14 asset fingerprints, and sends `Event::MempoolTx`.
 - **Cursor**: Persists the current chain position to a JSON file on disk for resumption after restart.
-- **Daemon** (`daemon.rs`): Orchestrates the full Gasket pipeline with retry policies and optional Prometheus metrics.
+- **SSE Server** (`server.rs`): axum HTTP server with `GET /events` endpoint that streams events as JSON via Server-Sent Events.
+- **Daemon** (`daemon.rs`): Orchestrates the full Gasket pipeline with retry policies, optional Prometheus metrics, and SSE server.
 
 ### Key Modules
 
-- `args.rs` — CLI argument parsing via clap (peers, network, db connection, metrics endpoint, output dir)
-- `chain.rs` — Cardano network configuration (mainnet/preprod/preview magic numbers, known peers, genesis hashes)
-- `dbsync.rs` — Async PostgreSQL queries via sqlx against cardano-db-sync schema (pools, delegations, UTXOs)
-- `model.rs` — Data structures: `Pool`, `TxOutput`
+- `args.rs` — CLI argument parsing via clap (socket, network, db connection, metrics endpoint, listen address, output dir)
+- `chain.rs` — Cardano network configuration (mainnet/preprod/preview magic numbers via Oura GenesisValues)
+- `dbsync.rs` — Async PostgreSQL queries via sqlx against cardano-db-sync schema (pools, delegations, UTXOs, stakes)
+- `event.rs` — Shared event types: `MempoolTx`, `Block`, `Rollback` (serializable for SSE)
+- `model.rs` — Data structures: `Pool`, `TxOutput`, CIP-14 asset fingerprint computation
+- `state.rs` — Versioned state with `BlockSnapshot` history and structural sharing for O(1) rollbacks
+- `mempool.rs` — Gasket worker stage for mempool monitoring via LocalTxMonitor
 - `sink.rs` — Gasket worker stage that processes chain events into indexed state
+- `server.rs` — axum SSE server for streaming events to web clients
 
 ### Key Patterns
 
-- **Immutable data structures**: State is held in `im::HashMap`/`im::HashSet` for safe structural sharing.
+- **Immutable data structures**: State is held in `im::HashMap`/`im::HashSet` for safe structural sharing and efficient rollbacks.
+- **Versioned state**: `State` maintains a `Vec<BlockSnapshot>` history; each snapshot shares structure with the previous via `im` crate O(1) clone.
+- **Event broadcasting**: `tokio::sync::broadcast` channel fans out events from pipeline stages to multiple SSE clients.
 - **Gasket error handling**: Worker methods return `gasket::error::Error` with `or_panic()` / `or_retry()` combinators.
 - **Async throughout**: tokio runtime with sqlx async database access.
 - **Compile-time SQL checking**: sqlx `query_as!` macros validate SQL against the DB schema at compile time.
 
 ## Runtime Configuration
 
-The indexer is configured via CLI args:
+The server is configured via CLI args:
+- `-s, --socket` — Cardano node socket path (required)
 - `-n, --network` — mainnet (default), preprod, or preview
 - `-d, --db` — PostgreSQL connection string (default: `postgresql:///NETWORK?host=/var/run/postgresql`)
-- `-p, --peers` — Cardano node peer addresses (space-delimited)
+- `-l, --listen` — SSE server listen address (e.g., `0.0.0.0:3000`; omit to disable SSE)
 - `-m, --metrics` — Prometheus metrics endpoint (`ADDR:PORT` or `default` for `127.0.0.1:9188`)
 - `-o, --output` — Directory for cursor file (default: `/tmp/cardano`)
 - `-v, --verbose` — Enable DEBUG-level logging

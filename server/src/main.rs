@@ -7,9 +7,12 @@ mod args;
 mod chain;
 mod daemon;
 mod dbsync;
+mod event;
 mod mempool;
 mod model;
+mod server;
 mod sink;
+mod state;
 
 fn main() {
     let args = Args::parse();

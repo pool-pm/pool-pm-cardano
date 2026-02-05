@@ -1,0 +1,177 @@
+use gasket::framework::*;
+use im::hashmap::HashMap;
+use pallas::ledger::traverse::MultiEraTx;
+use pallas::network::facades::NodeClient;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::{broadcast, RwLock};
+use tracing::info;
+
+use crate::event::{AssetInfo, Event, TxInput, TxOutputInfo};
+use crate::model::asset_fingerprint;
+use crate::state::State;
+
+fn extract_tx(tx: &MultiEraTx, state: &State) -> Event {
+    let hash = tx.hash().to_string();
+    let fee = tx.fee().unwrap_or(0);
+    let size = tx.size();
+
+    let inputs: Vec<TxInput> = tx
+        .inputs()
+        .iter()
+        .map(|input| {
+            let utxo = state.resolve_input(input.hash().as_ref(), input.index() as i16);
+            TxInput {
+                address: utxo.and_then(|u| {
+                    pallas::ledger::addresses::Address::from_bytes(&u.address)
+                        .ok()
+                        .and_then(|a| a.to_bech32().ok())
+                }),
+                lovelace: utxo
+                    .and_then(|u| u.lovelaces.try_into().ok())
+                    .unwrap_or(0),
+            }
+        })
+        .collect();
+
+    let outputs: Vec<TxOutputInfo> = tx
+        .outputs()
+        .iter()
+        .map(|output| {
+            let address = output
+                .address()
+                .ok()
+                .and_then(|a| a.to_bech32().ok())
+                .unwrap_or_default();
+            let lovelace = output.value().coin();
+            let assets: Vec<AssetInfo> = output
+                .value()
+                .assets()
+                .iter()
+                .flat_map(|policy_assets| {
+                    let policy_id = policy_assets.policy().as_ref().to_vec();
+                    policy_assets
+                        .assets()
+                        .iter()
+                        .filter_map(|asset| {
+                            Some(AssetInfo {
+                                fingerprint: asset_fingerprint(&policy_id, asset.name()),
+                                quantity: asset.output_coin()?,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+
+            TxOutputInfo {
+                address,
+                lovelace,
+                assets,
+            }
+        })
+        .collect();
+
+    Event::MempoolTx {
+        hash,
+        fee,
+        size,
+        inputs,
+        outputs,
+    }
+}
+
+pub struct Worker {
+    client: NodeClient,
+    pending: HashMap<String, ()>,
+}
+
+#[async_trait::async_trait(?Send)]
+impl gasket::framework::Worker<Stage> for Worker {
+    async fn bootstrap(stage: &Stage) -> Result<Self, WorkerError> {
+        let client = NodeClient::connect(&stage.config.socket_path, stage.config.magic)
+            .await
+            .or_retry()?;
+
+        Ok(Self {
+            client,
+            pending: HashMap::new(),
+        })
+    }
+
+    async fn schedule(&mut self, _stage: &mut Stage) -> Result<WorkSchedule<()>, WorkerError> {
+        Ok(WorkSchedule::Unit(()))
+    }
+
+    async fn execute(&mut self, _unit: &(), stage: &mut Stage) -> Result<(), WorkerError> {
+        let monitor = self.client.monitor();
+
+        let slot = monitor.acquire().await.or_retry()?;
+
+        let mut pending: HashMap<String, ()> = HashMap::new();
+
+        while let Some((_era, tagged_body)) = monitor.query_next_tx().await.or_retry()? {
+            let body = tagged_body.0.to_vec();
+            let tx = MultiEraTx::decode(&body).or_panic()?;
+            let hash = tx.hash().to_string();
+
+            if !self.pending.contains_key(&hash) {
+                let state = stage.state.read().await;
+                let event = extract_tx(&tx, &state);
+                let _ = stage.event_tx.send(event);
+
+                info!(
+                    hash,
+                    fee = tx.fee(),
+                    inputs = tx.inputs().len(),
+                    outputs = tx.outputs().len(),
+                    "new mempool tx"
+                );
+            }
+
+            pending.insert(hash, ());
+        }
+
+        let count = pending.len();
+        self.pending = pending;
+
+        stage.pending_count.set(count as i64);
+        stage.snapshots.inc(1);
+
+        info!(slot, count, "mempool snapshot");
+
+        Ok(())
+    }
+}
+
+#[derive(Stage)]
+#[stage(name = "mempool-monitor", unit = "()", worker = "Worker")]
+pub struct Stage {
+    config: Config,
+    event_tx: broadcast::Sender<Event>,
+    state: Arc<RwLock<State>>,
+
+    #[metric]
+    pending_count: gasket::metrics::Gauge,
+
+    #[metric]
+    snapshots: gasket::metrics::Counter,
+}
+
+pub struct Config {
+    pub socket_path: PathBuf,
+    pub magic: u64,
+}
+
+pub fn bootstrapper(
+    config: Config,
+    event_tx: broadcast::Sender<Event>,
+    state: Arc<RwLock<State>>,
+) -> Stage {
+    Stage {
+        config,
+        event_tx,
+        state,
+        pending_count: Default::default(),
+        snapshots: Default::default(),
+    }
+}
