@@ -32,7 +32,9 @@
 
 		const newPositions = new Map<string, { x: number; y: number }>();
 		const colHeights = new Array(colCount).fill(0);
+		let maxColUsed = 0;
 
+		// First pass: calculate positions relative to column 0
 		for (const item of items) {
 			const k = key(item);
 			const el = itemRefs.get(k);
@@ -48,11 +50,23 @@
 				}
 			}
 
-			const x = offsetX + minCol * (itemWidth + gap);
+			maxColUsed = Math.max(maxColUsed, minCol);
+
+			const x = minCol * (itemWidth + gap);
 			const y = colHeights[minCol];
 
 			newPositions.set(k, { x, y });
 			colHeights[minCol] = y + height + gap;
+		}
+
+		// Calculate actual grid width and center offset
+		const actualCols = maxColUsed + 1;
+		const actualGridWidth = actualCols * itemWidth + (actualCols - 1) * gap;
+		const actualOffsetX = Math.max(0, (containerWidth - actualGridWidth) / 2);
+
+		// Second pass: apply offset to all positions
+		for (const [k, pos] of newPositions) {
+			newPositions.set(k, { x: pos.x + actualOffsetX, y: pos.y });
 		}
 
 		itemPositions = newPositions;
