@@ -1,32 +1,13 @@
 <script lang="ts">
 	import { flip } from 'svelte/animate';
-	import { crossfade } from 'svelte/transition';
-	import { quintOut } from 'svelte/easing';
 	import { mempoolTxs, blocks } from '../stores';
-	import Transaction from './Transaction.svelte';
 	import Block from './Block.svelte';
+	import BinPackGrid from './BinPackGrid.svelte';
+	import Transaction from './Transaction.svelte';
 	import type { FeedTx, FeedBlock } from '../types';
 
 	const MAX_AGE_MS = 600_000;
 	const MAX_BLOCKS = 30;
-
-	// Crossfade for tx moving from mempool to block
-	const [send, receive] = crossfade({
-		duration: 400,
-		easing: quintOut,
-		fallback(node) {
-			const style = getComputedStyle(node);
-			const transform = style.transform === 'none' ? '' : style.transform;
-			return {
-				duration: 300,
-				easing: quintOut,
-				css: (t) => `
-					transform: ${transform} scale(${t});
-					opacity: ${t}
-				`,
-			};
-		},
-	});
 
 	// Clean up old items periodically
 	$effect(() => {
@@ -76,21 +57,21 @@
 		return blks;
 	});
 
-	// Export send/receive for Block component
-	export { send, receive };
 </script>
 
 <div class="feed">
-	<div class="mempool-txs">
-		{#each sortedTxs as tx (tx.hash)}
-			<div animate:flip={{ duration: 300 }} in:receive={{ key: tx.hash }} out:send={{ key: tx.hash }}>
-				<Transaction {tx} />
-			</div>
-		{/each}
-	</div>
+	{#if sortedTxs.length > 0}
+		<div class="mempool-section">
+			<BinPackGrid items={sortedTxs} key={(tx) => tx.hash} itemWidth={180} gap={8}>
+				{#snippet children(tx)}
+					<Transaction {tx} />
+				{/snippet}
+			</BinPackGrid>
+		</div>
+	{/if}
 	{#each sortedBlocks as block (block.hash)}
 		<div animate:flip={{ duration: 300 }}>
-			<Block {block} {send} {receive} />
+			<Block {block} />
 		</div>
 	{/each}
 </div>
@@ -106,10 +87,7 @@
 		gap: 8px;
 	}
 
-	.mempool-txs {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 8px;
-		justify-content: center;
+	.mempool-section {
+		width: 100%;
 	}
 </style>
