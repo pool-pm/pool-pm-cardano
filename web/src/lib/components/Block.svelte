@@ -5,6 +5,9 @@
 
 	let { block }: { block: FeedBlock } = $props();
 
+	const TX_WIDTH = 180;
+	const GAP = 6;
+
 	function blockColor(hash: string): string {
 		return '#' + hash.slice(0, 6);
 	}
@@ -20,9 +23,13 @@
 
 	// Reverse order: first tx in block appears last visually
 	const reversedTxs = $derived([...block.txs].reverse());
+
+	// Compute ideal width for a square-ish layout
+	const idealCols = $derived(Math.max(1, Math.ceil(Math.sqrt(reversedTxs.length))));
+	const idealWidth = $derived(idealCols * TX_WIDTH + (idealCols - 1) * GAP + 20); // +20 for padding
 </script>
 
-<div class="block-card" style="border-color: {color}">
+<div class="block-card" style="border-color: {color}; max-width: {idealWidth}px">
 	<div class="block-header">
 		<span class="block-number" style="color: {color}">
 			#{block.number}
@@ -32,7 +39,7 @@
 	</div>
 
 	{#if reversedTxs.length > 0}
-		<BinPackGrid items={reversedTxs} key={(tx) => tx.hash} itemWidth={180} gap={6}>
+		<BinPackGrid items={reversedTxs} key={(tx) => tx.hash} itemWidth={TX_WIDTH} gap={GAP}>
 			{#snippet children(tx)}
 				<Transaction {tx} />
 			{/snippet}
@@ -51,6 +58,7 @@
 		border-radius: 8px;
 		padding: 10px;
 		width: 100%;
+		margin: 0 auto;
 		display: flex;
 		flex-direction: column;
 	}
