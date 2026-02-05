@@ -6,62 +6,28 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 use tracing::info;
-use url::Url;
 
-use crate::dbsync::DbSync;
-use crate::event::{AssetInfo, Event, TxInput, TxOutputInfo};
+use crate::event::{AssetInfo, Event, TxOutputInfo};
 use crate::model::asset_fingerprint;
 use crate::state::State;
 
-async fn extract_tx(
-    tx: &MultiEraTx<'_>,
-    state_lock: &Arc<RwLock<State>>,
-    db: &DbSync,
-) -> Event {
+async fn extract_tx(tx: &MultiEraTx<'_>, state_lock: &Arc<RwLock<State>>) -> Event {
     let hash = tx.hash().to_string();
     let fee = tx.fee().unwrap_or(0);
     let size = tx.size();
 
-    // Collect raw input refs
-    let raw_inputs: Vec<_> = tx
-        .inputs()
-        .iter()
-        .map(|i| (i.hash().as_ref().to_vec(), i.index() as i16))
-        .collect();
-
-    // Phase 1: resolve from in-memory state (single read lock)
-    let mut resolved: Vec<Option<TxInput>> = {
+    let inputs = {
         let state = state_lock.read().await;
-        raw_inputs
-            .iter()
-            .map(|(tx_hash, idx)| {
-                state.resolve_input(tx_hash, *idx).map(|u| TxInput {
-                    address: pallas::ledger::addresses::Address::from_bytes(&u.address)
-                        .ok()
-                        .and_then(|a| a.to_bech32().ok()),
-                    lovelace: u.lovelaces.try_into().ok().unwrap_or(0),
-                })
-            })
-            .collect()
-    };
-
-    // Phase 2: db-sync fallback for unresolved inputs
-    for (i, result) in resolved.iter_mut().enumerate() {
-        if result.is_none() {
-            let (tx_hash, idx) = &raw_inputs[i];
-            if let Ok(Some((address, value))) = db.resolve_utxo(tx_hash, *idx).await {
-                *result = Some(TxInput {
-                    address: Some(address),
-                    lovelace: value.try_into().ok().unwrap_or(0),
-                });
-            }
+        let mut inputs = Vec::new();
+        for input in tx.inputs() {
+            inputs.push(
+                state
+                    .resolve_input(input.hash().as_ref(), input.index() as i16)
+                    .await,
+            );
         }
-    }
-
-    let inputs: Vec<TxInput> = resolved
-        .into_iter()
-        .map(|r| r.unwrap_or(TxInput { address: None, lovelace: 0 }))
-        .collect();
+        inputs
+    };
 
     let outputs: Vec<TxOutputInfo> = tx
         .outputs()
@@ -111,7 +77,6 @@ async fn extract_tx(
 
 pub struct Worker {
     client: NodeClient,
-    db: DbSync,
     pending: HashMap<String, ()>,
 }
 
@@ -122,12 +87,8 @@ impl gasket::framework::Worker<Stage> for Worker {
             .await
             .or_retry()?;
 
-        let url = Url::parse(&stage.config.db_url).or_panic()?;
-        let db = DbSync::new(&url).await.or_retry()?;
-
         Ok(Self {
             client,
-            db,
             pending: HashMap::new(),
         })
     }
@@ -149,7 +110,7 @@ impl gasket::framework::Worker<Stage> for Worker {
             let hash = tx.hash().to_string();
 
             if !self.pending.contains_key(&hash) {
-                let event = extract_tx(&tx, &stage.state, &self.db).await;
+                let event = extract_tx(&tx, &stage.state).await;
                 let _ = stage.event_tx.send(event);
 
                 info!(
@@ -193,7 +154,6 @@ pub struct Stage {
 pub struct Config {
     pub socket_path: PathBuf,
     pub magic: u64,
-    pub db_url: String,
 }
 
 pub fn bootstrapper(

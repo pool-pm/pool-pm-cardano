@@ -3,6 +3,7 @@ use oura::{cursor, framework::*, sources};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::{broadcast, RwLock};
 use tracing::info;
+use url::Url;
 
 use crate::args::{Args, Metrics};
 use crate::event::Event;
@@ -80,21 +81,18 @@ pub fn run(args: Args) -> Result<(), Error> {
     setup_tracing(args.verbose);
 
     let (event_tx, _) = broadcast::channel::<Event>(4096);
-    let state = Arc::new(RwLock::new(State::new()));
+    let db_url = Url::parse(&args.db.replace("NETWORK", &args.network.to_string()))
+        .expect("invalid database URL");
+    let state = Arc::new(RwLock::new(State::new(db_url)));
 
     let listen = args.listen;
 
     let source_config = sources::Config::N2C(sources::n2c::Config {
         socket_path: args.socket.clone(),
     });
-    let db_url = args.db.replace("NETWORK", &args.network.to_string());
-    let sink_config = sink::Config {
-        db_url: db_url.clone(),
-    };
     let mempool_config = mempool::Config {
         socket_path: args.socket.clone(),
         magic: args.network.magic(),
-        db_url,
     };
 
     let cursor_config = cursor::file::Config {
@@ -111,7 +109,7 @@ pub fn run(args: Args) -> Result<(), Error> {
     };
 
     let source = source_config.bootstrapper(&ctx)?;
-    let sink = sink::bootstrapper(sink_config, &ctx, event_tx.clone(), state.clone())?;
+    let sink = sink::bootstrapper(&ctx, event_tx.clone(), state.clone())?;
     let cursor = cursor::Bootstrapper::File(cursor_config.bootstrapper(&ctx)?);
     let mempool = mempool::bootstrapper(mempool_config, event_tx.clone(), state.clone());
     let retries = define_gasket_policy();

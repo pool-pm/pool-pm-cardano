@@ -1,6 +1,9 @@
 use imbl::{hashmap::HashMap, hashset::HashSet};
 use sqlx::types::Decimal;
+use url::Url;
 
+use crate::dbsync::DbSync;
+use crate::event::TxInput;
 use crate::model::{Pool, TxOutput};
 
 pub struct BlockSnapshot {
@@ -15,13 +18,24 @@ pub struct BlockSnapshot {
 
 pub struct State {
     history: Vec<BlockSnapshot>,
+    db_url: Url,
+    db: tokio::sync::OnceCell<DbSync>,
 }
 
 impl State {
-    pub fn new() -> Self {
+    pub fn new(db_url: Url) -> Self {
         Self {
             history: Vec::new(),
+            db_url,
+            db: tokio::sync::OnceCell::new(),
         }
+    }
+
+    async fn db(&self) -> Option<&DbSync> {
+        self.db
+            .get_or_try_init(|| async { DbSync::new(&self.db_url).await })
+            .await
+            .ok()
     }
 
     pub fn current(&self) -> Option<&BlockSnapshot> {
@@ -29,27 +43,40 @@ impl State {
     }
 
     /// Initialize state from db-sync data at a given reset point.
-    /// Replaces all history with a single snapshot.
-    pub fn reset(
-        &mut self,
-        slot: u64,
-        height: u64,
-        utxos: HashMap<(Vec<u8>, i16), TxOutput>,
-        pools: HashMap<String, Pool>,
-        delegations: HashMap<Vec<u8>, Vec<u8>>,
-        delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
-        stakes: HashMap<Vec<u8>, Decimal>,
-    ) {
+    /// Fetches pools and delegations from db-sync, replaces all history
+    /// with a single snapshot.
+    pub async fn reset(&mut self, slot: u64) -> Result<(), sqlx::Error> {
+        let db = self
+            .db
+            .get_or_try_init(|| async { DbSync::new(&self.db_url).await })
+            .await?;
+
+        let last_tx_id = db.last_slot_tx_id(slot).await?;
+
+        tracing::info!("Fetching pools...");
+        let pools = db.pools(last_tx_id).await?;
+        tracing::info!("{} pools retrieved", pools.len());
+
+        tracing::info!("Fetching delegations...");
+        let (delegations, delegators) = db.delegations(last_tx_id).await?;
+        tracing::info!(
+            "{} delegations in {} pools retrieved",
+            delegations.len(),
+            delegators.len()
+        );
+
         self.history.clear();
         self.history.push(BlockSnapshot {
-            height,
+            height: 0,
             slot,
-            utxos,
+            utxos: HashMap::new(),
             pools,
             delegations,
             delegators,
-            stakes,
+            stakes: HashMap::new(),
         });
+
+        Ok(())
     }
 
     /// Apply a new block: clone current snapshot (O(1) structural sharing),
@@ -98,9 +125,31 @@ impl State {
         self.history.truncate(keep);
     }
 
-    /// Look up a UTXO by (tx_hash, output_index) in the current snapshot.
-    pub fn resolve_input(&self, tx_hash: &[u8], index: i16) -> Option<&TxOutput> {
-        self.current()
+    /// Resolve an input by (tx_hash, output_index): check in-memory UTXOs first,
+    /// then fall back to db-sync.
+    pub async fn resolve_input(&self, tx_hash: &[u8], index: i16) -> TxInput {
+        if let Some(utxo) = self
+            .current()
             .and_then(|s| s.utxos.get(&(tx_hash.to_vec(), index)))
+        {
+            return TxInput {
+                address: pallas::ledger::addresses::Address::from_bytes(&utxo.address)
+                    .ok()
+                    .and_then(|a| a.to_bech32().ok()),
+                lovelace: utxo.lovelaces.try_into().ok().unwrap_or(0),
+            };
+        }
+        if let Some(db) = self.db().await {
+            if let Ok(Some((address, value))) = db.resolve_utxo(tx_hash, index).await {
+                return TxInput {
+                    address: Some(address),
+                    lovelace: value.try_into().ok().unwrap_or(0),
+                };
+            }
+        }
+        TxInput {
+            address: None,
+            lovelace: 0,
+        }
     }
 }

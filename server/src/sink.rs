@@ -1,53 +1,27 @@
 use gasket::framework::*;
-use imbl::hashmap::HashMap;
 use oura::framework::*;
 use pallas::ledger::traverse::MultiEraBlock;
 use pallas::network::miniprotocols::Point;
-use serde::Deserialize;
 use sqlx::types::Decimal;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
-use url::Url;
 
-use crate::dbsync::DbSync;
 use crate::event::Event;
 use crate::model::TxOutput;
 use crate::state::State;
 
 pub struct Worker {
-    db: DbSync,
     chain: ChainConfig,
 }
 
 impl Worker {
     async fn handle_reset(&mut self, point: &Point, stage: &Stage) -> Result<(), WorkerError> {
         let slot = point.slot_or_default();
-        let last_tx_id = self.db.last_slot_tx_id(slot).await.or_panic()?;
-
-        info!("Fetching pools...");
-        let pools = self.db.pools(last_tx_id).await.or_panic()?;
-        info!("{} pools retrieved", pools.len());
-
-        info!("Fetching delegations...");
-        let (delegations, delegators) = self.db.delegations(last_tx_id).await.or_panic()?;
-        info!(
-            "{} delegations in {} pools retrieved",
-            delegations.len(),
-            delegators.len()
-        );
 
         {
             let mut state = stage.state.write().await;
-            state.reset(
-                slot,
-                0,
-                HashMap::new(),
-                pools,
-                delegations,
-                delegators,
-                HashMap::new(),
-            );
+            state.reset(slot).await.or_panic()?;
         }
 
         let _ = stage.event_tx.send(Event::Rollback { slot });
@@ -115,10 +89,7 @@ impl Worker {
 #[async_trait::async_trait(?Send)]
 impl gasket::framework::Worker<Stage> for Worker {
     async fn bootstrap(stage: &Stage) -> Result<Self, WorkerError> {
-        let url = Url::parse(&stage.config.db_url).or_panic()?;
-
         Ok(Self {
-            db: DbSync::new(&url).await.or_retry()?,
             chain: stage.chain.clone(),
         })
     }
@@ -158,7 +129,6 @@ impl gasket::framework::Worker<Stage> for Worker {
 #[derive(Stage)]
 #[stage(name = "sink-fetcher", unit = "ChainEvent", worker = "Worker")]
 pub struct Stage {
-    config: Config,
     chain: ChainConfig,
     event_tx: broadcast::Sender<Event>,
     state: Arc<RwLock<State>>,
@@ -173,19 +143,12 @@ pub struct Stage {
     latest_block: gasket::metrics::Gauge,
 }
 
-#[derive(Default, Debug, Deserialize)]
-pub struct Config {
-    pub db_url: String,
-}
-
 pub fn bootstrapper(
-    config: Config,
     context: &Context,
     event_tx: broadcast::Sender<Event>,
     state: Arc<RwLock<State>>,
 ) -> Result<Stage, Error> {
     Ok(Stage {
-        config,
         chain: context.chain.clone(),
         event_tx,
         state,
