@@ -95,7 +95,6 @@
 	<div class="addr-list">
 		{#each tx.inputs.slice(0, 3) as input}
 			<div class="addr-item">
-				<span class="ada mono">{formatAda(input.lovelace)}</span>
 				<span class="addr mono">{input.address ? truncateAddr(input.address) : '???'}</span>
 			</div>
 		{/each}
