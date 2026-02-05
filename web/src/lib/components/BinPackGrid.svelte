@@ -32,35 +32,31 @@
 
 		const newPositions = new Map<string, { x: number; y: number }>();
 		const colHeights = new Array(colCount).fill(0);
-		let maxColUsed = 0;
 
-		// First pass: calculate positions relative to column 0
-		for (const item of items) {
+		// Column-major layout: fill columns left-to-right, items top-to-bottom within each column
+		// This preserves order: most recent at top-left, oldest at bottom-right
+		const rowsPerCol = Math.ceil(items.length / colCount);
+
+		for (let i = 0; i < items.length; i++) {
+			const item = items[i];
 			const k = key(item);
 			const el = itemRefs.get(k);
 			if (!el) continue;
 
 			const height = el.offsetHeight;
 
-			// Find column with minimum height
-			let minCol = 0;
-			for (let c = 1; c < colCount; c++) {
-				if (colHeights[c] < colHeights[minCol]) {
-					minCol = c;
-				}
-			}
+			// Column-major assignment: item i goes to column floor(i / rowsPerCol)
+			const col = Math.floor(i / rowsPerCol);
 
-			maxColUsed = Math.max(maxColUsed, minCol);
-
-			const x = minCol * (itemWidth + gap);
-			const y = colHeights[minCol];
+			const x = col * (itemWidth + gap);
+			const y = colHeights[col];
 
 			newPositions.set(k, { x, y });
-			colHeights[minCol] = y + height + gap;
+			colHeights[col] = y + height + gap;
 		}
 
 		// Calculate actual grid width and center offset
-		const actualCols = maxColUsed + 1;
+		const actualCols = Math.min(colCount, Math.ceil(items.length / rowsPerCol));
 		const actualGridWidth = actualCols * itemWidth + (actualCols - 1) * gap;
 		const actualOffsetX = Math.max(0, (containerWidth - actualGridWidth) / 2);
 
