@@ -23,9 +23,15 @@
 
 	// Reverse order: first tx in block appears last visually
 	const reversedTxs = $derived([...block.txs].reverse());
+
+	// Compute ideal width for a square-ish layout
+	// Each tx card is ~180px + 6px gap, we want cols ≈ rows
+	const TX_WIDTH = 186; // 180px card + 6px gap
+	const idealCols = $derived(Math.max(1, Math.ceil(Math.sqrt(reversedTxs.length))));
+	const idealWidth = $derived(idealCols * TX_WIDTH + 20); // +20 for padding
 </script>
 
-<div class="block-card" style="border-color: {color}">
+<div class="block-card" style="border-color: {color}; --ideal-width: {idealWidth}px">
 	<div class="block-header">
 		<span class="block-number" style="color: {color}">
 			#{block.number}
@@ -55,10 +61,7 @@
 		border: 2px solid;
 		border-radius: 8px;
 		padding: 10px;
-		aspect-ratio: 1 / 1;
-		max-width: 100%;
-		width: fit-content;
-		min-width: 200px;
+		width: min(var(--ideal-width), 100%);
 		display: flex;
 		flex-direction: column;
 	}
@@ -101,9 +104,6 @@
 		flex-wrap: wrap;
 		gap: 6px;
 		justify-content: center;
-		align-content: flex-start;
-		flex: 1;
-		overflow: hidden;
 	}
 
 	.muted {
