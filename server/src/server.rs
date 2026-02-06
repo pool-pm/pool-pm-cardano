@@ -25,7 +25,14 @@ async fn events(
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let (snapshot, rx) = bus.subscribe().await;
 
-    let replay = futures::stream::iter(snapshot.into_iter().filter_map(serialize_event));
+    let init = if snapshot.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&snapshot)
+            .ok()
+            .map(|json| Ok(SseEvent::default().data(json)))
+    };
+    let replay = futures::stream::iter(init);
     let live = BroadcastStream::new(rx).filter_map(|result| result.ok().and_then(serialize_event));
     let stream = replay.chain(live);
 
