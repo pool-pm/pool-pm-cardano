@@ -1,6 +1,7 @@
 <script lang="ts" generics="T">
 	import { onMount, tick, untrack } from 'svelte';
 	import { flip } from 'svelte/animate';
+	import { FLIP_DURATION } from '../layout';
 
 	type Props = {
 		items: T[];
@@ -122,7 +123,7 @@
 <div
 	class="bin-pack-container"
 	bind:this={container}
-	style="height: {containerHeight}px; --item-width: {itemWidth}px"
+	style="height: {containerHeight}px; --item-width: {itemWidth}px; --flip-duration: {FLIP_DURATION}ms"
 >
 	{#each items as item (key(item))}
 		{@const k = key(item)}
@@ -132,7 +133,7 @@
 			class="bin-pack-item"
 			style="transform: translate({pos?.x ?? defaultX}px, {pos?.y ?? 0}px)"
 			use:registerRef={{ k, register: registerItem, unregister: unregisterItem }}
-			animate:flip={{ duration: 300 }}
+			animate:flip={{ duration: FLIP_DURATION }}
 		>
 			{@render children(item)}
 		</div>
@@ -162,6 +163,6 @@
 	.bin-pack-item {
 		position: absolute;
 		width: var(--item-width);
-		transition: transform 0.3s ease;
+		transition: transform var(--flip-duration) ease;
 	}
 </style>

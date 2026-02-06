@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { flip } from 'svelte/animate';
 	import { sections } from '../stores';
-	import { TX_WIDTH, TX_GAP, squareWidth } from '../layout';
+	import { TX_WIDTH, TX_GAP, FLIP_DURATION, squareWidth } from '../layout';
 	import BinPackGrid from './BinPackGrid.svelte';
 	import Transaction from './Transaction.svelte';
 	import type { Section } from '../types';
@@ -85,7 +85,7 @@
 			style:border-color={color}
 			style:max-width="{maxWidth}px"
 			style:margin-top="{gap}px"
-			animate:flip={{ duration: 300 }}
+			animate:flip={{ duration: FLIP_DURATION }}
 		>
 			{#if section.block}
 				<div class="block-header">
