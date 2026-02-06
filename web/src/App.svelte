@@ -13,6 +13,5 @@
 </script>
 
 <main>
-	<h1>pool.pm</h1>
 	<Feed />
 </main>
