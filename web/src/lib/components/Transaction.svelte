@@ -49,21 +49,6 @@
 </script>
 
 <div class="tx-card">
-	<div class="tx-hash mono">{truncateHash(tx.hash)}</div>
-
-	<div class="addr-list">
-		{#each tx.inputs.slice(0, 3) as input}
-			<div class="addr-item">
-				<span class="addr mono">{input.address ? truncateAddr(input.address) : '???'}</span>
-			</div>
-		{/each}
-		{#if tx.inputs.length > 3}
-			<div class="addr-item muted mono">+{tx.inputs.length - 3} more</div>
-		{/if}
-	</div>
-
-	<div class="arrow">↓</div>
-
 	<div class="addr-list">
 		{#each filteredOutputs.slice(0, 3) as output}
 			<div class="addr-item">
@@ -93,6 +78,21 @@
 			<div class="addr-item muted mono">({changeCount} change)</div>
 		{/if}
 	</div>
+
+	<div class="arrow">↑</div>
+
+	<div class="addr-list">
+		{#each tx.inputs.slice(0, 3) as input}
+			<div class="addr-item">
+				<span class="addr mono">{input.address ? truncateAddr(input.address) : '???'}</span>
+			</div>
+		{/each}
+		{#if tx.inputs.length > 3}
+			<div class="addr-item muted mono">+{tx.inputs.length - 3} more</div>
+		{/if}
+	</div>
+
+	<div class="tx-hash mono">{truncateHash(tx.hash)}</div>
 </div>
 
 <style>
@@ -108,7 +108,7 @@
 
 	.tx-hash {
 		color: var(--accent);
-		margin-bottom: 6px;
+		margin-top: 6px;
 	}
 
 	.addr-list {
