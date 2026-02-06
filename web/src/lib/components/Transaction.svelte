@@ -108,8 +108,7 @@
 
 <style>
 	.tx-card {
-		background: black;
-		border: 1px solid black;
+		background: rgb(0 0 0 / 0.5);
 		border-radius: 6px;
 		padding: 8px 10px;
 		width: 180px;
