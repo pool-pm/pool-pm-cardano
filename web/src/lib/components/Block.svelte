@@ -1,12 +1,10 @@
 <script lang="ts">
 	import type { FeedBlock } from '../types';
+	import { TX_WIDTH, TX_GAP, squareWidth } from '../layout';
 	import Transaction from './Transaction.svelte';
 	import BinPackGrid from './BinPackGrid.svelte';
 
 	let { block }: { block: FeedBlock } = $props();
-
-	const TX_WIDTH = 180;
-	const GAP = 6;
 
 	function blockColor(hash: string): string {
 		return '#' + hash.slice(0, 6);
@@ -21,12 +19,8 @@
 
 	const color = $derived(blockColor(block.hash));
 
-	// Reverse order: first tx in block appears last visually
-	const reversedTxs = $derived([...block.txs].reverse());
-
-	// Compute ideal width for a square-ish layout
-	const idealCols = $derived(Math.max(1, Math.ceil(Math.sqrt(reversedTxs.length))));
-	const idealWidth = $derived(idealCols * TX_WIDTH + (idealCols - 1) * GAP + 20); // +20 for padding
+	// Compute ideal width for a square-ish layout (+20 for card padding)
+	const idealWidth = $derived(squareWidth(block.txs.length) + 20);
 </script>
 
 <div class="block-card" style="border-color: {color}; max-width: {idealWidth}px">
@@ -38,8 +32,8 @@
 		<span class="block-time">{timeAgo(block.timestamp)}</span>
 	</div>
 
-	{#if reversedTxs.length > 0}
-		<BinPackGrid items={reversedTxs} key={(tx) => tx.hash} itemWidth={TX_WIDTH} gap={GAP}>
+	{#if block.txs.length > 0}
+		<BinPackGrid items={block.txs} key={(tx) => tx.hash} itemWidth={TX_WIDTH} gap={TX_GAP} crossAnimate>
 			{#snippet children(tx)}
 				<Transaction {tx} />
 			{/snippet}

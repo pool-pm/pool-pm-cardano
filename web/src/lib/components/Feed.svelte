@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { flip } from 'svelte/animate';
 	import { mempoolTxs, blocks } from '../stores';
+	import { TX_WIDTH, TX_GAP, squareWidth } from '../layout';
 	import Block from './Block.svelte';
 	import BinPackGrid from './BinPackGrid.svelte';
 	import Transaction from './Transaction.svelte';
@@ -50,12 +51,7 @@
 		return txs;
 	});
 
-	const TX_WIDTH = 180;
-	const TX_GAP = 8;
-
-	// Compute ideal width for a square-ish mempool layout
-	const mempoolCols = $derived(Math.max(1, Math.ceil(Math.sqrt(sortedTxs.length))));
-	const mempoolMaxWidth = $derived(mempoolCols * TX_WIDTH + (mempoolCols - 1) * TX_GAP);
+	const mempoolMaxWidth = $derived(squareWidth(sortedTxs.length));
 
 	// Blocks sorted newest first
 	let sortedBlocks: FeedBlock[] = $derived.by(() => {
@@ -69,7 +65,7 @@
 <div class="feed">
 	{#if sortedTxs.length > 0}
 		<div class="mempool-section" style="max-width: {mempoolMaxWidth}px">
-			<BinPackGrid items={sortedTxs} key={(tx) => tx.hash} itemWidth={TX_WIDTH} gap={TX_GAP}>
+			<BinPackGrid items={sortedTxs} key={(tx) => tx.hash} itemWidth={TX_WIDTH} gap={TX_GAP} crossAnimate>
 				{#snippet children(tx)}
 					<Transaction {tx} />
 				{/snippet}
