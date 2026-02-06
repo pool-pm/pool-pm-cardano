@@ -76,6 +76,7 @@
 								src={nftcdnUrl(asset)}
 								alt={asset.fingerprint}
 								loading="lazy"
+								onerror={(e: Event) => (e.target as HTMLElement).remove()}
 							/>
 						{/each}
 					</div>
