@@ -15,6 +15,7 @@ export interface TxOutputInfo {
 
 export interface AssetInfo {
 	fingerprint: string;
+	name?: string;
 	quantity: string;
 	tk?: string;
 }

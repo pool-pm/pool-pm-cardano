@@ -63,9 +63,14 @@ pub async fn extract_tx(
                         .iter()
                         .filter_map(|asset| {
                             let fingerprint = asset_fingerprint(&policy_id, asset.name());
+                            let name = std::str::from_utf8(asset.name())
+                                .ok()
+                                .filter(|s| !s.is_empty())
+                                .map(String::from);
                             let tk = nftcdn.compute_tk(&fingerprint, "preview", 128);
                             Some(AssetInfo {
                                 fingerprint,
+                                name,
                                 quantity: asset.output_coin()?,
                                 tk,
                             })

@@ -82,6 +82,9 @@
 									loading="lazy"
 									onerror={(e: Event) => (e.target as HTMLElement).parentElement!.remove()}
 								/>
+								{#if asset.name}
+									<span class="asset-name">{asset.name}</span>
+								{/if}
 							</div>
 						{/each}
 					</div>
@@ -174,6 +177,15 @@
 	.asset-qty {
 		font-size: 9px;
 		color: var(--text-muted);
+	}
+
+	.asset-name {
+		font-size: 9px;
+		color: var(--text-muted);
+		max-width: 64px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.asset-thumb {

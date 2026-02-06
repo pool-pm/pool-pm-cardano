@@ -52,6 +52,8 @@ pub struct TxOutputInfo {
 #[derive(Clone, Serialize)]
 pub struct AssetInfo {
     pub fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(with = "string")]
     pub quantity: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
