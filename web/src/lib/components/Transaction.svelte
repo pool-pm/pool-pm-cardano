@@ -50,13 +50,13 @@
 
 <div class="tx-card">
 	<div class="addr-list">
-		{#each filteredOutputs.slice(0, 3) as output}
+		{#each filteredOutputs as output}
 			<div class="addr-item">
 				<span class="ada mono">{formatAda(output.lovelace)}</span>
 				<span class="addr mono">{truncateAddr(output.address)}</span>
 				{#if output.assets.length > 0}
 					<div class="assets">
-						{#each output.assets.slice(0, 4) as asset}
+						{#each output.assets as asset}
 							<img
 								class="asset-thumb"
 								src="https://{asset.fingerprint}.preview.nftcdn.io/image?size=64"
@@ -64,16 +64,10 @@
 								loading="lazy"
 							/>
 						{/each}
-						{#if output.assets.length > 4}
-							<span class="muted">+{output.assets.length - 4}</span>
-						{/if}
 					</div>
 				{/if}
 			</div>
 		{/each}
-		{#if filteredOutputs.length > 3}
-			<div class="addr-item muted mono">+{filteredOutputs.length - 3} more</div>
-		{/if}
 		{#if changeCount > 0 && filteredOutputs.length === 0}
 			<div class="addr-item muted mono">({changeCount} change)</div>
 		{/if}
@@ -82,14 +76,11 @@
 	<div class="arrow">↑</div>
 
 	<div class="addr-list">
-		{#each tx.inputs.slice(0, 3) as input}
+		{#each tx.inputs as input}
 			<div class="addr-item">
 				<span class="addr mono">{input.address ? truncateAddr(input.address) : '???'}</span>
 			</div>
 		{/each}
-		{#if tx.inputs.length > 3}
-			<div class="addr-item muted mono">+{tx.inputs.length - 3} more</div>
-		{/if}
 	</div>
 
 	<div class="tx-hash mono">{truncateHash(tx.hash)}</div>
