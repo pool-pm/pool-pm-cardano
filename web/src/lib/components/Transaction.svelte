@@ -21,11 +21,14 @@
 		return a;
 	}
 
-	function formatAda(lovelace: number): string {
-		const ada = lovelace / 1_000_000;
-		if (ada >= 1000) return Math.floor(ada).toLocaleString() + ' ADA';
-		if (ada >= 1) return ada.toFixed(2) + ' ADA';
-		return ada.toFixed(6) + ' ADA';
+	function formatAda(lovelace: string): string {
+		const padded = lovelace.padStart(7, '0');
+		const whole = padded.slice(0, -6) || '0';
+		const frac = padded.slice(-6);
+		const wholeNum = Number(whole);
+		if (wholeNum >= 1000) return wholeNum.toLocaleString() + ' ADA';
+		if (wholeNum >= 1) return whole + '.' + frac.slice(0, 2) + ' ADA';
+		return '0.' + frac + ' ADA';
 	}
 
 	// Filter outputs: exclude those going back to a source address (change)

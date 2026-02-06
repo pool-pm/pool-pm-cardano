@@ -1,34 +1,29 @@
 export interface TxInput {
 	address: string | null;
-	lovelace: number;
+	lovelace: string;
 }
 
 export interface TxOutputInfo {
 	address: string;
-	lovelace: number;
+	lovelace: string;
 	assets: AssetInfo[];
 }
 
 export interface AssetInfo {
 	fingerprint: string;
-	quantity: number;
+	quantity: string;
 }
 
 export interface BlockTx {
 	hash: string;
-	fee: number;
+	fee: string;
 	size: number;
 	inputs: TxInput[];
 	outputs: TxOutputInfo[];
 }
 
-export interface MempoolTxEvent {
+export interface MempoolTxEvent extends BlockTx {
 	type: 'MempoolTx';
-	hash: string;
-	fee: number;
-	size: number;
-	inputs: TxInput[];
-	outputs: TxOutputInfo[];
 }
 
 export interface BlockEvent {

@@ -1,8 +1,17 @@
 use serde::Serialize;
 
+mod string {
+    use serde::Serializer;
+
+    pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&value.to_string())
+    }
+}
+
 #[derive(Clone, Serialize)]
 pub struct BlockTx {
     pub hash: String,
+    #[serde(with = "string")]
     pub fee: u64,
     pub size: usize,
     pub inputs: Vec<TxInput>,
@@ -28,12 +37,14 @@ pub enum Event {
 #[derive(Clone, Serialize)]
 pub struct TxInput {
     pub address: Option<String>,
+    #[serde(with = "string")]
     pub lovelace: u64,
 }
 
 #[derive(Clone, Serialize)]
 pub struct TxOutputInfo {
     pub address: String,
+    #[serde(with = "string")]
     pub lovelace: u64,
     pub assets: Vec<AssetInfo>,
 }
@@ -41,5 +52,6 @@ pub struct TxOutputInfo {
 #[derive(Clone, Serialize)]
 pub struct AssetInfo {
     pub fingerprint: String,
+    #[serde(with = "string")]
     pub quantity: u64,
 }
