@@ -41,3 +41,12 @@ export function paymentCredential(addr: string): string | null {
 		.map((b) => b.toString(16).padStart(2, '0'))
 		.join('');
 }
+
+// Extract stake credential (bytes 29-56) as hex
+export function stakeCredential(addr: string): string | null {
+	const bytes = bech32Decode(addr);
+	if (!bytes || bytes.length < 57) return null;
+	return Array.from(bytes.slice(29, 57))
+		.map((b) => b.toString(16).padStart(2, '0'))
+		.join('');
+}

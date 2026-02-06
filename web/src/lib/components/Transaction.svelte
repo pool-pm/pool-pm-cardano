@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { AssetInfo, FeedTx, TxOutputInfo } from '../types';
-	import { paymentCredential } from '../bech32';
+	import { paymentCredential, stakeCredential } from '../bech32';
 	import { config } from '../stores';
 
 	let { tx }: { tx: FeedTx } = $props();
@@ -47,9 +47,20 @@
 				.map((i) => (i.address ? paymentCredential(i.address) : null))
 				.filter((x): x is string => x !== null)
 		);
+		const inputStakes = new Set(
+			tx.inputs
+				.map((i) => (i.address ? stakeCredential(i.address) : null))
+				.filter((x): x is string => x !== null)
+		);
 		return tx.outputs.filter((o) => {
 			const cred = paymentCredential(o.address);
-			return cred === null || !inputPayments.has(cred);
+			if (cred !== null && inputPayments.has(cred)) return false;
+			// Likely change: same stake credential + many assets
+			if (o.assets.length > 4) {
+				const stake = stakeCredential(o.address);
+				if (stake !== null && inputStakes.has(stake)) return false;
+			}
+			return true;
 		});
 	});
 
