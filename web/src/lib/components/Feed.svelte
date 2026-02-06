@@ -9,6 +9,16 @@
 	const MAX_AGE_MS = 600_000;
 	const MAX_BLOCKS = 30;
 
+	let now = $state(Date.now());
+
+	// Update current time every second (for mempool-to-block gap)
+	$effect(() => {
+		const interval = setInterval(() => {
+			now = Date.now();
+		}, 1000);
+		return () => clearInterval(interval);
+	});
+
 	// Clean up old sections periodically
 	$effect(() => {
 		const interval = setInterval(() => {
@@ -56,14 +66,19 @@
 </script>
 
 <div class="feed">
-	{#each $sections as section (section.id)}
+	{#each $sections as section, i (section.id)}
 		{@const color = section.block ? blockColor(section.block.hash) : undefined}
 		{@const maxWidth = squareWidth(section.txs.length) + (section.block ? 20 : 0)}
+		{@const prevTimestamp = i === 1 ? now / 1000 : i > 1 ? $sections[i - 1].block?.timestamp : undefined}
+		{@const gap = prevTimestamp !== undefined && section.block
+			? Math.max(0, Math.floor(prevTimestamp - section.block.timestamp))
+			: 0}
 		<div
 			class="section"
 			class:block={!!section.block}
 			style:border-color={color}
 			style:max-width="{maxWidth}px"
+			style:margin-top="{gap}px"
 			animate:flip={{ duration: 300 }}
 		>
 			{#if section.block}
@@ -95,7 +110,6 @@
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 8px;
 	}
 
 	.section {
