@@ -4,10 +4,11 @@ use pallas::ledger::traverse::MultiEraBlock;
 use pallas::network::miniprotocols::Point;
 use sqlx::types::Decimal;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::event::Event;
+use crate::event_bus::EventBus;
 use crate::mempool::extract_tx;
 use crate::model::TxOutput;
 use crate::state::State;
@@ -23,7 +24,7 @@ impl Worker {
             state.reset(slot).await.or_panic()?;
         }
 
-        let _ = stage.event_tx.send(Event::Rollback { slot });
+        stage.event_bus.send(Event::Rollback { slot }).await;
 
         Ok(())
     }
@@ -78,13 +79,16 @@ impl Worker {
         }
 
         let tx_count = txs.len();
-        let _ = stage.event_tx.send(Event::Block {
-            slot,
-            hash: block_hash,
-            number: height,
-            timestamp,
-            txs,
-        });
+        stage
+            .event_bus
+            .send(Event::Block {
+                slot,
+                hash: block_hash,
+                number: height,
+                timestamp,
+                txs,
+            })
+            .await;
 
         info!(slot, height, tx_count, "apply block");
 
@@ -134,7 +138,7 @@ impl gasket::framework::Worker<Stage> for Worker {
 #[stage(name = "sink-fetcher", unit = "ChainEvent", worker = "Worker")]
 pub struct Stage {
     genesis: GenesisValues,
-    event_tx: broadcast::Sender<Event>,
+    event_bus: Arc<EventBus>,
     state: Arc<RwLock<State>>,
 
     pub input: MapperInputPort,
@@ -149,12 +153,12 @@ pub struct Stage {
 
 pub fn bootstrapper(
     context: &Context,
-    event_tx: broadcast::Sender<Event>,
+    event_bus: Arc<EventBus>,
     state: Arc<RwLock<State>>,
 ) -> Result<Stage, Error> {
     Ok(Stage {
         genesis: GenesisValues::from(context.chain.clone()),
-        event_tx,
+        event_bus,
         state,
         ops_count: Default::default(),
         latest_block: Default::default(),

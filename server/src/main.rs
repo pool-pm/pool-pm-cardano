@@ -7,6 +7,7 @@ mod args;
 mod chain;
 mod daemon;
 mod event;
+mod event_bus;
 mod mempool;
 mod model;
 mod server;

@@ -1,12 +1,12 @@
 use gasket::daemon::Daemon;
 use oura::{cursor, framework::*, sources};
 use std::{path::PathBuf, sync::Arc, time::Duration};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::RwLock;
 use tracing::info;
 use url::Url;
 
 use crate::args::{Args, Metrics};
-use crate::event::Event;
+use crate::event_bus::EventBus;
 use crate::mempool;
 use crate::server;
 use crate::sink;
@@ -80,7 +80,7 @@ async fn serve_prometheus(daemon: Arc<Daemon>, metrics: Option<Metrics>) -> Resu
 pub fn run(args: Args) -> Result<(), Error> {
     setup_tracing(args.verbose);
 
-    let (event_tx, _) = broadcast::channel::<Event>(4096);
+    let event_bus = Arc::new(EventBus::new(4096));
     let db_url = Url::parse(&args.db.replace("NETWORK", &args.network.to_string()))
         .expect("invalid database URL");
     let state = Arc::new(RwLock::new(State::new(db_url)));
@@ -109,9 +109,9 @@ pub fn run(args: Args) -> Result<(), Error> {
     };
 
     let source = source_config.bootstrapper(&ctx)?;
-    let sink = sink::bootstrapper(&ctx, event_tx.clone(), state.clone())?;
+    let sink = sink::bootstrapper(&ctx, event_bus.clone(), state.clone())?;
     let cursor = cursor::Bootstrapper::File(cursor_config.bootstrapper(&ctx)?);
-    let mempool = mempool::bootstrapper(mempool_config, event_tx.clone(), state.clone());
+    let mempool = mempool::bootstrapper(mempool_config, event_bus.clone(), state.clone());
     let retries = define_gasket_policy();
     let daemon = connect_stages(source, sink, cursor, mempool, retries)?;
 
@@ -128,7 +128,7 @@ pub fn run(args: Args) -> Result<(), Error> {
     let prometheus = tokio_rt.spawn(serve_prometheus(daemon.clone(), args.metrics));
 
     if let Some(addr) = listen {
-        tokio_rt.spawn(server::serve(addr, event_tx));
+        tokio_rt.spawn(server::serve(addr, event_bus));
     }
 
     daemon.block();

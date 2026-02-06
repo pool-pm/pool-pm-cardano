@@ -4,10 +4,11 @@ use pallas::ledger::traverse::MultiEraTx;
 use pallas::network::facades::NodeClient;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::event::{AssetInfo, BlockTx, Event, TxOutputInfo};
+use crate::event_bus::EventBus;
 use crate::model::asset_fingerprint;
 use crate::state::State;
 
@@ -109,7 +110,7 @@ impl gasket::framework::Worker<Stage> for Worker {
                 let state = stage.state.read().await;
                 let block_tx = extract_tx(&tx, &state).await;
                 drop(state);
-                let _ = stage.event_tx.send(Event::MempoolTx(block_tx));
+                stage.event_bus.send(Event::MempoolTx(block_tx)).await;
 
                 info!(
                     hash,
@@ -139,7 +140,7 @@ impl gasket::framework::Worker<Stage> for Worker {
 #[stage(name = "mempool-monitor", unit = "()", worker = "Worker")]
 pub struct Stage {
     config: Config,
-    event_tx: broadcast::Sender<Event>,
+    event_bus: Arc<EventBus>,
     state: Arc<RwLock<State>>,
 
     #[metric]
@@ -156,12 +157,12 @@ pub struct Config {
 
 pub fn bootstrapper(
     config: Config,
-    event_tx: broadcast::Sender<Event>,
+    event_bus: Arc<EventBus>,
     state: Arc<RwLock<State>>,
 ) -> Stage {
     Stage {
         config,
-        event_tx,
+        event_bus,
         state,
         pending_count: Default::default(),
         snapshots: Default::default(),
