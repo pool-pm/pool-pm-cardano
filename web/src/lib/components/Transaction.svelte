@@ -46,13 +46,18 @@
 
 	// Count hidden change outputs
 	let changeCount = $derived(tx.outputs.length - filteredOutputs.length);
+
+	// Deduplicate inputs by address
+	let uniqueInputs = $derived(
+		[...new Map(tx.inputs.map((i) => [i.address, i])).values()]
+	);
 </script>
 
 <div class="tx-card">
 	<div class="addr-list">
 		{#each filteredOutputs as output}
 			<div class="addr-item">
-				<span class="ada mono">{formatAda(output.lovelace)}</span>
+				<span class="ada">{formatAda(output.lovelace)}</span>
 				<span class="addr mono">{truncateAddr(output.address)}</span>
 				{#if output.assets.length > 0}
 					<div class="assets">
@@ -76,7 +81,7 @@
 	<div class="arrow">↑</div>
 
 	<div class="addr-list">
-		{#each tx.inputs as input}
+		{#each uniqueInputs as input}
 			<div class="addr-item">
 				<span class="addr mono">{input.address ? truncateAddr(input.address) : '???'}</span>
 			</div>
@@ -139,6 +144,7 @@
 
 	.assets {
 		display: flex;
+		flex-wrap: wrap;
 		gap: 2px;
 		margin-top: 2px;
 		justify-content: center;
