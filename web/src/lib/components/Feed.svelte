@@ -8,10 +8,11 @@
 
 	const MAX_AGE_MS = 600_000;
 	const MAX_BLOCKS = 30;
+	const PX_PER_SECOND = 3;
 
 	let now = $state(Date.now());
 
-	// Update current time every second (for mempool-to-block gap)
+	// Update current time every second — CSS transitions smooth the movement
 	$effect(() => {
 		const interval = setInterval(() => {
 			now = Date.now();
@@ -58,7 +59,7 @@
 	}
 
 	function timeAgo(timestamp: number): string {
-		const sec = Math.floor((Date.now() - timestamp * 1000) / 1000);
+		const sec = Math.floor((now - timestamp * 1000) / 1000);
 		if (sec < 60) return `${sec}s ago`;
 		if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
 		return `${Math.floor(sec / 3600)}h ago`;
@@ -71,7 +72,7 @@
 		{@const maxWidth = squareWidth(section.txs.length) + (section.block ? 20 : 0)}
 		{@const prevTimestamp = i === 1 ? now / 1000 : i > 1 ? $sections[i - 1].block?.timestamp : undefined}
 		{@const gap = prevTimestamp !== undefined && section.block
-			? Math.max(0, Math.floor(prevTimestamp - section.block.timestamp))
+			? Math.max(0, (prevTimestamp - section.block.timestamp) * PX_PER_SECOND)
 			: 0}
 		<div
 			class="section"
@@ -79,7 +80,7 @@
 			style:border-color={color}
 			style:max-width="{maxWidth}px"
 			style:margin-top="{gap}px"
-			animate:flip={{ duration: 300 }}
+			animate:flip={{ duration: 1000 }}
 		>
 			{#if section.block}
 				<div class="block-header">
