@@ -7,24 +7,39 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
 
-use crate::event::{AssetInfo, BlockTx, Event, TxOutputInfo};
+use crate::event::{AssetInfo, BlockTx, Event, TxInput, TxOutputInfo};
 use crate::event_bus::EventBus;
-use crate::model::asset_fingerprint;
+use crate::model::{asset_fingerprint, TxOutput};
 use crate::nftcdn::NftcdnConfig;
 use crate::state::State;
 
-pub async fn extract_tx(tx: &MultiEraTx<'_>, state: &State, nftcdn: &NftcdnConfig) -> BlockTx {
+pub async fn extract_tx(
+    tx: &MultiEraTx<'_>,
+    state: &State,
+    nftcdn: &NftcdnConfig,
+    block_utxos: &std::collections::HashMap<(Vec<u8>, i16), &TxOutput>,
+) -> BlockTx {
     let hash = tx.hash().to_string();
     let fee = tx.fee().unwrap_or(0);
     let size = tx.size();
 
     let mut inputs = Vec::new();
     for input in tx.inputs() {
-        inputs.push(
-            state
-                .resolve_input(input.hash().as_ref(), input.index() as i16)
-                .await,
-        );
+        let key = (input.hash().as_ref().to_vec(), input.index() as i16);
+        if let Some(utxo) = block_utxos.get(&key) {
+            inputs.push(TxInput {
+                address: pallas::ledger::addresses::Address::from_bytes(&utxo.address)
+                    .ok()
+                    .and_then(|a| a.to_bech32().ok()),
+                lovelace: utxo.lovelaces.try_into().ok().unwrap_or(0),
+            });
+        } else {
+            inputs.push(
+                state
+                    .resolve_input(input.hash().as_ref(), input.index() as i16)
+                    .await,
+            );
+        }
     }
 
     let outputs: Vec<TxOutputInfo> = tx
@@ -112,7 +127,7 @@ impl gasket::framework::Worker<Stage> for Worker {
 
             if !self.pending.contains(&hash) {
                 let state = stage.state.read().await;
-                let block_tx = extract_tx(&tx, &state, &stage.nftcdn).await;
+                let block_tx = extract_tx(&tx, &state, &stage.nftcdn, &Default::default()).await;
                 drop(state);
                 stage.event_bus.send(Event::MempoolTx(block_tx)).await;
 

@@ -60,12 +60,16 @@ impl Worker {
             }
         }
 
+        // Build lookup for intra-block UTXO resolution (chained txs within a block)
+        let produced_map: std::collections::HashMap<(Vec<u8>, i16), &TxOutput> =
+            produced.iter().map(|(k, v)| (k.clone(), v)).collect();
+
         // Extract full transaction data while consumed UTXOs still exist in state
         let txs = {
             let state = stage.state.read().await;
             let mut txs = Vec::new();
             for tx in block.txs() {
-                txs.push(extract_tx(&tx, &state, &stage.nftcdn).await);
+                txs.push(extract_tx(&tx, &state, &stage.nftcdn, &produced_map).await);
             }
             txs
         };
