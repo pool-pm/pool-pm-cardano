@@ -137,7 +137,7 @@ impl State {
             return TxInput {
                 address: pallas::ledger::addresses::Address::from_bytes(&utxo.address)
                     .ok()
-                    .and_then(|a| a.to_bech32().ok()),
+                    .map(|a| a.to_string()),
                 lovelace: utxo.lovelaces.try_into().ok().unwrap_or(0),
             };
         }

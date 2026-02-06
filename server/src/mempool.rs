@@ -30,7 +30,7 @@ pub async fn extract_tx(
             inputs.push(TxInput {
                 address: pallas::ledger::addresses::Address::from_bytes(&utxo.address)
                     .ok()
-                    .and_then(|a| a.to_bech32().ok()),
+                    .map(|a| a.to_string()),
                 lovelace: utxo.lovelaces.try_into().ok().unwrap_or(0),
             });
         } else {
@@ -49,7 +49,7 @@ pub async fn extract_tx(
             let address = output
                 .address()
                 .ok()
-                .and_then(|a| a.to_bech32().ok())
+                .map(|a| a.to_string())
                 .unwrap_or_default();
             let lovelace = output.value().coin();
             let assets: Vec<AssetInfo> = output
