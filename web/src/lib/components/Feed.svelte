@@ -89,6 +89,7 @@
 			class:block={!!section.block}
 			class:has-line={i > 1 && gap > 0}
 			style:border-color={color}
+			style:background-color={color}
 			style:max-width="{maxWidth}px"
 			style:margin-top="{spacing}px"
 			style:--line-height="{gap}px"
@@ -96,7 +97,7 @@
 		>
 			{#if section.block}
 				<div class="block-header">
-					<span class="block-number" style:color={color}>
+					<span class="block-number">
 						#{section.block.number}
 					</span>
 					<span class="block-slot mono">slot {section.block.slot}</span>
@@ -144,7 +145,6 @@
 	}
 
 	.section.block {
-		background: var(--surface);
 		border: var(--block-border) solid;
 		border-radius: 8px;
 		padding: var(--block-padding);
@@ -163,6 +163,7 @@
 	.block-number {
 		font-weight: 700;
 		font-size: 14px;
+		color: white;
 	}
 
 	.block-slot {
