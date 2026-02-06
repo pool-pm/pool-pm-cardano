@@ -71,13 +71,18 @@
 				{#if output.assets.length > 0 && $config}
 					<div class="assets">
 						{#each output.assets as asset}
-							<img
-								class="asset-thumb"
-								src={nftcdnUrl(asset)}
-								alt={asset.fingerprint}
-								loading="lazy"
-								onerror={(e: Event) => (e.target as HTMLElement).remove()}
-							/>
+							<div class="asset">
+								{#if asset.quantity !== '1'}
+									<span class="asset-qty">{asset.quantity}</span>
+								{/if}
+								<img
+									class="asset-thumb"
+									src={nftcdnUrl(asset)}
+									alt={asset.fingerprint}
+									loading="lazy"
+									onerror={(e: Event) => (e.target as HTMLElement).parentElement!.remove()}
+								/>
+							</div>
 						{/each}
 					</div>
 				{/if}
@@ -158,6 +163,17 @@
 		gap: 2px;
 		margin-top: 2px;
 		justify-content: center;
+	}
+
+	.asset {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+	}
+
+	.asset-qty {
+		font-size: 9px;
+		color: var(--text-muted);
 	}
 
 	.asset-thumb {
