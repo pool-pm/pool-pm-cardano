@@ -82,9 +82,11 @@
 		<div
 			class="section"
 			class:block={!!section.block}
+			class:has-line={i > 1 && gap > 0}
 			style:border-color={color}
 			style:max-width="{maxWidth}px"
 			style:margin-top="{gap}px"
+			style:--line-height="{gap}px"
 			animate:flip={{ duration: FLIP_DURATION }}
 		>
 			{#if section.block}
@@ -120,6 +122,17 @@
 
 	.section {
 		width: 100%;
+		position: relative;
+	}
+
+	.section.has-line::before {
+		content: '';
+		position: absolute;
+		bottom: calc(100% + var(--block-border));
+		left: 50%;
+		width: 1px;
+		height: var(--line-height);
+		background: var(--border);
 	}
 
 	.section.block {
