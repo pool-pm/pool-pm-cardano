@@ -59,7 +59,7 @@
 
 	function blockColor(hash: string): string {
 		const hue = (parseInt(hash.slice(0, 4), 16) / 0xffff) * 360;
-		return `oklch(0.45 0.16 ${hue.toFixed(1)})`;
+		return `oklch(0.7 0.25 ${hue.toFixed(1)})`;
 	}
 
 	function timeAgo(timestamp: number): string {
