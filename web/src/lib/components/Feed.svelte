@@ -79,13 +79,14 @@
 		{@const gap = prevTimestamp && section.block
 			? Math.max(0, (prevTimestamp - section.block.timestamp) * PX_PER_SECOND)
 			: 0}
+		{@const spacing = i === 1 ? Math.max(12, gap) : gap}
 		<div
 			class="section"
 			class:block={!!section.block}
 			class:has-line={i > 1 && gap > 0}
 			style:border-color={color}
 			style:max-width="{maxWidth}px"
-			style:margin-top="{gap}px"
+			style:margin-top="{spacing}px"
 			style:--line-height="{gap}px"
 			animate:flip={{ duration: FLIP_DURATION }}
 		>
