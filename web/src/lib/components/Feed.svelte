@@ -67,6 +67,10 @@
 		if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
 		return `${Math.floor(sec / 3600)}h ago`;
 	}
+
+	function formatTime(timestamp: number): string {
+		return new Date(timestamp * 1000).toLocaleTimeString();
+	}
 </script>
 
 <div class="feed" style:--block-padding="{BLOCK_PADDING}px" style:--block-border="{BLOCK_BORDER}px">
@@ -96,7 +100,7 @@
 						#{section.block.number}
 					</span>
 					<span class="block-slot mono">slot {section.block.slot}</span>
-					<span class="block-time">{timeAgo(section.block.timestamp)}</span>
+					<span class="block-time">{i === 1 ? timeAgo(section.block.timestamp) : formatTime(section.block.timestamp)}</span>
 				</div>
 			{/if}
 
@@ -115,6 +119,7 @@
 	.feed {
 		flex: 1;
 		overflow-y: auto;
+		scrollbar-gutter: stable;
 		padding: 16px 20px;
 		display: flex;
 		flex-direction: column;
