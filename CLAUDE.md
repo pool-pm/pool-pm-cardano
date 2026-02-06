@@ -82,6 +82,14 @@ Requires a running cardano-db-sync PostgreSQL database for the target network.
 
 The frontend is a Svelte 5 + TypeScript app built with Vite.
 
+### Sections Pattern (mempool as unfinalized block)
+
+The frontend uses a unified `sections` store (`Section[]`) instead of separate mempool/blocks stores. `sections[0]` is always the mempool — an unfinalized block without a border or header. When a block is confirmed, `sections[0]` is finalized (block metadata attached, border/header appear via CSS), excluded txs move to a new `sections[0]`, and the BinPackGrid instance survives the transition. This means transactions never change DOM containers, so `animate:flip` handles repositioning naturally with no cross-container animation needed.
+
+### Large Integer Serialization
+
+Values that can exceed `Number.MAX_SAFE_INTEGER` (`lovelace`, `fee`, `quantity`) are serialized as JSON strings from Rust (`#[serde(with = "string")]` in `event.rs`) and typed as `string` on the frontend. For display, use string slicing to insert the decimal point rather than float arithmetic. Convert to `BigInt` only when arithmetic is needed. New fields with potentially large values should follow this pattern.
+
 ### Coding Guidelines
 
 - **Animations**: Prefer Svelte's built-in animation features (`svelte/animate`, `svelte/transition`) over pure CSS when they provide a better, smoother, or simpler solution. Use `animate:flip` for list reordering, transitions for enter/exit animations.
