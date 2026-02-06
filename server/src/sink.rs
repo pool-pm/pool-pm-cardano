@@ -11,6 +11,7 @@ use crate::event::Event;
 use crate::event_bus::EventBus;
 use crate::mempool::extract_tx;
 use crate::model::TxOutput;
+use crate::nftcdn::NftcdnConfig;
 use crate::state::State;
 
 pub struct Worker;
@@ -64,7 +65,7 @@ impl Worker {
             let state = stage.state.read().await;
             let mut txs = Vec::new();
             for tx in block.txs() {
-                txs.push(extract_tx(&tx, &state).await);
+                txs.push(extract_tx(&tx, &state, &stage.nftcdn).await);
             }
             txs
         };
@@ -140,6 +141,7 @@ pub struct Stage {
     genesis: GenesisValues,
     event_bus: Arc<EventBus>,
     state: Arc<RwLock<State>>,
+    nftcdn: NftcdnConfig,
 
     pub input: MapperInputPort,
     pub cursor: SinkCursorPort,
@@ -155,11 +157,13 @@ pub fn bootstrapper(
     context: &Context,
     event_bus: Arc<EventBus>,
     state: Arc<RwLock<State>>,
+    nftcdn: NftcdnConfig,
 ) -> Result<Stage, Error> {
     Ok(Stage {
         genesis: GenesisValues::from(context.chain.clone()),
         event_bus,
         state,
+        nftcdn,
         ops_count: Default::default(),
         latest_block: Default::default(),
         input: Default::default(),

@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { Section } from './types';
+import type { Config, Section } from './types';
 
 let idCounter = 0;
 
@@ -12,3 +12,4 @@ export function newSection(): Section {
 }
 
 export const sections = writable<Section[]>([newSection()]);
+export const config = writable<Config | null>(null);

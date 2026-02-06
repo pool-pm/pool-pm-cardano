@@ -1,5 +1,5 @@
-import { sections, newSection } from './stores';
-import type { BlockEvent, Event, MempoolTxEvent, Section } from './types';
+import { sections, newSection, config } from './stores';
+import type { BlockEvent, Config, Event, MempoolTxEvent, Section } from './types';
 
 let source: EventSource | null = null;
 
@@ -111,7 +111,9 @@ export function connectSSE(url: string): void {
 	source.onmessage = (e: MessageEvent) => {
 		const data = JSON.parse(e.data);
 
-		if (Array.isArray(data)) {
+		if (data.type === 'Config') {
+			config.set(data as Config);
+		} else if (Array.isArray(data)) {
 			handleSnapshot(data as Event[]);
 		} else {
 			handleEvent(data as Event);

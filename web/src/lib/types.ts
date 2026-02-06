@@ -1,3 +1,7 @@
+export interface Config {
+	nftcdn: string;
+}
+
 export interface TxInput {
 	address: string | null;
 	lovelace: string;
@@ -12,6 +16,7 @@ export interface TxOutputInfo {
 export interface AssetInfo {
 	fingerprint: string;
 	quantity: string;
+	tk?: string;
 }
 
 export interface BlockTx {

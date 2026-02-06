@@ -8,6 +8,7 @@ use url::Url;
 use crate::args::{Args, Metrics};
 use crate::event_bus::EventBus;
 use crate::mempool;
+use crate::nftcdn::NftcdnConfig;
 use crate::server;
 use crate::sink;
 use crate::state::State;
@@ -80,6 +81,7 @@ async fn serve_prometheus(daemon: Arc<Daemon>, metrics: Option<Metrics>) -> Resu
 pub fn run(args: Args) -> Result<(), Error> {
     setup_tracing(args.verbose);
 
+    let nftcdn = NftcdnConfig::new(&args.network);
     let event_bus = Arc::new(EventBus::new(4096));
     let db_url = Url::parse(&args.db.replace("NETWORK", &args.network.to_string()))
         .expect("invalid database URL");
@@ -109,9 +111,9 @@ pub fn run(args: Args) -> Result<(), Error> {
     };
 
     let source = source_config.bootstrapper(&ctx)?;
-    let sink = sink::bootstrapper(&ctx, event_bus.clone(), state.clone())?;
+    let sink = sink::bootstrapper(&ctx, event_bus.clone(), state.clone(), nftcdn.clone())?;
     let cursor = cursor::Bootstrapper::File(cursor_config.bootstrapper(&ctx)?);
-    let mempool = mempool::bootstrapper(mempool_config, event_bus.clone(), state.clone());
+    let mempool = mempool::bootstrapper(mempool_config, event_bus.clone(), state.clone(), nftcdn.clone());
     let retries = define_gasket_policy();
     let daemon = connect_stages(source, sink, cursor, mempool, retries)?;
 
@@ -128,7 +130,7 @@ pub fn run(args: Args) -> Result<(), Error> {
     let prometheus = tokio_rt.spawn(serve_prometheus(daemon.clone(), args.metrics));
 
     if let Some(addr) = listen {
-        tokio_rt.spawn(server::serve(addr, event_bus));
+        tokio_rt.spawn(server::serve(addr, event_bus, nftcdn.subdomain));
     }
 
     daemon.block();

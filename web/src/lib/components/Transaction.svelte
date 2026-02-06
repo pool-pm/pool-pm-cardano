@@ -1,6 +1,7 @@
 <script lang="ts">
-	import type { FeedTx, TxOutputInfo } from '../types';
+	import type { AssetInfo, FeedTx, TxOutputInfo } from '../types';
 	import { paymentCredential } from '../bech32';
+	import { config } from '../stores';
 
 	let { tx }: { tx: FeedTx } = $props();
 
@@ -31,6 +32,14 @@
 		return '0.' + frac + ' ADA';
 	}
 
+	function nftcdnUrl(asset: AssetInfo): string {
+		const sub = $config!.nftcdn;
+		if (asset.tk) {
+			return `https://${asset.fingerprint}.${sub}/preview?tk=${asset.tk}&size=128`;
+		}
+		return `https://${asset.fingerprint}.${sub}/preview?size=128`;
+	}
+
 	// Filter outputs: exclude those going back to a source address (change)
 	let filteredOutputs: TxOutputInfo[] = $derived.by(() => {
 		const inputPayments = new Set(
@@ -59,12 +68,12 @@
 			<div class="addr-item">
 				<span class="ada">{formatAda(output.lovelace)}</span>
 				<span class="addr mono">{truncateAddr(output.address)}</span>
-				{#if output.assets.length > 0}
+				{#if output.assets.length > 0 && $config}
 					<div class="assets">
 						{#each output.assets as asset}
 							<img
 								class="asset-thumb"
-								src="https://{asset.fingerprint}.preview.nftcdn.io/image?size=64"
+								src={nftcdnUrl(asset)}
 								alt={asset.fingerprint}
 								loading="lazy"
 							/>
@@ -151,8 +160,8 @@
 	}
 
 	.asset-thumb {
-		width: 20px;
-		height: 20px;
+		width: 64px;
+		height: 64px;
 		border-radius: 3px;
 		background: var(--bg);
 	}

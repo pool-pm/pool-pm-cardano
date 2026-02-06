@@ -10,9 +10,10 @@ use tracing::info;
 use crate::event::{AssetInfo, BlockTx, Event, TxOutputInfo};
 use crate::event_bus::EventBus;
 use crate::model::asset_fingerprint;
+use crate::nftcdn::NftcdnConfig;
 use crate::state::State;
 
-pub async fn extract_tx(tx: &MultiEraTx<'_>, state: &State) -> BlockTx {
+pub async fn extract_tx(tx: &MultiEraTx<'_>, state: &State, nftcdn: &NftcdnConfig) -> BlockTx {
     let hash = tx.hash().to_string();
     let fee = tx.fee().unwrap_or(0);
     let size = tx.size();
@@ -46,9 +47,12 @@ pub async fn extract_tx(tx: &MultiEraTx<'_>, state: &State) -> BlockTx {
                         .assets()
                         .iter()
                         .filter_map(|asset| {
+                            let fingerprint = asset_fingerprint(&policy_id, asset.name());
+                            let tk = nftcdn.compute_tk(&fingerprint, "preview", 128);
                             Some(AssetInfo {
-                                fingerprint: asset_fingerprint(&policy_id, asset.name()),
+                                fingerprint,
                                 quantity: asset.output_coin()?,
+                                tk,
                             })
                         })
                         .collect::<Vec<_>>()
@@ -108,7 +112,7 @@ impl gasket::framework::Worker<Stage> for Worker {
 
             if !self.pending.contains(&hash) {
                 let state = stage.state.read().await;
-                let block_tx = extract_tx(&tx, &state).await;
+                let block_tx = extract_tx(&tx, &state, &stage.nftcdn).await;
                 drop(state);
                 stage.event_bus.send(Event::MempoolTx(block_tx)).await;
 
@@ -142,6 +146,7 @@ pub struct Stage {
     config: Config,
     event_bus: Arc<EventBus>,
     state: Arc<RwLock<State>>,
+    nftcdn: NftcdnConfig,
 
     #[metric]
     pending_count: gasket::metrics::Gauge,
@@ -159,11 +164,13 @@ pub fn bootstrapper(
     config: Config,
     event_bus: Arc<EventBus>,
     state: Arc<RwLock<State>>,
+    nftcdn: NftcdnConfig,
 ) -> Stage {
     Stage {
         config,
         event_bus,
         state,
+        nftcdn,
         pending_count: Default::default(),
         snapshots: Default::default(),
     }

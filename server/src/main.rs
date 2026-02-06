@@ -10,11 +10,13 @@ mod event;
 mod event_bus;
 mod mempool;
 mod model;
+mod nftcdn;
 mod server;
 mod sink;
 mod state;
 
 fn main() {
+    dotenvy::dotenv().ok();
     let args = Args::parse();
 
     if let Err(err) = fs::create_dir_all(&args.output) {
