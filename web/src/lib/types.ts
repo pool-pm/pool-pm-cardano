@@ -46,7 +46,14 @@ export interface FeedTx extends BlockTx {
 	receivedAt: number;
 }
 
-export interface FeedBlock extends BlockEvent {
-	receivedAt: number;
+export interface Section {
+	id: string;
 	txs: FeedTx[];
+	block?: {
+		slot: number;
+		hash: string;
+		number: number;
+		timestamp: number;
+	};
+	receivedAt: number;
 }

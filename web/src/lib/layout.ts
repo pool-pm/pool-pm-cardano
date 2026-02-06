@@ -6,5 +6,3 @@ export function squareWidth(count: number): number {
 	return cols * TX_WIDTH + (cols - 1) * TX_GAP;
 }
 
-// Cross-grid animation: last known screen positions of items
-export const savedScreenPositions = new Map<string, { x: number; y: number }>();

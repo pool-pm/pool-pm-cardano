@@ -1,5 +1,14 @@
 import { writable } from 'svelte/store';
-import type { FeedTx, FeedBlock } from './types';
+import type { Section } from './types';
 
-export const mempoolTxs = writable(new Map<string, FeedTx>());
-export const blocks = writable(new Map<string, FeedBlock>());
+let idCounter = 0;
+
+export function newSection(): Section {
+	return {
+		id: `s-${idCounter++}`,
+		txs: [],
+		receivedAt: Date.now(),
+	};
+}
+
+export const sections = writable<Section[]>([newSection()]);

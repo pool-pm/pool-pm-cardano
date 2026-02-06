@@ -1,4 +1,4 @@
-import { mempoolTxs, blocks } from './stores';
+import { sections, newSection } from './stores';
 import type { Event } from './types';
 
 let source: EventSource | null = null;
@@ -12,51 +12,69 @@ export function connectSSE(url: string): void {
 		const event: Event = JSON.parse(e.data);
 
 		switch (event.type) {
-			case 'MempoolTx':
-				mempoolTxs.update((map) => {
-					map.set(event.hash, { ...event, receivedAt: Date.now() });
-					return new Map(map);
+			case 'MempoolTx': {
+				const now = Date.now();
+				sections.update((s) => {
+					const mempool = s[0];
+					if (!mempool.txs.some((t) => t.hash === event.hash)) {
+						mempool.txs = [{ ...event, receivedAt: now }, ...mempool.txs];
+					}
+					return [...s];
 				});
 				break;
+			}
 
 			case 'Block': {
 				const now = Date.now();
+				sections.update((s) => {
+					const mempool = s[0];
+					const blockTxHashes = new Set(event.txs.map((tx) => tx.hash));
 
-				// Remove confirmed txs from mempool display
-				mempoolTxs.update((map) => {
-					for (const tx of event.txs) {
-						map.delete(tx.hash);
+					// Split mempool txs: those in the block vs excluded
+					const inBlock = [];
+					const excluded = [];
+					const seen = new Set<string>();
+
+					for (const tx of mempool.txs) {
+						if (blockTxHashes.has(tx.hash)) {
+							inBlock.push(tx);
+							seen.add(tx.hash);
+						} else {
+							excluded.push(tx);
+						}
 					}
-					return new Map(map);
-				});
 
-				blocks.update((map) => {
-					map.set(event.hash, {
-						...event,
-						receivedAt: now,
-						txs: event.txs.map((tx) => ({ ...tx, receivedAt: now })),
-					});
-					return new Map(map);
+					// Add block txs not previously in mempool
+					for (const tx of event.txs) {
+						if (!seen.has(tx.hash)) {
+							inBlock.push({ ...tx, receivedAt: now });
+						}
+					}
+
+					// Finalize current mempool as a block
+					mempool.block = {
+						slot: event.slot,
+						hash: event.hash,
+						number: event.number,
+						timestamp: event.timestamp,
+					};
+					mempool.txs = inBlock;
+
+					// New mempool with excluded txs
+					const next = newSection();
+					next.txs = excluded;
+
+					return [next, ...s];
 				});
 				break;
 			}
 
 			case 'Rollback':
-				blocks.update((map) => {
-					const toDelete: string[] = [];
-					for (const [hash, block] of map) {
-						if (block.slot > event.slot) {
-							toDelete.push(hash);
-						}
-					}
-					if (toDelete.length > 0) {
-						const newMap = new Map(map);
-						for (const hash of toDelete) {
-							newMap.delete(hash);
-						}
-						return newMap;
-					}
-					return map;
+				sections.update((s) => {
+					return s.filter(
+						(section, i) =>
+							i === 0 || !section.block || section.block.slot <= event.slot
+					);
 				});
 				break;
 		}

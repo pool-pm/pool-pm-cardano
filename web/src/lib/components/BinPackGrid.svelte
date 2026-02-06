@@ -1,18 +1,16 @@
 <script lang="ts" generics="T">
 	import { onMount, tick, untrack } from 'svelte';
 	import { flip } from 'svelte/animate';
-	import { savedScreenPositions } from '../layout';
 
 	type Props = {
 		items: T[];
 		key: (item: T) => string;
 		itemWidth: number;
 		gap: number;
-		crossAnimate?: boolean;
 		children: import('svelte').Snippet<[T]>;
 	};
 
-	let { items, key, itemWidth, gap, crossAnimate = false, children }: Props = $props();
+	let { items, key, itemWidth, gap, children }: Props = $props();
 
 	let container: HTMLDivElement;
 	let containerWidth = $state(0);
@@ -25,15 +23,6 @@
 	// Center the grid within container
 	const gridWidth = $derived(colCount * itemWidth + (colCount - 1) * gap);
 	const offsetX = $derived(Math.max(0, (containerWidth - gridWidth) / 2));
-
-	// Look up saved screen position and convert to container-relative coords
-	function getSavedPosition(k: string): { x: number; y: number } | undefined {
-		if (!crossAnimate || !container) return undefined;
-		const saved = savedScreenPositions.get(k);
-		if (!saved) return undefined;
-		const cr = container.getBoundingClientRect();
-		return { x: saved.x - cr.left, y: saved.y - cr.top };
-	}
 
 	function measure() {
 		if (!container || items.length === 0 || containerWidth === 0) {
@@ -91,14 +80,6 @@
 			newPositions.set(k, { x: displayX, y: displayY });
 		}
 
-		// Save screen positions for cross-grid animation
-		if (crossAnimate) {
-			const cr = container.getBoundingClientRect();
-			for (const [k, pos] of newPositions) {
-				savedScreenPositions.set(k, { x: cr.left + pos.x, y: cr.top + pos.y });
-			}
-		}
-
 		itemPositions = newPositions;
 		containerHeight = totalHeight;
 	}
@@ -146,11 +127,10 @@
 	{#each items as item (key(item))}
 		{@const k = key(item)}
 		{@const pos = itemPositions.get(k)}
-		{@const saved = !pos ? getSavedPosition(k) : undefined}
 		{@const defaultX = Math.max(0, (containerWidth - itemWidth) / 2)}
 		<div
 			class="bin-pack-item"
-			style="transform: translate({pos?.x ?? saved?.x ?? defaultX}px, {pos?.y ?? saved?.y ?? 0}px)"
+			style="transform: translate({pos?.x ?? defaultX}px, {pos?.y ?? 0}px)"
 			use:registerRef={{ k, register: registerItem, unregister: unregisterItem }}
 			animate:flip={{ duration: 300 }}
 		>
