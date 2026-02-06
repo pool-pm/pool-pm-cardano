@@ -1,21 +1,24 @@
 use serde::Serialize;
 
 #[derive(Clone, Serialize)]
+pub struct BlockTx {
+    pub hash: String,
+    pub fee: u64,
+    pub size: usize,
+    pub inputs: Vec<TxInput>,
+    pub outputs: Vec<TxOutputInfo>,
+}
+
+#[derive(Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum Event {
-    MempoolTx {
-        hash: String,
-        fee: u64,
-        size: usize,
-        inputs: Vec<TxInput>,
-        outputs: Vec<TxOutputInfo>,
-    },
+    MempoolTx(BlockTx),
     Block {
         slot: u64,
         hash: String,
         number: u64,
         timestamp: u64,
-        tx_hashes: Vec<String>,
+        txs: Vec<BlockTx>,
     },
     Rollback {
         slot: u64,

@@ -7,27 +7,23 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 use tracing::info;
 
-use crate::event::{AssetInfo, Event, TxOutputInfo};
+use crate::event::{AssetInfo, BlockTx, Event, TxOutputInfo};
 use crate::model::asset_fingerprint;
 use crate::state::State;
 
-async fn extract_tx(tx: &MultiEraTx<'_>, state_lock: &Arc<RwLock<State>>) -> Event {
+pub async fn extract_tx(tx: &MultiEraTx<'_>, state: &State) -> BlockTx {
     let hash = tx.hash().to_string();
     let fee = tx.fee().unwrap_or(0);
     let size = tx.size();
 
-    let inputs = {
-        let state = state_lock.read().await;
-        let mut inputs = Vec::new();
-        for input in tx.inputs() {
-            inputs.push(
-                state
-                    .resolve_input(input.hash().as_ref(), input.index() as i16)
-                    .await,
-            );
-        }
-        inputs
-    };
+    let mut inputs = Vec::new();
+    for input in tx.inputs() {
+        inputs.push(
+            state
+                .resolve_input(input.hash().as_ref(), input.index() as i16)
+                .await,
+        );
+    }
 
     let outputs: Vec<TxOutputInfo> = tx
         .outputs()
@@ -66,7 +62,7 @@ async fn extract_tx(tx: &MultiEraTx<'_>, state_lock: &Arc<RwLock<State>>) -> Eve
         })
         .collect();
 
-    Event::MempoolTx {
+    BlockTx {
         hash,
         fee,
         size,
@@ -110,8 +106,10 @@ impl gasket::framework::Worker<Stage> for Worker {
             let hash = tx.hash().to_string();
 
             if !self.pending.contains(&hash) {
-                let event = extract_tx(&tx, &stage.state).await;
-                let _ = stage.event_tx.send(event);
+                let state = stage.state.read().await;
+                let block_tx = extract_tx(&tx, &state).await;
+                drop(state);
+                let _ = stage.event_tx.send(Event::MempoolTx(block_tx));
 
                 info!(
                     hash,

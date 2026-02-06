@@ -8,6 +8,7 @@ use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
 
 use crate::event::Event;
+use crate::mempool::extract_tx;
 use crate::model::TxOutput;
 use crate::state::State;
 
@@ -33,13 +34,11 @@ impl Worker {
         let height = block.number();
         let block_hash = block.hash().to_string();
 
-        let mut tx_hashes = Vec::new();
         let mut produced = Vec::new();
         let mut consumed = Vec::new();
 
         for tx in block.txs() {
             let tx_hash = tx.hash();
-            tx_hashes.push(tx_hash.to_string());
 
             for input in tx.inputs() {
                 consumed.push((input.hash().as_ref().to_vec(), input.index() as i16));
@@ -59,6 +58,16 @@ impl Worker {
             }
         }
 
+        // Extract full transaction data while consumed UTXOs still exist in state
+        let txs = {
+            let state = stage.state.read().await;
+            let mut txs = Vec::new();
+            for tx in block.txs() {
+                txs.push(extract_tx(&tx, &state).await);
+            }
+            txs
+        };
+
         let timestamp = stage.genesis.shelley_known_time
             + slot.saturating_sub(stage.genesis.shelley_known_slot)
                 * stage.genesis.shelley_slot_length as u64;
@@ -68,13 +77,13 @@ impl Worker {
             state.apply_block(slot, height, produced, &consumed);
         }
 
-        let tx_count = tx_hashes.len();
+        let tx_count = txs.len();
         let _ = stage.event_tx.send(Event::Block {
             slot,
             hash: block_hash,
             number: height,
             timestamp,
-            tx_hashes,
+            txs,
         });
 
         info!(slot, height, tx_count, "apply block");

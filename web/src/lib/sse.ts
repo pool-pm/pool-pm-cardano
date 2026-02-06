@@ -1,5 +1,5 @@
 import { mempoolTxs, blocks } from './stores';
-import type { Event, FeedTx } from './types';
+import type { Event } from './types';
 
 let source: EventSource | null = null;
 
@@ -20,13 +20,12 @@ export function connectSSE(url: string): void {
 				break;
 
 			case 'Block': {
-				const capturedTxs: FeedTx[] = [];
+				const now = Date.now();
 
+				// Remove confirmed txs from mempool display
 				mempoolTxs.update((map) => {
-					for (const hash of event.tx_hashes) {
-						const tx = map.get(hash);
-						if (tx) capturedTxs.push(tx);
-						map.delete(hash);
+					for (const tx of event.txs) {
+						map.delete(tx.hash);
 					}
 					return new Map(map);
 				});
@@ -34,8 +33,8 @@ export function connectSSE(url: string): void {
 				blocks.update((map) => {
 					map.set(event.hash, {
 						...event,
-						receivedAt: Date.now(),
-						txs: capturedTxs,
+						receivedAt: now,
+						txs: event.txs.map((tx) => ({ ...tx, receivedAt: now })),
 					});
 					return new Map(map);
 				});

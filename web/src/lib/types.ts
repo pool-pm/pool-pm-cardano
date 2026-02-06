@@ -14,6 +14,14 @@ export interface AssetInfo {
 	quantity: number;
 }
 
+export interface BlockTx {
+	hash: string;
+	fee: number;
+	size: number;
+	inputs: TxInput[];
+	outputs: TxOutputInfo[];
+}
+
 export interface MempoolTxEvent {
 	type: 'MempoolTx';
 	hash: string;
@@ -29,7 +37,7 @@ export interface BlockEvent {
 	hash: string;
 	number: number;
 	timestamp: number;
-	tx_hashes: string[];
+	txs: BlockTx[];
 }
 
 export interface RollbackEvent {
@@ -39,7 +47,7 @@ export interface RollbackEvent {
 
 export type Event = MempoolTxEvent | BlockEvent | RollbackEvent;
 
-export interface FeedTx extends MempoolTxEvent {
+export interface FeedTx extends BlockTx {
 	receivedAt: number;
 }
 

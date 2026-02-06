@@ -44,10 +44,6 @@
 				<Transaction {tx} />
 			{/snippet}
 		</BinPackGrid>
-	{:else}
-		<div class="block-meta muted">
-			{block.tx_hashes.length} transactions
-		</div>
 	{/if}
 </div>
 
@@ -87,16 +83,4 @@
 		margin-left: auto;
 	}
 
-	.block-meta {
-		font-size: 12px;
-		text-align: center;
-		flex: 1;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-	}
-
-	.muted {
-		color: var(--text-muted);
-	}
 </style>
