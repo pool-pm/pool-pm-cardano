@@ -163,6 +163,7 @@
 		width: 64px;
 		height: 64px;
 		border-radius: 3px;
-		background: var(--bg);
+		background: transparent;
+		object-fit: contain;
 	}
 </style>
