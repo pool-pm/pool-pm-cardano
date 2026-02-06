@@ -101,7 +101,6 @@
 					<span class="block-number">
 						#{section.block.number}
 					</span>
-					<span class="block-slot mono">slot {section.block.slot}</span>
 					<span class="block-time">
 						{#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
 					</span>
@@ -167,13 +166,8 @@
 		color: white;
 	}
 
-	.block-slot {
-		color: var(--text-muted);
-		font-size: 11px;
-	}
-
 	.block-time {
-		color: var(--text-muted);
+		color: white;
 		font-size: 11px;
 		margin-left: auto;
 	}
