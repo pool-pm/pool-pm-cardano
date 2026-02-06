@@ -72,8 +72,8 @@
 					<div class="assets">
 						{#each output.assets as asset}
 							<div class="asset">
-								{#if asset.quantity !== '1'}
-									<span class="asset-qty">{asset.quantity}</span>
+								{#if asset.quantity !== '1' || asset.name}
+									<span class="asset-label">{#if asset.quantity !== '1'}{asset.quantity}{/if}{#if asset.quantity !== '1' && asset.name}&nbsp;{/if}{#if asset.name}{asset.name}{/if}</span>
 								{/if}
 								<img
 									class="asset-thumb"
@@ -82,9 +82,6 @@
 									loading="lazy"
 									onerror={(e: Event) => (e.target as HTMLElement).parentElement!.remove()}
 								/>
-								{#if asset.name}
-									<span class="asset-name">{asset.name}</span>
-								{/if}
 							</div>
 						{/each}
 					</div>
@@ -174,18 +171,12 @@
 		align-items: center;
 	}
 
-	.asset-qty {
-		font-size: 9px;
-		color: var(--text-muted);
-	}
-
-	.asset-name {
+	.asset-label {
 		font-size: 9px;
 		color: var(--text-muted);
 		max-width: 64px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		text-align: center;
+		overflow-wrap: break-word;
 	}
 
 	.asset-thumb {
