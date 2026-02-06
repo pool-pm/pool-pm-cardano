@@ -9,6 +9,9 @@
 	const MAX_AGE_MS = 600_000;
 	const MAX_BLOCKS = 30;
 	const PX_PER_SECOND = 2;
+	const BLOCK_PADDING = 10;
+	const BLOCK_BORDER = 2;
+	const BLOCK_INSET = (BLOCK_PADDING + BLOCK_BORDER) * 2;
 
 	let now = $state(Date.now());
 
@@ -66,10 +69,10 @@
 	}
 </script>
 
-<div class="feed">
+<div class="feed" style:--block-padding="{BLOCK_PADDING}px" style:--block-border="{BLOCK_BORDER}px">
 	{#each $sections as section, i (section.id)}
 		{@const color = section.block ? blockColor(section.block.hash) : undefined}
-		{@const maxWidth = squareWidth(section.txs.length) + (section.block ? 20 : 0)}
+		{@const maxWidth = squareWidth(section.txs.length) + (section.block ? BLOCK_INSET : 0)}
 		{@const prevTimestamp = i === 1
 			? ($sections[0].txs[0]?.receivedAt ?? 0) / 1000
 			: i > 1 ? $sections[i - 1].block?.timestamp : undefined}
@@ -121,9 +124,9 @@
 
 	.section.block {
 		background: var(--surface);
-		border: 2px solid;
+		border: var(--block-border) solid;
 		border-radius: 8px;
-		padding: 10px;
+		padding: var(--block-padding);
 		display: flex;
 		flex-direction: column;
 	}
