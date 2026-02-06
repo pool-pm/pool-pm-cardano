@@ -6,7 +6,7 @@
 	let { tx }: { tx: FeedTx } = $props();
 
 	function truncateHash(h: string): string {
-		return h.slice(0, 4) + '\u2026' + h.slice(-2);
+		return h.slice(0, 4) + '\u2026' + h.slice(-4);
 	}
 
 	function truncateAddr(a: string): string {
