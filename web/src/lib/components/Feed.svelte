@@ -8,11 +8,11 @@
 
 	const MAX_AGE_MS = 600_000;
 	const MAX_BLOCKS = 30;
-	const PX_PER_SECOND = 10;
+	const PX_PER_SECOND = 2;
 
 	let now = $state(Date.now());
 
-	// Update current time every second (for timeAgo + discrete margin-top)
+	// Update current time every second for timeAgo display
 	$effect(() => {
 		const interval = setInterval(() => {
 			now = Date.now();
@@ -64,97 +64,45 @@
 		if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
 		return `${Math.floor(sec / 3600)}h ago`;
 	}
-
-	// Discrete margin-top for the growing gap (mempool → first block).
-	// Updates every second via `now`. Layout only.
-	const growingGap = $derived.by(() => {
-		const blocks = $sections;
-		const first = blocks[1];
-		if (!first?.block) return 0;
-		return Math.max(0, (now / 1000 - first.block.timestamp) * PX_PER_SECOND);
-	});
-
-	// Action: RAF-driven smooth transform offset on the blocks wrapper.
-	// Computes the fractional gap between real time and the discrete `now`,
-	// so margin-top + transform = exact continuous value at all times.
-	function smoothOffset(node: HTMLElement, nowMs: number) {
-		let currentNow = nowMs;
-		let raf: number;
-
-		function tick() {
-			const fractional = ((Date.now() - currentNow) / 1000) * PX_PER_SECOND;
-			node.style.transform = `translateY(${fractional}px)`;
-			raf = requestAnimationFrame(tick);
-		}
-
-		raf = requestAnimationFrame(tick);
-
-		return {
-			update(newNow: number) {
-				currentNow = newNow;
-			},
-			destroy() {
-				cancelAnimationFrame(raf);
-			}
-		};
-	}
 </script>
 
 <div class="feed">
-	<!-- Mempool (always first section) -->
-	<div class="section" style:max-width="{squareWidth($sections[0].txs.length)}px">
-		{#if $sections[0].txs.length > 0}
-			<BinPackGrid items={$sections[0].txs} key={(tx) => tx.hash} itemWidth={TX_WIDTH} gap={TX_GAP}>
-				{#snippet children(tx)}
-					<Transaction {tx} />
-				{/snippet}
-			</BinPackGrid>
-		{/if}
-	</div>
-
-	<!-- Blocks wrapper: margin-top for layout, transform for smooth sub-pixel offset -->
-	{#if $sections.length > 1}
+	{#each $sections as section, i (section.id)}
+		{@const color = section.block ? blockColor(section.block.hash) : undefined}
+		{@const maxWidth = squareWidth(section.txs.length) + (section.block ? 20 : 0)}
+		{@const prevTimestamp = i === 1
+			? ($sections[0].txs[0]?.receivedAt ?? 0) / 1000
+			: i > 1 ? $sections[i - 1].block?.timestamp : undefined}
+		{@const gap = prevTimestamp && section.block
+			? Math.max(0, (prevTimestamp - section.block.timestamp) * PX_PER_SECOND)
+			: 0}
 		<div
-			class="blocks-wrapper"
-			style:margin-top="{growingGap}px"
-			use:smoothOffset={now}
+			class="section"
+			class:block={!!section.block}
+			style:border-color={color}
+			style:max-width="{maxWidth}px"
+			style:margin-top="{gap}px"
+			animate:flip={{ duration: 300 }}
 		>
-			{#each $sections.slice(1) as section, i (section.id)}
-				{@const color = section.block ? blockColor(section.block.hash) : undefined}
-				{@const maxWidth = squareWidth(section.txs.length) + (section.block ? 20 : 0)}
-				{@const prevBlock = i > 0 ? $sections[i]?.block : undefined}
-				{@const gap = prevBlock && section.block
-					? (prevBlock.timestamp - section.block.timestamp) * PX_PER_SECOND
-					: 0}
-				<div
-					class="section"
-					class:block={!!section.block}
-					style:border-color={color}
-					style:max-width="{maxWidth}px"
-					style:margin-top="{gap}px"
-					animate:flip={{ duration: 300 }}
-				>
-					{#if section.block}
-						<div class="block-header">
-							<span class="block-number" style:color={color}>
-								#{section.block.number}
-							</span>
-							<span class="block-slot mono">slot {section.block.slot}</span>
-							<span class="block-time">{timeAgo(section.block.timestamp)}</span>
-						</div>
-					{/if}
-
-					{#if section.txs.length > 0}
-						<BinPackGrid items={section.txs} key={(tx) => tx.hash} itemWidth={TX_WIDTH} gap={TX_GAP}>
-							{#snippet children(tx)}
-								<Transaction {tx} />
-							{/snippet}
-						</BinPackGrid>
-					{/if}
+			{#if section.block}
+				<div class="block-header">
+					<span class="block-number" style:color={color}>
+						#{section.block.number}
+					</span>
+					<span class="block-slot mono">slot {section.block.slot}</span>
+					<span class="block-time">{timeAgo(section.block.timestamp)}</span>
 				</div>
-			{/each}
+			{/if}
+
+			{#if section.txs.length > 0}
+				<BinPackGrid items={section.txs} key={(tx) => tx.hash} itemWidth={TX_WIDTH} gap={TX_GAP}>
+					{#snippet children(tx)}
+						<Transaction {tx} />
+					{/snippet}
+				</BinPackGrid>
+			{/if}
 		</div>
-	{/if}
+	{/each}
 </div>
 
 <style>
@@ -165,14 +113,6 @@
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-	}
-
-	.blocks-wrapper {
-		width: 100%;
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		will-change: transform;
 	}
 
 	.section {
