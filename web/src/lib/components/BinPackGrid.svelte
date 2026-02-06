@@ -30,14 +30,14 @@
 			return;
 		}
 
-		const newPositions = new Map<string, { x: number; y: number }>();
-		const colHeights = new Array(colCount).fill(0);
+		// Bottom-up bin-packing: oldest at bottom-right, newest at top-left
+		// Process oldest first, fill right-to-left, stack on shortest column
+		const colHeights = new Array(colCount).fill(0); // heights grow upward from bottom
+		const itemData: { k: string; col: number; y: number; height: number }[] = [];
+		let maxColUsed = -1;
 
-		// Column-major layout: fill columns left-to-right, items top-to-bottom within each column
-		// This preserves order: most recent at top-left, oldest at bottom-right
-		const rowsPerCol = Math.ceil(items.length / colCount);
-
-		for (let i = 0; i < items.length; i++) {
+		// Process from oldest (end of array) to newest (start)
+		for (let i = items.length - 1; i >= 0; i--) {
 			const item = items[i];
 			const k = key(item);
 			const el = itemRefs.get(k);
@@ -45,28 +45,43 @@
 
 			const height = el.offsetHeight;
 
-			// Column-major assignment: item i goes to column floor(i / rowsPerCol)
-			const col = Math.floor(i / rowsPerCol);
+			// Find rightmost column with minimum height (prefer right when equal)
+			let targetCol = Math.min(maxColUsed + 1, colCount - 1);
+			if (maxColUsed >= colCount - 1) {
+				// All columns used, find shortest (rightmost if tie)
+				targetCol = colCount - 1;
+				for (let c = colCount - 2; c >= 0; c--) {
+					if (colHeights[c] < colHeights[targetCol]) {
+						targetCol = c;
+					}
+				}
+			}
 
-			const x = col * (itemWidth + gap);
-			const y = colHeights[col];
+			maxColUsed = Math.max(maxColUsed, targetCol);
 
-			newPositions.set(k, { x, y });
-			colHeights[col] = y + height + gap;
+			const y = colHeights[targetCol];
+			itemData.push({ k, col: targetCol, y, height });
+			colHeights[targetCol] = y + height + gap;
 		}
 
+		// Calculate total height and convert to top-down coordinates
+		const totalHeight = Math.max(0, Math.max(...colHeights) - gap);
+
 		// Calculate actual grid width and center offset
-		const actualCols = Math.min(colCount, Math.ceil(items.length / rowsPerCol));
+		const actualCols = maxColUsed + 1;
 		const actualGridWidth = actualCols * itemWidth + (actualCols - 1) * gap;
 		const actualOffsetX = Math.max(0, (containerWidth - actualGridWidth) / 2);
 
-		// Second pass: apply offset to all positions
-		for (const [k, pos] of newPositions) {
-			newPositions.set(k, { x: pos.x + actualOffsetX, y: pos.y });
+		// Convert positions: flip y-axis and apply x offset
+		const newPositions = new Map<string, { x: number; y: number }>();
+		for (const { k, col, y, height } of itemData) {
+			const displayY = totalHeight - y - height;
+			const displayX = actualOffsetX + col * (itemWidth + gap);
+			newPositions.set(k, { x: displayX, y: displayY });
 		}
 
 		itemPositions = newPositions;
-		containerHeight = Math.max(0, Math.max(...colHeights) - gap);
+		containerHeight = totalHeight;
 	}
 
 	function registerItem(k: string, el: HTMLElement) {
