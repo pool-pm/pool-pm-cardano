@@ -8,11 +8,11 @@
 
 	const MAX_AGE_MS = 600_000;
 	const MAX_BLOCKS = 30;
-	const PX_PER_SECOND = 3;
+	const PX_PER_SECOND = 10;
 
 	let now = $state(Date.now());
 
-	// Update current time every second — CSS transitions smooth the movement
+	// Update current time every second
 	$effect(() => {
 		const interval = setInterval(() => {
 			now = Date.now();
@@ -115,6 +115,7 @@
 
 	.section {
 		width: 100%;
+		transition: margin-top 1s linear;
 	}
 
 	.section.block {
