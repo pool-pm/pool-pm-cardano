@@ -108,6 +108,7 @@
 	});
 
 	// Re-measure when dependencies change
+	let measurePending = false;
 	$effect(() => {
 		// Track these dependencies
 		items;
@@ -115,7 +116,13 @@
 		colCount;
 		offsetX;
 		untrack(() => {
-			tick().then(measure);
+			if (!measurePending) {
+				measurePending = true;
+				tick().then(() => {
+					measurePending = false;
+					measure();
+				});
+			}
 		});
 	});
 </script>

@@ -100,7 +100,9 @@
 						#{section.block.number}
 					</span>
 					<span class="block-slot mono">slot {section.block.slot}</span>
-					<span class="block-time">{i === 1 ? timeAgo(section.block.timestamp) : formatTime(section.block.timestamp)}</span>
+					<span class="block-time">
+						{#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
+					</span>
 				</div>
 			{/if}
 
