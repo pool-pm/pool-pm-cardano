@@ -122,7 +122,7 @@
 		background: rgb(0 0 0 / 0.5);
 		border-radius: 6px;
 		padding: 8px 10px;
-		width: 180px;
+		width: var(--item-width);
 		font-size: 11px;
 		text-align: center;
 	}

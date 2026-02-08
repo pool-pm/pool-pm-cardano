@@ -1,4 +1,4 @@
-export const TX_WIDTH = 180;
+export const TX_WIDTH = 120;
 export const TX_GAP = 6;
 export const FLIP_DURATION = 300;
 
