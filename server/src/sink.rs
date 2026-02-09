@@ -7,10 +7,12 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+use pallas::crypto::hash::Hasher;
+
 use crate::event::Event;
 use crate::event_bus::EventBus;
 use crate::mempool::extract_tx;
-use crate::model::TxOutput;
+use crate::model::{pool_bech32_id, TxOutput};
 use crate::nftcdn::NftcdnConfig;
 use crate::state::State;
 
@@ -69,13 +71,30 @@ impl Worker {
             produced.iter().map(|(k, v)| (k.clone(), v)).collect();
 
         // Extract full transaction data while consumed UTXOs still exist in state
-        let txs = {
+        // Also look up the block's pool (issuer) from state
+        let (txs, pool_id, pool_ticker) = {
             let state = stage.state.read().await;
             let mut txs = Vec::new();
             for tx in block.txs() {
                 txs.push(extract_tx(&tx, &state, &stage.nftcdn, &produced_map).await);
             }
-            txs
+
+            let (pool_id, pool_ticker) = block
+                .header()
+                .issuer_vkey()
+                .and_then(|vkey| {
+                    let pool_hash = Hasher::<224>::hash(vkey);
+                    state.current()?.pools.get(&hex::encode(pool_hash.as_ref()))
+                })
+                .map(|pool| {
+                    (
+                        Some(pool_bech32_id(&pool.hash_raw)),
+                        pool.ticker.clone(),
+                    )
+                })
+                .unwrap_or((None, None));
+
+            (txs, pool_id, pool_ticker)
         };
 
         let timestamp = stage.genesis.shelley_known_time
@@ -95,6 +114,8 @@ impl Worker {
                 hash: block_hash,
                 number: height,
                 timestamp,
+                pool_id,
+                pool_ticker,
                 txs,
             })
             .await;

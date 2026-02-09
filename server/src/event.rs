@@ -27,6 +27,10 @@ pub enum Event {
         hash: String,
         number: u64,
         timestamp: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pool_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pool_ticker: Option<String>,
         txs: Vec<BlockTx>,
     },
     Rollback {

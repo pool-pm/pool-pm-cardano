@@ -9,6 +9,11 @@ pub struct Pool {
     pub pledge: Decimal,
     pub margin: f64,
     pub fixed_cost: Decimal,
+    pub ticker: Option<String>,
+}
+
+pub fn pool_bech32_id(hash_raw: &[u8]) -> String {
+    bech32::encode::<Bech32>(Hrp::parse("pool").unwrap(), hash_raw).unwrap()
 }
 
 #[derive(Clone)]

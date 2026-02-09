@@ -38,6 +38,8 @@ export interface BlockEvent {
 	hash: string;
 	number: number;
 	timestamp: number;
+	pool_id?: string;
+	pool_ticker?: string;
 	txs: BlockTx[];
 }
 
@@ -60,6 +62,8 @@ export interface Section {
 		hash: string;
 		number: number;
 		timestamp: number;
+		pool_id?: string;
+		pool_ticker?: string;
 	};
 	receivedAt: number;
 }

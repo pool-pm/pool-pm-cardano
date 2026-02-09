@@ -21,6 +21,8 @@ function handleSnapshot(events: Event[]): void {
 			hash: event.hash,
 			number: event.number,
 			timestamp: event.timestamp,
+			pool_id: event.pool_id,
+			pool_ticker: event.pool_ticker,
 		};
 		section.txs = event.txs.map((tx) => ({ ...tx, receivedAt: now }));
 		return section;
@@ -80,6 +82,8 @@ function handleEvent(event: Event): void {
 					hash: event.hash,
 					number: event.number,
 					timestamp: event.timestamp,
+					pool_id: event.pool_id,
+					pool_ticker: event.pool_ticker,
 				};
 				mempool.txs = inBlock;
 

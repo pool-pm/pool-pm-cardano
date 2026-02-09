@@ -79,10 +79,11 @@
 		>
 			{#if section.block}
 				<div class="block-header">
-					<span class="block-number">
-						#{section.block.number}
-					</span>
-					<span class="block-time">
+					<span class="block-meta">#{section.block.number}</span>
+					{#if section.block.pool_ticker}
+						<span class="block-ticker">{section.block.pool_ticker}</span>
+					{/if}
+					<span class="block-meta">
 						{#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
 					</span>
 				</div>
@@ -141,16 +142,15 @@
 		flex-shrink: 0;
 	}
 
-	.block-number {
-		font-weight: 700;
-		font-size: 14px;
-		color: white;
-	}
-
-	.block-time {
+	.block-meta {
 		color: white;
 		font-size: 11px;
-		margin-left: auto;
+	}
+
+	.block-ticker {
+		color: white;
+		font-size: 11px;
+		margin: 0 auto;
 	}
 
 	.section:not(.block) :global(.tx-card) {
