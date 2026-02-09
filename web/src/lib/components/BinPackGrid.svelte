@@ -144,7 +144,7 @@
 		{@const defaultX = Math.max(0, (containerWidth - itemWidth) / 2)}
 		<div
 			class="bin-pack-item"
-			style="transform: translate({pos?.x ?? defaultX}px, {pos?.y ?? 0}px)"
+			style="transform: translate({pos?.x ?? defaultX}px, {pos?.y ?? -100}px)"
 			use:registerRef={{ k, register: registerItem, unregister: unregisterItem }}
 			animate:flip={{ duration: FLIP_DURATION }}
 		>
@@ -171,6 +171,7 @@
 	.bin-pack-container {
 		position: relative;
 		width: 100%;
+		overflow: hidden;
 	}
 
 	.bin-pack-item {
