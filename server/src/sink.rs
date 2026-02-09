@@ -22,7 +22,11 @@ impl Worker {
 
         {
             let mut state = stage.state.write().await;
-            state.reset(slot).await.or_panic()?;
+            if state.current().is_some() {
+                state.rollback(slot);
+            } else {
+                state.reset(slot).await.or_panic()?;
+            }
         }
 
         stage.event_bus.send(Event::Rollback { slot }).await;
