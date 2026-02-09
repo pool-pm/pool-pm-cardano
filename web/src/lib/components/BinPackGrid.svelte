@@ -36,7 +36,6 @@
 		const colHeights = new Array(colCount).fill(0); // heights grow upward from bottom
 		const itemData: { k: string; col: number; y: number; height: number }[] = [];
 		let maxColUsed = -1;
-
 		// Process from oldest (end of array) to newest (start)
 		for (let i = items.length - 1; i >= 0; i--) {
 			const item = items[i];
@@ -93,6 +92,16 @@
 		itemRefs.delete(k);
 	}
 
+	function scheduleMeasure() {
+		if (!measurePending) {
+			measurePending = true;
+			tick().then(() => {
+				measurePending = false;
+				measure();
+			});
+		}
+	}
+
 	onMount(() => {
 		containerWidth = container.offsetWidth;
 
@@ -104,7 +113,12 @@
 		});
 		resizeObserver.observe(container);
 
-		return () => resizeObserver.disconnect();
+		container.addEventListener('remeasure', scheduleMeasure);
+
+		return () => {
+			resizeObserver.disconnect();
+			container.removeEventListener('remeasure', scheduleMeasure);
+		};
 	});
 
 	// Re-measure when dependencies change
@@ -115,15 +129,7 @@
 		containerWidth;
 		colCount;
 		offsetX;
-		untrack(() => {
-			if (!measurePending) {
-				measurePending = true;
-				tick().then(() => {
-					measurePending = false;
-					measure();
-				});
-			}
-		});
+		untrack(scheduleMeasure);
 	});
 </script>
 

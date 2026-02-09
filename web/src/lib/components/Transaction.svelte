@@ -95,7 +95,12 @@
 									src={nftcdnUrl(asset)}
 									alt={asset.fingerprint}
 									loading="lazy"
-									onerror={(e: Event) => (e.target as HTMLElement).parentElement!.remove()}
+									onerror={(e: Event) => {
+									const asset = (e.target as HTMLElement).parentElement!;
+									const parent = asset.parentElement;
+									asset.remove();
+									parent?.dispatchEvent(new Event('remeasure', { bubbles: true }));
+								}}
 								/>
 							</div>
 						{/each}
