@@ -81,6 +81,7 @@
 			<div class="block-header">
 				{#if section.block}
 					<span class="block-ticker">{section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10).toUpperCase()}</span>
+					<span class="block-meta">#{section.block.number}</span>
 				{:else}
 					<span class="block-ticker">MEMPOOL</span>
 				{/if}
@@ -96,7 +97,7 @@
 
 			{#if section.block}
 				<div class="block-footer">
-					<span class="block-meta">#{section.block.number}</span>
+					<span class="block-meta">{section.block.hash.slice(0, 4)}…{section.block.hash.slice(-4)}</span>
 					<span class="block-meta">
 						{#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
 					</span>
@@ -143,8 +144,14 @@
 		filter: grayscale(1);
 	}
 
+	.section.mempool .block-header {
+		justify-content: center;
+	}
+
 	.block-header {
-		text-align: center;
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
 		margin-bottom: calc(var(--block-padding) + var(--block-border));
 		line-height: 1;
 	}
@@ -156,7 +163,7 @@
 	}
 
 	.block-meta {
-		color: white;
+		color: rgb(0 0 0 / 0.5);
 		font-size: 10px;
 	}
 
