@@ -87,8 +87,8 @@
 					<div class="assets">
 						{#each output.assets as asset}
 							<div class="asset">
-								{#if thumbSize >= 32 && (asset.quantity !== '1' || asset.name)}
-									<span class="asset-label">{#if asset.quantity !== '1'}{asset.quantity}{/if}{#if asset.quantity !== '1' && asset.name}&nbsp;{/if}{#if asset.name}{asset.name}{/if}</span>
+								{#if thumbSize >= 32 && asset.quantity !== '1'}
+									<span class="asset-label">{asset.quantity}</span>
 								{/if}
 								<img
 									class="asset-thumb"
@@ -189,9 +189,8 @@
 	.asset-label {
 		font-size: 9px;
 		color: var(--text-muted);
-		max-width: var(--thumb-size, 64px);
 		text-align: center;
-		overflow-wrap: break-word;
+		white-space: nowrap;
 	}
 
 	.asset-thumb {
