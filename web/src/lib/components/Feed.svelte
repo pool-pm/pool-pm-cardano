@@ -5,7 +5,6 @@
 	import { TX_WIDTH, TX_GAP, FLIP_DURATION, squareWidth } from '../layout';
 	import BinPackGrid from './BinPackGrid.svelte';
 	import Transaction from './Transaction.svelte';
-	import type { Section } from '../types';
 
 	const MAX_AGE_MS = 600_000;
 	const MAX_BLOCKS = 30;
@@ -29,30 +28,10 @@
 		const interval = setInterval(() => {
 			const cutoff = Date.now() - MAX_AGE_MS;
 			sections.update((s) => {
-				let changed = false;
-
-				// Clean old mempool txs (first section)
-				const mempool = s[0];
-				const before = mempool.txs.length;
-				mempool.txs = mempool.txs.filter((tx) => tx.receivedAt >= cutoff);
-				if (mempool.txs.length !== before) changed = true;
-
-				// Remove old block sections
-				const filtered = s.filter(
-					(section, i) => i === 0 || section.receivedAt >= cutoff
-				);
-				if (filtered.length !== s.length) {
-					s = filtered;
-					changed = true;
-				}
-
-				// Enforce max block count (keep mempool + MAX_BLOCKS blocks)
-				if (s.length > MAX_BLOCKS + 1) {
-					s = s.slice(0, MAX_BLOCKS + 1);
-					changed = true;
-				}
-
-				return changed ? [...s] : s;
+				s[0].txs = s[0].txs.filter((tx) => tx.receivedAt >= cutoff);
+				return s
+					.filter((section, i) => i === 0 || section.receivedAt >= cutoff)
+					.slice(0, MAX_BLOCKS + 1);
 			});
 		}, 10_000);
 		return () => clearInterval(interval);

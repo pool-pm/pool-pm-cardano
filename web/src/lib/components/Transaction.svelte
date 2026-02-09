@@ -10,16 +10,8 @@
 	}
 
 	function truncateAddr(a: string): string {
-		if (a.startsWith('addr1') && a.length > 13) {
-			return a.slice(0, 9) + '\u2026' + a.slice(-4);
-		}
-		if (a.startsWith('addr_test1') && a.length > 18) {
-			return a.slice(0, 14) + '\u2026' + a.slice(-4);
-		}
-		if (a.length > 13) {
-			return a.slice(0, 9) + '\u2026' + a.slice(-4);
-		}
-		return a;
+		const keep = a.startsWith('addr_test1') ? 14 : 9;
+		return a.length > keep + 4 ? a.slice(0, keep) + '\u2026' + a.slice(-4) : a;
 	}
 
 	function formatAda(lovelace: string): string {
@@ -33,11 +25,8 @@
 	}
 
 	function nftcdnUrl(asset: AssetInfo): string {
-		const sub = $config!.nftcdn;
-		if (asset.tk) {
-			return `https://${asset.fingerprint}.${sub}/preview?tk=${asset.tk}&size=128`;
-		}
-		return `https://${asset.fingerprint}.${sub}/preview?size=128`;
+		const url = `https://${asset.fingerprint}.${$config!.nftcdn}/preview?size=128`;
+		return asset.tk ? `${url}&tk=${asset.tk}` : url;
 	}
 
 	// Filter outputs: exclude those going back to a source address (change)
