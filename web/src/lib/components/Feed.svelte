@@ -145,7 +145,8 @@
 
 	.block-header {
 		text-align: center;
-		margin-bottom: var(--block-padding);
+		margin-bottom: calc(var(--block-padding) + var(--block-border));
+		line-height: 1;
 	}
 
 	.block-footer {
@@ -156,13 +157,14 @@
 
 	.block-meta {
 		color: white;
-		font-size: 11px;
+		font-size: 10px;
 	}
 
 	.block-ticker {
 		color: white;
 		font-size: 13px;
 		font-weight: 700;
+		line-height: 1;
 	}
 
 </style>
