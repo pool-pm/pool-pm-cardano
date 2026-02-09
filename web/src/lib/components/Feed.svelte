@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { flip } from 'svelte/animate';
+	import { slide } from 'svelte/transition';
 	import { sections } from '../stores';
 	import { TX_WIDTH, TX_GAP, FLIP_DURATION, squareWidth } from '../layout';
 	import BinPackGrid from './BinPackGrid.svelte';
@@ -95,6 +96,7 @@
 			style:margin-top="{spacing}px"
 			style:--line-height="{gap}px"
 			animate:flip={{ duration: FLIP_DURATION }}
+			out:slide={{ duration: FLIP_DURATION }}
 		>
 			{#if section.block}
 				<div class="block-header">
