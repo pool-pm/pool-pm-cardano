@@ -173,4 +173,8 @@
 		font-size: 11px;
 		margin-left: auto;
 	}
+
+	.section:not(.block) :global(.tx-card) {
+		background: #222;
+	}
 </style>
