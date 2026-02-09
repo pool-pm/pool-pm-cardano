@@ -77,15 +77,9 @@
 			animate:flip={{ duration: FLIP_DURATION }}
 			out:slide={{ duration: FLIP_DURATION }}
 		>
-			{#if section.block}
+			{#if section.block && (section.block.pool_ticker || section.block.pool_id)}
 				<div class="block-header">
-					<span class="block-meta">#{section.block.number}</span>
-					{#if section.block.pool_ticker || section.block.pool_id}
-						<span class="block-ticker">{section.block.pool_ticker ?? section.block.pool_id?.slice(0, 9)}</span>
-					{/if}
-					<span class="block-meta">
-						{#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
-					</span>
+					<span class="block-ticker">{section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10).toUpperCase()}</span>
 				</div>
 			{/if}
 
@@ -95,6 +89,15 @@
 						<Transaction {tx} />
 					{/snippet}
 				</BinPackGrid>
+			{/if}
+
+			{#if section.block}
+				<div class="block-footer">
+					<span class="block-meta">#{section.block.number}</span>
+					<span class="block-meta">
+						{#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
+					</span>
+				</div>
 			{/if}
 		</div>
 	{/each}
@@ -135,11 +138,14 @@
 	}
 
 	.block-header {
+		text-align: center;
+		margin-bottom: var(--block-padding);
+	}
+
+	.block-footer {
 		display: flex;
-		align-items: center;
-		gap: 8px;
-		margin-bottom: 8px;
-		flex-shrink: 0;
+		justify-content: space-between;
+		margin-top: 8px;
 	}
 
 	.block-meta {
@@ -149,8 +155,8 @@
 
 	.block-ticker {
 		color: white;
-		font-size: 11px;
-		margin: 0 auto;
+		font-size: 13px;
+		font-weight: 700;
 	}
 
 	.section:not(.block) :global(.tx-card) {
