@@ -74,7 +74,7 @@
 			style:background-color={color}
 			style:max-width="{maxWidth}px"
 			style:margin-top="{spacing}px"
-			style:--line-height="{gap}px"
+			style:--line-height="{spacing}px"
 			animate:flip={{ duration: FLIP_DURATION }}
 			out:slide={{ duration: FLIP_DURATION }}
 		>
