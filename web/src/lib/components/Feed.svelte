@@ -37,9 +37,16 @@
 		return () => clearInterval(interval);
 	});
 
-	function blockColor(hash: string): string {
-		const hue = (parseInt(hash.slice(0, 4), 16) / 0xffff) * 360;
-		return `oklch(0.7 0.25 ${hue.toFixed(1)})`;
+	// Hash pool_id (minus "pool1" prefix) to a hue using a Fibonacci hashing variant
+	// (multiply by golden ratio constant 0x9e3779b9) for uniform distribution across 0-359°
+	function blockColor(poolId?: string): string {
+		const key = poolId?.slice(5) ?? '';
+		let h = 0;
+		for (let i = 0; i < key.length; i++) {
+			h = Math.imul(h ^ key.charCodeAt(i), 0x9e3779b9);
+		}
+		const hue = ((h >>> 0) % 360);
+		return `oklch(0.7 0.25 ${hue})`;
 	}
 
 	function timeAgo(timestamp: number): string {
@@ -57,7 +64,7 @@
 <div class="feed" style:--block-padding="{BLOCK_PADDING}px" style:--block-border="{BLOCK_BORDER}px" style:--flip-duration="{FLIP_DURATION}ms">
 	{#each $sections as section, i (section.id)}
 		{@const isMempool = !section.block}
-		{@const color = section.block ? blockColor(section.block.hash) : '#111'}
+		{@const color = section.block ? blockColor(section.block.pool_id) : '#111'}
 		{@const maxWidth = squareWidth(section.txs.length) + BLOCK_INSET}
 		{@const prevTimestamp = i > 0
 			? $sections[i - 1].block?.timestamp ?? now / 1000
