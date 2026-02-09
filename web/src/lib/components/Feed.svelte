@@ -60,7 +60,7 @@
 		{@const color = section.block ? blockColor(section.block.hash) : '#111'}
 		{@const maxWidth = squareWidth(section.txs.length) + BLOCK_INSET}
 		{@const prevTimestamp = i > 0
-			? $sections[i - 1].block?.timestamp ?? ($sections[i - 1].txs[0]?.receivedAt ?? 0) / 1000
+			? $sections[i - 1].block?.timestamp ?? now / 1000
 			: undefined}
 		{@const gap = prevTimestamp && section.block
 			? Math.max(0, (prevTimestamp - section.block.timestamp) * PX_PER_SECOND)
