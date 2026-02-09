@@ -130,7 +130,7 @@
 <div
 	class="bin-pack-container"
 	bind:this={container}
-	style="height: {containerHeight}px; --item-width: {itemWidth}px; --flip-duration: {FLIP_DURATION}ms"
+	style="height: {containerHeight}px; --item-width: {itemWidth}px"
 >
 	{#each items as item (key(item))}
 		{@const k = key(item)}

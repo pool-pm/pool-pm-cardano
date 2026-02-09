@@ -75,7 +75,7 @@
 	}
 </script>
 
-<div class="feed" style:--block-padding="{BLOCK_PADDING}px" style:--block-border="{BLOCK_BORDER}px">
+<div class="feed" style:--block-padding="{BLOCK_PADDING}px" style:--block-border="{BLOCK_BORDER}px" style:--flip-duration="{FLIP_DURATION}ms">
 	{#each $sections as section, i (section.id)}
 		{@const color = section.block ? blockColor(section.block.hash) : undefined}
 		{@const maxWidth = squareWidth(section.txs.length) + (section.block ? BLOCK_INSET : 0)}
@@ -176,5 +176,6 @@
 
 	.section:not(.block) :global(.tx-card) {
 		background: #222;
+		filter: grayscale(1);
 	}
 </style>

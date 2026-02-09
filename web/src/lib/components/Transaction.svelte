@@ -125,6 +125,7 @@
 		width: var(--item-width);
 		font-size: 11px;
 		text-align: center;
+		transition: filter var(--flip-duration) ease;
 	}
 
 	.tx-hash {
