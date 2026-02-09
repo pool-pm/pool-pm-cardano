@@ -80,8 +80,8 @@
 			{#if section.block}
 				<div class="block-header">
 					<span class="block-meta">#{section.block.number}</span>
-					{#if section.block.pool_ticker}
-						<span class="block-ticker">{section.block.pool_ticker}</span>
+					{#if section.block.pool_ticker || section.block.pool_id}
+						<span class="block-ticker">{section.block.pool_ticker ?? section.block.pool_id?.slice(0, 9)}</span>
 					{/if}
 					<span class="block-meta">
 						{#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
