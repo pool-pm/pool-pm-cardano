@@ -67,13 +67,17 @@
 	// Count hidden change outputs
 	let changeCount = $derived(tx.outputs.length - filteredOutputs.length);
 
+	// Total asset count across visible outputs → scale thumbnails
+	let totalAssets = $derived(filteredOutputs.reduce((sum, o) => sum + o.assets.length, 0));
+	let thumbSize = $derived(totalAssets <= 1 ? 64 : Math.max(16, Math.floor(64 / Math.sqrt(totalAssets))));
+
 	// Deduplicate inputs by address
 	let uniqueInputs = $derived(
 		[...new Map(tx.inputs.map((i) => [i.address, i])).values()]
 	);
 </script>
 
-<div class="tx-card">
+<div class="tx-card" style:--thumb-size="{thumbSize}px">
 	<div class="addr-list">
 		{#each filteredOutputs as output}
 			<div class="addr-item">
@@ -83,7 +87,7 @@
 					<div class="assets">
 						{#each output.assets as asset}
 							<div class="asset">
-								{#if asset.quantity !== '1' || asset.name}
+								{#if thumbSize >= 32 && (asset.quantity !== '1' || asset.name)}
 									<span class="asset-label">{#if asset.quantity !== '1'}{asset.quantity}{/if}{#if asset.quantity !== '1' && asset.name}&nbsp;{/if}{#if asset.name}{asset.name}{/if}</span>
 								{/if}
 								<img
@@ -185,14 +189,14 @@
 	.asset-label {
 		font-size: 9px;
 		color: var(--text-muted);
-		max-width: 64px;
+		max-width: var(--thumb-size, 64px);
 		text-align: center;
 		overflow-wrap: break-word;
 	}
 
 	.asset-thumb {
-		width: 64px;
-		height: 64px;
+		width: var(--thumb-size, 64px);
+		height: var(--thumb-size, 64px);
 		border-radius: 3px;
 		background: transparent;
 		object-fit: contain;
