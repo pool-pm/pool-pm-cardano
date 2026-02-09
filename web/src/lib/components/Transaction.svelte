@@ -84,6 +84,12 @@
 									src={nftcdnUrl(asset)}
 									alt={asset.fingerprint}
 									loading="lazy"
+									hidden
+									onload={(e: Event) => {
+									const img = e.target as HTMLElement;
+									img.hidden = false;
+									img.dispatchEvent(new Event('remeasure', { bubbles: true }));
+								}}
 									onerror={(e: Event) => {
 									const asset = (e.target as HTMLElement).parentElement!;
 									const parent = asset.parentElement;
