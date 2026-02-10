@@ -83,6 +83,7 @@
 			class:has-line={i > 0 && gap > 0}
 			style:border-color={color}
 			style:background-color={color}
+			style:--section-color={color}
 			style:max-width="{maxWidth}px"
 			style:margin-top="{spacing}px"
 			style:--line-height="{spacing}px"

@@ -133,7 +133,8 @@
 	}
 
 	.tx-hash {
-		color: var(--accent);
+		color: var(--section-color, var(--accent));
+		font-size: 10px;
 		margin-top: 6px;
 	}
 
@@ -162,7 +163,7 @@
 	}
 
 	.arrow {
-		color: var(--text-muted);
+		color: rgb(255 255 255 / 0.4);
 		text-align: center;
 		font-size: 12px;
 		margin: 4px 0;
