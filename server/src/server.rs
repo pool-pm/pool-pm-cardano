@@ -31,8 +31,10 @@ async fn events(
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let (snapshot, rx) = state.bus.subscribe().await;
 
-    let config = Some(Ok(SseEvent::default()
-        .data(format!("{{\"type\":\"Config\",\"nftcdn\":\"{}\"}}", state.nftcdn_subdomain))));
+    let config = Some(Ok(SseEvent::default().data(format!(
+        "{{\"type\":\"Config\",\"nftcdn\":\"{}\"}}",
+        state.nftcdn_subdomain
+    ))));
 
     let init = if snapshot.is_empty() {
         None
@@ -49,7 +51,10 @@ async fn events(
 }
 
 pub async fn serve(addr: SocketAddr, bus: Arc<EventBus>, nftcdn_subdomain: &'static str) {
-    let state = AppState { bus, nftcdn_subdomain };
+    let state = AppState {
+        bus,
+        nftcdn_subdomain,
+    };
     let app = Router::new()
         .route("/events", get(events))
         .layer(CorsLayer::permissive())

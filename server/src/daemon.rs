@@ -113,7 +113,12 @@ pub fn run(args: Args) -> Result<(), Error> {
     let source = source_config.bootstrapper(&ctx)?;
     let sink = sink::bootstrapper(&ctx, event_bus.clone(), state.clone(), nftcdn.clone())?;
     let cursor = cursor::Bootstrapper::File(cursor_config.bootstrapper(&ctx)?);
-    let mempool = mempool::bootstrapper(mempool_config, event_bus.clone(), state.clone(), nftcdn.clone());
+    let mempool = mempool::bootstrapper(
+        mempool_config,
+        event_bus.clone(),
+        state.clone(),
+        nftcdn.clone(),
+    );
     let retries = define_gasket_policy();
     let daemon = connect_stages(source, sink, cursor, mempool, retries)?;
 

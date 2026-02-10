@@ -92,6 +92,7 @@ Values that can exceed `Number.MAX_SAFE_INTEGER` (`lovelace`, `fee`, `quantity`)
 
 ### Coding Guidelines
 
+- **Formatting**: Never use tabs in source files. Always format before committing: `cargo fmt` for Rust, `pnpm prettier --write` for frontend (configured in `web/.prettierrc`).
 - **Animations**: Prefer Svelte's built-in animation features (`svelte/animate`, `svelte/transition`) over pure CSS when they provide a better, smoother, or simpler solution. Use `animate:flip` for list reordering, transitions for enter/exit animations.
 - **Package versions**: Use LTS or stable versions when possible, particularly for TypeScript, JavaScript runtimes, and Svelte.
 - **Type safety**: Prefer specific types over `any`. Use `unknown` when the type is genuinely dynamic, narrowing it before use. `any` is acceptable when interfacing with untyped libraries or when proper typing would require disproportionately complex generics.

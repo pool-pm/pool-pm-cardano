@@ -27,8 +27,7 @@ impl NftcdnConfig {
     pub fn new(network: &Chain) -> Self {
         let (subdomain, key) = match network.config() {
             ChainConfig::Mainnet => {
-                let raw = std::env::var("NFTCDN_KEY")
-                    .expect("NFTCDN_KEY must be set for mainnet");
+                let raw = std::env::var("NFTCDN_KEY").expect("NFTCDN_KEY must be set for mainnet");
                 ("poolpm.nftcdn.io", Some(decode_key(&raw)))
             }
             ChainConfig::PreProd => ("preprod.nftcdn.io", Some(decode_key(PREPROD_KEY))),
