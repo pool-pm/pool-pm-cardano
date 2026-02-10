@@ -41,15 +41,19 @@
 				.map((i) => (i.address ? stakeCredential(i.address) : null))
 				.filter((x): x is string => x !== null)
 		);
-		return tx.outputs.filter((o) => {
+		// First pass: filter by exact payment credential match
+		const afterPayment = tx.outputs.filter((o) => {
 			const cred = paymentCredential(o.address);
-			if (cred !== null && inputPayments.has(cred)) return false;
-			// Likely change: same stake credential + many assets
-			if (o.assets.length > 4) {
-				const stake = stakeCredential(o.address);
-				if (stake !== null && inputStakes.has(stake)) return false;
-			}
-			return true;
+			return cred === null || !inputPayments.has(cred);
+		});
+		// Second pass: heuristic change detection, only if non-change outputs remain
+		return afterPayment.filter((o) => {
+			if (o.assets.length <= 4 || afterPayment.length <= 1) return true;
+			// Byron address with many assets
+			if (!o.address.startsWith('addr')) return false;
+			// Same stake credential with many assets
+			const stake = stakeCredential(o.address);
+			return stake === null || !inputStakes.has(stake);
 		});
 	});
 
