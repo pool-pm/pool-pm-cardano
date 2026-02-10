@@ -42,42 +42,33 @@ impl Worker {
         let height = block.number();
         let block_hash = block.hash().to_string();
 
-        let mut produced = Vec::new();
-        let mut consumed = Vec::new();
-
-        for tx in block.txs() {
-            let tx_hash = tx.hash();
-
-            for input in tx.inputs() {
-                consumed.push((input.hash().as_ref().to_vec(), input.index() as i16));
-            }
-
-            for (idx, output) in tx.outputs().iter().enumerate() {
-                let address = output
-                    .address()
-                    .ok()
-                    .map(|a| a.to_vec())
-                    .unwrap_or_default();
-                let lovelaces = Decimal::from(output.value().coin());
-                produced.push((
-                    (tx_hash.as_ref().to_vec(), idx as i16),
-                    TxOutput { lovelaces, address },
-                ));
-            }
-        }
-
-        // Build lookup for intra-block UTXO resolution (chained txs within a block)
-        let produced_map: std::collections::HashMap<(Vec<u8>, i16), &TxOutput> =
-            produced.iter().map(|(k, v)| (k.clone(), v)).collect();
-
-        // Extract full transaction data while consumed UTXOs still exist in state
-        // Also look up the block's pool (issuer) from state
-        let (txs, pool_id, pool_ticker) = {
+        // Single pass: txs are ordered in a block, so chained tx outputs
+        // are available for resolving later txs' inputs.
+        let (txs, produced, consumed, pool_id, pool_ticker) = {
             let state = stage.state.read().await;
             let mut txs = Vec::new();
+            let mut consumed = Vec::new();
+            let mut produced: std::collections::HashMap<(Vec<u8>, i16), TxOutput> =
+                std::collections::HashMap::new();
+
             for tx in block.txs() {
-                txs.push(extract_tx(&tx, &state, &stage.nftcdn, &produced_map).await);
+                let hash = tx.hash();
+                for input in tx.inputs() {
+                    consumed.push((input.hash().as_ref().to_vec(), input.index() as i16));
+                }
+                txs.push(extract_tx(&tx, &state, &stage.nftcdn, &produced).await);
+                for (idx, output) in tx.outputs().iter().enumerate() {
+                    produced.insert(
+                        (hash.as_ref().to_vec(), idx as i16),
+                        TxOutput {
+                            lovelaces: Decimal::from(output.value().coin()),
+                            address: output.address().ok().map(|a| a.to_vec()).unwrap_or_default(),
+                        },
+                    );
+                }
             }
+
+            let produced: Vec<_> = produced.into_iter().collect();
 
             let (pool_id, pool_ticker) = block
                 .header()
@@ -94,7 +85,7 @@ impl Worker {
                 })
                 .unwrap_or((None, None));
 
-            (txs, pool_id, pool_ticker)
+            (txs, produced, consumed, pool_id, pool_ticker)
         };
 
         let timestamp = stage.genesis.shelley_known_time

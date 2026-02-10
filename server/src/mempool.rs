@@ -17,7 +17,7 @@ pub async fn extract_tx(
     tx: &MultiEraTx<'_>,
     state: &State,
     nftcdn: &NftcdnConfig,
-    block_utxos: &std::collections::HashMap<(Vec<u8>, i16), &TxOutput>,
+    block_utxos: &std::collections::HashMap<(Vec<u8>, i16), TxOutput>,
 ) -> BlockTx {
     let hash = tx.hash().to_string();
     let fee = tx.fee().unwrap_or(0);
