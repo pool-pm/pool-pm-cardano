@@ -133,12 +133,17 @@ impl State {
                 pallas::ledger::addresses::Address::from_bytes(&utxo.address)
                     .ok()
                     .map(|a| a.to_string()),
-                utxo.lovelaces.try_into().ok().unwrap_or(0),
+                utxo.lovelaces
+                    .try_into()
+                    .expect("lovelace value must fit u64"),
             );
         }
         if let Some(db) = self.db().await {
             if let Ok(Some((address, value))) = db.resolve_utxo(tx_hash, index).await {
-                return (Some(address), value.try_into().ok().unwrap_or(0));
+                return (
+                    Some(address),
+                    value.try_into().expect("lovelace value must fit u64"),
+                );
             }
         }
         (None, 0)
