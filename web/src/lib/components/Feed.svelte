@@ -56,6 +56,10 @@
 		return `${Math.floor(sec / 3600)}h ago`;
 	}
 
+	function formatTicker(ticker: string): string {
+		return ticker.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
+	}
+
 	function formatTime(timestamp: number): string {
 		return new Date(timestamp * 1000).toLocaleTimeString();
 	}
@@ -87,7 +91,7 @@
 		>
 			<div class="block-header">
 				{#if section.block}
-					<span class="block-ticker">{section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10).toUpperCase()}</span>
+					<span class="block-ticker">{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</span>
 					<span class="block-meta">#{section.block.number}</span>
 				{:else}
 					<span class="block-ticker">MEMPOOL</span>
