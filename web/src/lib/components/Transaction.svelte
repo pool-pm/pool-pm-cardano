@@ -201,9 +201,7 @@
 
 	.asset-thumb {
 		width: var(--thumb-size, 64px);
-		height: var(--thumb-size, 64px);
 		border-radius: 3px;
 		background: transparent;
-		object-fit: contain;
 	}
 </style>
