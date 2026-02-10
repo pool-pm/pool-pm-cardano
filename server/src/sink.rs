@@ -62,7 +62,11 @@ impl Worker {
                         (hash.as_ref().to_vec(), idx as i16),
                         TxOutput {
                             lovelaces: Decimal::from(output.value().coin()),
-                            address: output.address().ok().map(|a| a.to_vec()).unwrap_or_default(),
+                            address: output
+                                .address()
+                                .ok()
+                                .map(|a| a.to_vec())
+                                .unwrap_or_default(),
                         },
                     );
                 }
@@ -77,12 +81,7 @@ impl Worker {
                     let pool_hash = Hasher::<224>::hash(vkey);
                     state.current()?.pools.get(&hex::encode(pool_hash.as_ref()))
                 })
-                .map(|pool| {
-                    (
-                        Some(pool_bech32_id(&pool.hash_raw)),
-                        pool.ticker.clone(),
-                    )
-                })
+                .map(|pool| (Some(pool_bech32_id(&pool.hash_raw)), pool.ticker.clone()))
                 .unwrap_or((None, None));
 
             (txs, produced, consumed, pool_id, pool_ticker)
@@ -94,7 +93,7 @@ impl Worker {
 
         {
             let mut state = stage.state.write().await;
-            state.apply_block(slot, height, produced, &consumed);
+            state.apply_block(slot, produced, &consumed);
         }
 
         let tx_count = txs.len();

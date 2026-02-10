@@ -4,11 +4,10 @@ use imbl::{hashmap::HashMap, hashset::HashSet};
 use sqlx::types::Decimal;
 use url::Url;
 
-use dbsync::DbSync;
 use crate::model::{Pool, TxOutput};
+use dbsync::DbSync;
 
 pub struct BlockSnapshot {
-    pub height: u64,
     pub slot: u64,
     pub utxos: HashMap<(Vec<u8>, i16), TxOutput>,
     pub pools: HashMap<String, Pool>,
@@ -68,7 +67,6 @@ impl State {
 
         self.history.clear();
         self.history.push(BlockSnapshot {
-            height: 0,
             slot,
             utxos: HashMap::new(),
             pools,
@@ -85,7 +83,6 @@ impl State {
     pub fn apply_block(
         &mut self,
         slot: u64,
-        height: u64,
         produced: Vec<((Vec<u8>, i16), TxOutput)>,
         consumed: &[(Vec<u8>, i16)],
     ) {
@@ -100,7 +97,6 @@ impl State {
         }
 
         self.history.push(BlockSnapshot {
-            height,
             slot,
             utxos,
             pools: prev.pools.clone(),
