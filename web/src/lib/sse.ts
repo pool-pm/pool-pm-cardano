@@ -1,7 +1,23 @@
 import { sections, newSection, config } from './stores';
-import type { BlockEvent, Config, Event, MempoolTxEvent, Section } from './types';
+import type { BlockEvent, BlockTx, Config, Event, MempoolTxEvent, Section } from './types';
 
 let source: EventSource | null = null;
+
+/** Resolve unresolved input addresses from other txs' outputs in the same set */
+function resolveInputs(txs: BlockTx[]): void {
+	const outputsByHash = new Map(txs.map((tx) => [tx.hash, tx.outputs]));
+	for (const tx of txs) {
+		for (const input of tx.inputs) {
+			if (!input.address) {
+				const output = outputsByHash.get(input.tx_hash)?.[input.index];
+				if (output) {
+					input.address = output.address;
+					input.lovelace = output.lovelace;
+				}
+			}
+		}
+	}
+}
 
 function handleSnapshot(events: Event[]): void {
 	const now = Date.now();
@@ -31,6 +47,7 @@ function handleSnapshot(events: Event[]): void {
 	// Build mempool
 	const mempool = newSection();
 	mempool.txs = mempoolTxEvents.map((tx) => ({ ...tx, receivedAt: now }));
+	resolveInputs(mempool.txs);
 
 	sections.set([mempool, ...blockSections]);
 }
@@ -44,19 +61,7 @@ function handleEvent(event: Event): void {
 				if (!mempool.txs.some((t) => t.hash === event.hash)) {
 					mempool.txs = [{ ...event, receivedAt: now }, ...mempool.txs];
 				}
-				// Resolve unresolved inputs from other mempool txs' outputs
-				const outputsByHash = new Map(mempool.txs.map((tx) => [tx.hash, tx.outputs]));
-				for (const tx of mempool.txs) {
-					for (const input of tx.inputs) {
-						if (!input.address) {
-							const output = outputsByHash.get(input.tx_hash)?.[input.index];
-							if (output) {
-								input.address = output.address;
-								input.lovelace = output.lovelace;
-							}
-						}
-					}
-				}
+				resolveInputs(mempool.txs);
 				return [...s];
 			});
 			break;
