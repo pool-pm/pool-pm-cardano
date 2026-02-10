@@ -200,7 +200,9 @@
 	}
 
 	.asset-thumb {
-		width: var(--thumb-size, 64px);
+		max-width: var(--thumb-size, 64px);
+		max-height: var(--thumb-size, 64px);
+		align-self: center;
 		border-radius: 3px;
 		background: transparent;
 	}
