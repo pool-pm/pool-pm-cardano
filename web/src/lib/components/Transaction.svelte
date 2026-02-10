@@ -77,7 +77,6 @@
 		{#each filteredOutputs as output}
 			<div class="addr-item">
 				<span class="ada">{formatAda(output.lovelace)}</span>
-				<span class="addr mono">{truncateAddr(output.address)}</span>
 				{#if output.assets.length > 0 && $config}
 					<div class="assets">
 						{#each output.assets as asset}
@@ -101,6 +100,7 @@
 						{/each}
 					</div>
 				{/if}
+				<span class="addr mono">{truncateAddr(output.address)}</span>
 			</div>
 		{/each}
 		</div>
