@@ -136,29 +136,9 @@ impl State {
                 utxo.lovelaces.try_into().ok().unwrap_or(0),
             );
         }
-        match self.db().await {
-            Some(db) => match db.resolve_utxo(tx_hash, index).await {
-                Ok(Some((address, value))) => {
-                    return (Some(address), value.try_into().ok().unwrap_or(0));
-                }
-                Ok(None) => {
-                    tracing::warn!(
-                        tx_hash = hex::encode(tx_hash),
-                        index,
-                        "UTXO not found in memory or db-sync"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        tx_hash = hex::encode(tx_hash),
-                        index,
-                        error = %e,
-                        "db-sync query failed"
-                    );
-                }
-            },
-            None => {
-                tracing::warn!("db connection unavailable for UTXO resolution");
+        if let Some(db) = self.db().await {
+            if let Ok(Some((address, value))) = db.resolve_utxo(tx_hash, index).await {
+                return (Some(address), value.try_into().ok().unwrap_or(0));
             }
         }
         (None, 0)
