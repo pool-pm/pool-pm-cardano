@@ -5,7 +5,6 @@ use sqlx::types::Decimal;
 use url::Url;
 
 use dbsync::DbSync;
-use crate::event::TxInput;
 use crate::model::{Pool, TxOutput};
 
 pub struct BlockSnapshot {
@@ -128,26 +127,23 @@ impl State {
     }
 
     /// Resolve an input by (tx_hash, output_index): check in-memory UTXOs first,
-    /// then fall back to db-sync.
-    pub async fn resolve_input(&self, tx_hash: &[u8], index: i16) -> TxInput {
+    /// then fall back to db-sync. Returns (address, lovelace).
+    pub async fn resolve_input(&self, tx_hash: &[u8], index: i16) -> (Option<String>, u64) {
         if let Some(utxo) = self
             .current()
             .and_then(|s| s.utxos.get(&(tx_hash.to_vec(), index)))
         {
-            return TxInput {
-                address: pallas::ledger::addresses::Address::from_bytes(&utxo.address)
+            return (
+                pallas::ledger::addresses::Address::from_bytes(&utxo.address)
                     .ok()
                     .map(|a| a.to_string()),
-                lovelace: utxo.lovelaces.try_into().ok().unwrap_or(0),
-            };
+                utxo.lovelaces.try_into().ok().unwrap_or(0),
+            );
         }
         match self.db().await {
             Some(db) => match db.resolve_utxo(tx_hash, index).await {
                 Ok(Some((address, value))) => {
-                    return TxInput {
-                        address: Some(address),
-                        lovelace: value.try_into().ok().unwrap_or(0),
-                    };
+                    return (Some(address), value.try_into().ok().unwrap_or(0));
                 }
                 Ok(None) => {
                     tracing::warn!(
@@ -169,9 +165,6 @@ impl State {
                 tracing::warn!("db connection unavailable for UTXO resolution");
             }
         }
-        TxInput {
-            address: None,
-            lovelace: 0,
-        }
+        (None, 0)
     }
 }

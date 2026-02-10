@@ -44,6 +44,19 @@ function handleEvent(event: Event): void {
 				if (!mempool.txs.some((t) => t.hash === event.hash)) {
 					mempool.txs = [{ ...event, receivedAt: now }, ...mempool.txs];
 				}
+				// Resolve unresolved inputs from other mempool txs' outputs
+				const outputsByHash = new Map(mempool.txs.map((tx) => [tx.hash, tx.outputs]));
+				for (const tx of mempool.txs) {
+					for (const input of tx.inputs) {
+						if (!input.address) {
+							const output = outputsByHash.get(input.tx_hash)?.[input.index];
+							if (output) {
+								input.address = output.address;
+								input.lovelace = output.lovelace;
+							}
+						}
+					}
+				}
 				return [...s];
 			});
 			break;

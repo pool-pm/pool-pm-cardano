@@ -3,6 +3,8 @@ export interface Config {
 }
 
 export interface TxInput {
+	tx_hash: string;
+	index: number;
 	address: string | null;
 	lovelace: string;
 }

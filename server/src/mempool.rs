@@ -25,21 +25,27 @@ pub async fn extract_tx(
 
     let mut inputs = Vec::new();
     for input in tx.inputs() {
-        let key = (input.hash().as_ref().to_vec(), input.index() as i16);
-        if let Some(utxo) = block_utxos.get(&key) {
-            inputs.push(TxInput {
-                address: pallas::ledger::addresses::Address::from_bytes(&utxo.address)
+        let input_tx_hash = input.hash().to_string();
+        let input_index = input.index() as i16;
+        let key = (input.hash().as_ref().to_vec(), input_index);
+        let (address, lovelace) = if let Some(utxo) = block_utxos.get(&key) {
+            (
+                pallas::ledger::addresses::Address::from_bytes(&utxo.address)
                     .ok()
                     .map(|a| a.to_string()),
-                lovelace: utxo.lovelaces.try_into().ok().unwrap_or(0),
-            });
+                utxo.lovelaces.try_into().ok().unwrap_or(0),
+            )
         } else {
-            inputs.push(
-                state
-                    .resolve_input(input.hash().as_ref(), input.index() as i16)
-                    .await,
-            );
-        }
+            state
+                .resolve_input(input.hash().as_ref(), input_index)
+                .await
+        };
+        inputs.push(TxInput {
+            tx_hash: input_tx_hash,
+            index: input_index,
+            address,
+            lovelace,
+        });
     }
 
     let outputs: Vec<TxOutputInfo> = tx

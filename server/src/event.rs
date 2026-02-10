@@ -40,6 +40,8 @@ pub enum Event {
 
 #[derive(Clone, Serialize)]
 pub struct TxInput {
+    pub tx_hash: String,
+    pub index: i16,
     pub address: Option<String>,
     #[serde(with = "string")]
     pub lovelace: u64,
