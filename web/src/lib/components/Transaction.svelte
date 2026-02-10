@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { AssetInfo, FeedTx, TxOutputInfo } from '../types';
-	import { paymentCredential, stakeCredential } from '../bech32';
+	import { bech32Decode, paymentCredential, stakeCredential } from '../bech32';
 	import { config } from '../stores';
 
 	let { tx }: { tx: FeedTx } = $props();
@@ -46,12 +46,14 @@
 			const cred = paymentCredential(o.address);
 			return cred === null || !inputPayments.has(cred);
 		});
-		// Second pass: heuristic change detection, only if non-change outputs remain
+		// Second pass: heuristic change detection for non-script addresses
 		return afterPayment.filter((o) => {
-			if (o.assets.length <= 4 || afterPayment.length <= 1) return true;
-			// Byron address with many assets
-			if (!o.address.startsWith('addr')) return false;
-			// Same stake credential with many assets
+			if (o.assets.length <= 4) return true;
+			// Byron address with many assets, only if non-change outputs remain
+			if (!o.address.startsWith('addr')) return afterPayment.length <= 1;
+			// Same stake credential with many assets, but not a script address
+			const bytes = bech32Decode(o.address);
+			if (bytes && (bytes[0] & 0x10) !== 0) return true;
 			const stake = stakeCredential(o.address);
 			return stake === null || !inputStakes.has(stake);
 		});
@@ -80,9 +82,6 @@
 					<div class="assets">
 						{#each output.assets as asset}
 							<div class="asset">
-								{#if thumbSize >= 32 && asset.quantity !== '1'}
-									<span class="asset-label">{asset.quantity}</span>
-								{/if}
 								<img
 									class="asset-thumb"
 									src={nftcdnUrl(asset)}
@@ -95,6 +94,9 @@
 									parent?.dispatchEvent(new Event('remeasure', { bubbles: true }));
 								}}
 								/>
+								{#if thumbSize >= 32 && asset.quantity !== '1'}
+									<span class="asset-label">{BigInt(asset.quantity).toLocaleString()}</span>
+								{/if}
 							</div>
 						{/each}
 					</div>
@@ -139,7 +141,7 @@
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 2px;
+		gap: 4px;
 	}
 
 	.addr-item {
@@ -191,7 +193,7 @@
 
 	.asset-label {
 		font-size: 9px;
-		color: var(--text-muted);
+		color: white;
 		text-align: center;
 		white-space: nowrap;
 	}
