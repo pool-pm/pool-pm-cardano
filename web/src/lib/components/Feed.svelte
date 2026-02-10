@@ -64,7 +64,7 @@
 <div class="feed" style:--block-padding="{BLOCK_PADDING}px" style:--block-border="{BLOCK_BORDER}px" style:--flip-duration="{FLIP_DURATION}ms">
 	{#each $sections as section, i (section.id)}
 		{@const isMempool = !section.block}
-		{@const color = section.block ? blockColor(section.block.pool_id) : '#111'}
+		{@const color = section.block ? blockColor(section.block.pool_id) : '#222'}
 		{@const maxWidth = squareWidth(section.txs.length) + BLOCK_INSET}
 		{@const prevTimestamp = i > 0
 			? $sections[i - 1].block?.timestamp ?? now / 1000
@@ -72,7 +72,7 @@
 		{@const gap = prevTimestamp && section.block
 			? Math.max(0, (prevTimestamp - section.block.timestamp) * PX_PER_SECOND)
 			: 0}
-		{@const spacing = i > 0 ? Math.max(12, gap) : 0}
+		{@const spacing = gap}
 		<div
 			class="section"
 			class:mempool={isMempool}
