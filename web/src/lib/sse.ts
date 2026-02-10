@@ -54,27 +54,14 @@ function handleEvent(event: Event): void {
 			sections.update((s) => {
 				const mempool = s[0];
 				const blockTxHashes = new Set(event.txs.map((tx) => tx.hash));
+				const mempoolByHash = new Map(mempool.txs.map((tx) => [tx.hash, tx]));
 
-				// Split mempool txs: those in the block vs excluded
-				const inBlock = [];
-				const excluded = [];
-				const seen = new Set<string>();
+				const excluded = mempool.txs.filter((tx) => !blockTxHashes.has(tx.hash));
 
-				for (const tx of mempool.txs) {
-					if (blockTxHashes.has(tx.hash)) {
-						inBlock.push(tx);
-						seen.add(tx.hash);
-					} else {
-						excluded.push(tx);
-					}
-				}
-
-				// Add block txs not previously in mempool
-				for (const tx of event.txs) {
-					if (!seen.has(tx.hash)) {
-						inBlock.push({ ...tx, receivedAt: now });
-					}
-				}
+				const inBlock = event.txs.map((tx) => ({
+					...tx,
+					receivedAt: mempoolByHash.get(tx.hash)?.receivedAt ?? now,
+				}));
 
 				// Finalize current mempool as a block
 				mempool.block = {
