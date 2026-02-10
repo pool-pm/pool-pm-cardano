@@ -149,12 +149,13 @@
 	}
 
 	.ada {
-		color: var(--positive);
+		color: white;
+		font-weight: 600;
 		font-size: 10px;
 	}
 
 	.addr {
-		color: var(--text);
+		color: rgb(255 255 255 / 0.4);
 		font-size: 10px;
 	}
 

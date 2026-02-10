@@ -113,8 +113,6 @@
 						{#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
 					</span>
 				</div>
-			{:else}
-				<div class="block-footer">&nbsp;</div>
 			{/if}
 		</div>
 	{/each}
