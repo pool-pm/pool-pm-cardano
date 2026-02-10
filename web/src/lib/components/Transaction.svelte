@@ -97,12 +97,12 @@
 				{/if}
 			</div>
 		{/each}
-		{#if changeCount > 0 && filteredOutputs.length === 0}
-			<div class="addr-item muted mono">({changeCount} change)</div>
-		{/if}
-	</div>
+		</div>
 
-	<div class="arrow">↑</div>
+	{#if filteredOutputs.length === 0}
+		<span class="ada">{formatAda(tx.outputs.reduce((s, o) => s + BigInt(o.lovelace), 0n).toString())}</span>
+	{/if}
+	<div class="arrow" class:flip={filteredOutputs.length === 0}>{filteredOutputs.length === 0 ? '↻' : '↑'}</div>
 
 	<div class="addr-list">
 		{#each uniqueInputs as input}
@@ -159,6 +159,10 @@
 		text-align: center;
 		font-size: 12px;
 		margin: 4px 0;
+	}
+
+	.arrow.flip {
+		transform: rotate(120deg);
 	}
 
 	.muted {
