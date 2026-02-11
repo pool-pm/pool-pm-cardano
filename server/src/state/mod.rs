@@ -85,6 +85,7 @@ impl State {
         slot: u64,
         produced: Vec<((Vec<u8>, i16), TxOutput)>,
         consumed: &[(Vec<u8>, i16)],
+        delegation_changes: &[(Vec<u8>, Option<Vec<u8>>)],
     ) {
         let prev = self.history.last().expect("state not initialized");
 
@@ -96,12 +97,34 @@ impl State {
             utxos.insert(key, output);
         }
 
+        let (delegations, delegators) = if delegation_changes.is_empty() {
+            (prev.delegations.clone(), prev.delegators.clone())
+        } else {
+            let mut delegations = prev.delegations.clone();
+            let mut delegators = prev.delegators.clone();
+            for (stake_addr, maybe_pool) in delegation_changes {
+                if let Some(old_pool) = delegations.remove(stake_addr) {
+                    if let Some(set) = delegators.get_mut(&old_pool) {
+                        set.remove(stake_addr);
+                    }
+                }
+                if let Some(pool_id) = maybe_pool {
+                    delegations.insert(stake_addr.clone(), pool_id.clone());
+                    delegators
+                        .entry(pool_id.clone())
+                        .or_default()
+                        .insert(stake_addr.clone());
+                }
+            }
+            (delegations, delegators)
+        };
+
         self.history.push(BlockSnapshot {
             slot,
             utxos,
             pools: prev.pools.clone(),
-            delegations: prev.delegations.clone(),
-            delegators: prev.delegators.clone(),
+            delegations,
+            delegators,
             stakes: prev.stakes.clone(),
         });
 

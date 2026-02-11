@@ -14,6 +14,7 @@ use crate::event_bus::EventBus;
 use crate::mempool::extract_tx;
 use crate::model::{pool_bech32_id, TxOutput};
 use crate::nftcdn::NftcdnConfig;
+use crate::pallas::MultiEraTxExt;
 use crate::state::State;
 
 pub struct Worker;
@@ -44,12 +45,13 @@ impl Worker {
 
         // Single pass: txs are ordered in a block, so chained tx outputs
         // are available for resolving later txs' inputs.
-        let (txs, produced, consumed, pool_id, pool_ticker) = {
+        let (txs, produced, consumed, delegation_changes, pool_id, pool_ticker) = {
             let state = stage.state.read().await;
             let mut txs = Vec::new();
             let mut consumed = Vec::new();
             let mut produced: std::collections::HashMap<(Vec<u8>, i16), TxOutput> =
                 std::collections::HashMap::new();
+            let mut delegation_changes: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
 
             for tx in block.txs() {
                 let hash = tx.hash();
@@ -70,6 +72,7 @@ impl Worker {
                         },
                     );
                 }
+                delegation_changes.extend(tx.delegation_changes());
             }
 
             let produced: Vec<_> = produced.into_iter().collect();
@@ -84,7 +87,7 @@ impl Worker {
                 .map(|pool| (Some(pool_bech32_id(&pool.hash_raw)), pool.ticker.clone()))
                 .unwrap_or((None, None));
 
-            (txs, produced, consumed, pool_id, pool_ticker)
+            (txs, produced, consumed, delegation_changes, pool_id, pool_ticker)
         };
 
         let timestamp = stage.genesis.shelley_known_time
@@ -93,7 +96,7 @@ impl Worker {
 
         {
             let mut state = stage.state.write().await;
-            state.apply_block(slot, produced, &consumed);
+            state.apply_block(slot, produced, &consumed, &delegation_changes);
         }
 
         let tx_count = txs.len();

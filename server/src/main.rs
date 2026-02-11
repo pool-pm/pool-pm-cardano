@@ -11,6 +11,7 @@ mod event_bus;
 mod mempool;
 mod model;
 mod nftcdn;
+mod pallas;
 mod server;
 mod sink;
 mod state;
