@@ -80,7 +80,7 @@ impl DbSync {
         .collect())
     }
 
-    pub async fn delegations(
+    pub async fn pool_delegations(
         &self,
         last_tx_id: i64,
     ) -> Result<
@@ -116,6 +116,63 @@ impl DbSync {
             delegations.insert(row.stake_address.clone(), row.pool_id.clone());
             delegators
                 .entry(row.pool_id)
+                .or_default()
+                .insert(row.stake_address);
+        }
+
+        Ok((delegations, delegators))
+    }
+
+    pub async fn drep_delegations(
+        &self,
+        last_tx_id: i64,
+    ) -> Result<
+        (
+            HashMap<Vec<u8>, Vec<u8>>,
+            HashMap<Vec<u8>, HashSet<Vec<u8>>>,
+        ),
+        sqlx::Error,
+    > {
+        let mut rows = sqlx::query!(
+            r#"SELECT stake_address.hash_raw as stake_address,
+                drep_hash.raw as drep_raw,
+                drep_hash.has_script as drep_has_script,
+                drep_hash.view as drep_view
+            FROM
+                (SELECT DISTINCT ON (addr_id) *
+                    FROM delegation_vote
+                    WHERE tx_id <= $1
+                    ORDER BY addr_id, id DESC
+                ) dv
+            JOIN stake_address ON stake_address.id = dv.addr_id
+            JOIN drep_hash ON drep_hash.id = dv.drep_hash_id
+            WHERE NOT EXISTS
+                (SELECT TRUE
+                    FROM stake_deregistration
+                    WHERE stake_deregistration.tx_id <= $1
+                    AND stake_deregistration.addr_id = dv.addr_id
+                    AND stake_deregistration.tx_id >= dv.tx_id
+                )"#,
+            last_tx_id
+        )
+        .fetch(&self.db);
+
+        let mut delegations: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>> = HashMap::new();
+        while let Some(row) = rows.try_next().await? {
+            let drep_bytes = if row.drep_view.starts_with("drep_always_abstain") {
+                vec![0x02]
+            } else if row.drep_view.starts_with("drep_always_no_confidence") {
+                vec![0x03]
+            } else if let Some(raw) = &row.drep_raw {
+                let tag = if row.drep_has_script { 0x01u8 } else { 0x00 };
+                [&[tag][..], raw].concat()
+            } else {
+                continue;
+            };
+            delegations.insert(row.stake_address.clone(), drep_bytes.clone());
+            delegators
+                .entry(drep_bytes)
                 .or_default()
                 .insert(row.stake_address);
         }

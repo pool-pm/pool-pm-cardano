@@ -11,8 +11,10 @@ pub struct BlockSnapshot {
     pub slot: u64,
     pub utxos: HashMap<(Vec<u8>, i16), TxOutput>,
     pub pools: HashMap<String, Pool>,
-    pub delegations: HashMap<Vec<u8>, Vec<u8>>,
-    pub delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
+    pub pool_delegations: HashMap<Vec<u8>, Vec<u8>>,
+    pub pool_delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
+    pub drep_delegations: HashMap<Vec<u8>, Vec<u8>>,
+    pub drep_delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
     pub stakes: HashMap<Vec<u8>, Decimal>,
 }
 
@@ -57,12 +59,20 @@ impl State {
         let pools = db.pools(last_tx_id).await?;
         tracing::info!("{} pools retrieved", pools.len());
 
-        tracing::info!("Fetching delegations...");
-        let (delegations, delegators) = db.delegations(last_tx_id).await?;
+        tracing::info!("Fetching pool delegations...");
+        let (pool_delegations, pool_delegators) = db.pool_delegations(last_tx_id).await?;
         tracing::info!(
-            "{} delegations in {} pools retrieved",
-            delegations.len(),
-            delegators.len()
+            "{} pool delegations in {} pools retrieved",
+            pool_delegations.len(),
+            pool_delegators.len()
+        );
+
+        tracing::info!("Fetching DRep delegations...");
+        let (drep_delegations, drep_delegators) = db.drep_delegations(last_tx_id).await?;
+        tracing::info!(
+            "{} DRep delegations in {} DReps retrieved",
+            drep_delegations.len(),
+            drep_delegators.len()
         );
 
         self.history.clear();
@@ -70,8 +80,10 @@ impl State {
             slot,
             utxos: HashMap::new(),
             pools,
-            delegations,
-            delegators,
+            pool_delegations,
+            pool_delegators,
+            drep_delegations,
+            drep_delegators,
             stakes: HashMap::new(),
         });
 
@@ -85,7 +97,8 @@ impl State {
         slot: u64,
         produced: Vec<((Vec<u8>, i16), TxOutput)>,
         consumed: &[(Vec<u8>, i16)],
-        delegation_changes: &[(Vec<u8>, Option<Vec<u8>>)],
+        pool_delegation_changes: &[(Vec<u8>, Option<Vec<u8>>)],
+        drep_delegation_changes: &[(Vec<u8>, Option<Vec<u8>>)],
     ) {
         let prev = self.history.last().expect("state not initialized");
 
@@ -97,34 +110,28 @@ impl State {
             utxos.insert(key, output);
         }
 
-        let (delegations, delegators) = if delegation_changes.is_empty() {
-            (prev.delegations.clone(), prev.delegators.clone())
-        } else {
-            let mut delegations = prev.delegations.clone();
-            let mut delegators = prev.delegators.clone();
-            for (stake_addr, maybe_pool) in delegation_changes {
-                if let Some(old_pool) = delegations.remove(stake_addr) {
-                    if let Some(set) = delegators.get_mut(&old_pool) {
-                        set.remove(stake_addr);
-                    }
-                }
-                if let Some(pool_id) = maybe_pool {
-                    delegations.insert(stake_addr.clone(), pool_id.clone());
-                    delegators
-                        .entry(pool_id.clone())
-                        .or_default()
-                        .insert(stake_addr.clone());
-                }
-            }
-            (delegations, delegators)
-        };
+        let (pool_delegations, pool_delegators) =
+            Self::apply_delegation_changes(
+                &prev.pool_delegations,
+                &prev.pool_delegators,
+                pool_delegation_changes,
+            );
+
+        let (drep_delegations, drep_delegators) =
+            Self::apply_delegation_changes(
+                &prev.drep_delegations,
+                &prev.drep_delegators,
+                drep_delegation_changes,
+            );
 
         self.history.push(BlockSnapshot {
             slot,
             utxos,
             pools: prev.pools.clone(),
-            delegations,
-            delegators,
+            pool_delegations,
+            pool_delegators,
+            drep_delegations,
+            drep_delegators,
             stakes: prev.stakes.clone(),
         });
 
@@ -132,6 +139,33 @@ impl State {
         if self.history.len() > MAX_HISTORY {
             self.history.drain(..self.history.len() - MAX_HISTORY);
         }
+    }
+
+    fn apply_delegation_changes(
+        prev_delegations: &HashMap<Vec<u8>, Vec<u8>>,
+        prev_delegators: &HashMap<Vec<u8>, HashSet<Vec<u8>>>,
+        changes: &[(Vec<u8>, Option<Vec<u8>>)],
+    ) -> (HashMap<Vec<u8>, Vec<u8>>, HashMap<Vec<u8>, HashSet<Vec<u8>>>) {
+        if changes.is_empty() {
+            return (prev_delegations.clone(), prev_delegators.clone());
+        }
+        let mut delegations = prev_delegations.clone();
+        let mut delegators = prev_delegators.clone();
+        for (stake_addr, maybe_target) in changes {
+            if let Some(old_target) = delegations.remove(stake_addr) {
+                if let Some(set) = delegators.get_mut(&old_target) {
+                    set.remove(stake_addr);
+                }
+            }
+            if let Some(target) = maybe_target {
+                delegations.insert(stake_addr.clone(), target.clone());
+                delegators
+                    .entry(target.clone())
+                    .or_default()
+                    .insert(stake_addr.clone());
+            }
+        }
+        (delegations, delegators)
     }
 
     /// Rollback to the given slot: drop all snapshots after it.

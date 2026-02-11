@@ -1,9 +1,10 @@
 use pallas::ledger::primitives::{alonzo, conway};
 use pallas::ledger::traverse::{MultiEraCert, MultiEraTx};
 
-/// (stake_credential_bytes, Some(pool_hash_bytes)) for delegation,
+/// (stake_credential_bytes, Some(target_bytes)) for delegation,
 /// (stake_credential_bytes, None) for deregistration.
-pub type DelegationChange = (Vec<u8>, Option<Vec<u8>>);
+pub type PoolDelegationChange = (Vec<u8>, Option<Vec<u8>>);
+pub type DrepDelegationChange = (Vec<u8>, Option<Vec<u8>>);
 
 fn stake_credential_bytes(cred: &pallas::ledger::primitives::StakeCredential) -> Vec<u8> {
     match cred {
@@ -12,12 +13,22 @@ fn stake_credential_bytes(cred: &pallas::ledger::primitives::StakeCredential) ->
     }
 }
 
+pub fn drep_to_bytes(drep: &conway::DRep) -> Vec<u8> {
+    match drep {
+        conway::DRep::Key(h) => [&[0x00], h.as_ref()].concat(),
+        conway::DRep::Script(h) => [&[0x01], h.as_ref()].concat(),
+        conway::DRep::Abstain => vec![0x02],
+        conway::DRep::NoConfidence => vec![0x03],
+    }
+}
+
 pub trait MultiEraTxExt {
-    fn delegation_changes(&self) -> Vec<DelegationChange>;
+    fn pool_delegation_changes(&self) -> Vec<PoolDelegationChange>;
+    fn drep_delegation_changes(&self) -> Vec<DrepDelegationChange>;
 }
 
 impl MultiEraTxExt for MultiEraTx<'_> {
-    fn delegation_changes(&self) -> Vec<DelegationChange> {
+    fn pool_delegation_changes(&self) -> Vec<PoolDelegationChange> {
         let mut changes = Vec::new();
         for cert in self.certs() {
             match cert {
@@ -34,7 +45,10 @@ impl MultiEraTxExt for MultiEraTx<'_> {
                     _ => {}
                 },
                 MultiEraCert::Conway(c) => match &**c {
-                    conway::Certificate::StakeDelegation(cred, pool) => {
+                    conway::Certificate::StakeDelegation(cred, pool)
+                    | conway::Certificate::StakeVoteDeleg(cred, pool, _)
+                    | conway::Certificate::StakeRegDeleg(cred, pool, _)
+                    | conway::Certificate::StakeVoteRegDeleg(cred, pool, _, _) => {
                         changes.push((
                             stake_credential_bytes(cred),
                             Some(pool.as_ref().to_vec()),
@@ -47,6 +61,31 @@ impl MultiEraTxExt for MultiEraTx<'_> {
                     _ => {}
                 },
                 _ => {}
+            }
+        }
+        changes
+    }
+
+    fn drep_delegation_changes(&self) -> Vec<DrepDelegationChange> {
+        let mut changes = Vec::new();
+        for cert in self.certs() {
+            if let MultiEraCert::Conway(c) = cert {
+                match &**c {
+                    conway::Certificate::VoteDeleg(cred, drep)
+                    | conway::Certificate::StakeVoteDeleg(cred, _, drep)
+                    | conway::Certificate::VoteRegDeleg(cred, drep, _)
+                    | conway::Certificate::StakeVoteRegDeleg(cred, _, drep, _) => {
+                        changes.push((
+                            stake_credential_bytes(cred),
+                            Some(drep_to_bytes(drep)),
+                        ));
+                    }
+                    conway::Certificate::StakeDeregistration(cred)
+                    | conway::Certificate::UnReg(cred, _) => {
+                        changes.push((stake_credential_bytes(cred), None));
+                    }
+                    _ => {}
+                }
             }
         }
         changes
