@@ -14,8 +14,6 @@
 
 <script lang="ts" generics="T">
   import { onMount, tick, untrack } from 'svelte';
-  import { flip } from 'svelte/animate';
-  import { FLIP_DURATION } from '../layout';
 
   type Props = {
     items: T[];
@@ -156,7 +154,6 @@
       class="bin-pack-item"
       style="transform: translate({pos?.x ?? defaultX}px, {pos?.y ?? -100}px)"
       use:registerRef={{ k, register: registerItem, unregister: unregisterItem }}
-      animate:flip={{ duration: FLIP_DURATION }}
     >
       {@render children(item)}
     </div>

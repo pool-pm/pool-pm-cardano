@@ -64,6 +64,19 @@
   function formatTime(timestamp: number): string {
     return new Date(timestamp * 1000).toLocaleTimeString();
   }
+
+  // Detect landscape orientation for horizontal layout
+  let horizontal = $state(false);
+
+  $effect(() => {
+    const mql = window.matchMedia('(orientation: landscape)');
+    horizontal = mql.matches;
+    const handler = (e: MediaQueryListEvent) => {
+      horizontal = e.matches;
+    };
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  });
 </script>
 
 <div
@@ -87,11 +100,10 @@
       style:border-color={color}
       style:background-color={color}
       style:--section-color={color}
-      style:max-width="{maxWidth}px"
-      style:margin-top="{spacing}px"
-      style:--line-height="{spacing}px"
+      style:--section-width="{maxWidth}px"
+      style:--spacing="{spacing}px"
       animate:flip={{ duration: FLIP_DURATION }}
-      out:slide={{ duration: FLIP_DURATION }}
+      out:slide={{ duration: FLIP_DURATION, axis: horizontal ? 'x' : 'y' }}
     >
       <div class="block-header">
         {#if section.block}
@@ -137,6 +149,8 @@
 
   .section {
     width: 100%;
+    max-width: var(--section-width);
+    margin-top: var(--spacing);
     position: relative;
     border: var(--block-border) solid;
     border-radius: 8px;
@@ -151,7 +165,7 @@
     bottom: calc(100% + var(--block-border));
     left: 50%;
     width: 1px;
-    height: var(--line-height);
+    height: var(--spacing);
     background: var(--border);
   }
 
@@ -187,5 +201,34 @@
     font-size: 13px;
     font-weight: 700;
     line-height: 1;
+  }
+
+  /* Landscape: horizontal right-to-left flow */
+  @media (orientation: landscape) {
+    .feed {
+      direction: rtl;
+      flex-direction: row;
+      overflow-x: auto;
+      overflow-y: hidden;
+      align-items: center;
+      scrollbar-gutter: auto;
+    }
+
+    .section {
+      direction: ltr;
+      width: var(--section-width);
+      max-width: none;
+      flex-shrink: 0;
+      margin-top: 0;
+      margin-right: var(--spacing);
+    }
+
+    .section.has-line::before {
+      bottom: auto;
+      left: calc(100% + var(--block-border));
+      top: 50%;
+      width: var(--spacing);
+      height: 1px;
+    }
   }
 </style>
