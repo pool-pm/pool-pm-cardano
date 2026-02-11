@@ -55,9 +55,6 @@
     });
   });
 
-  // Count hidden change outputs
-  let changeCount = $derived(tx.outputs.length - filteredOutputs.length);
-
   // Total asset count across visible outputs → scale thumbnails
   let totalAssets = $derived(filteredOutputs.reduce((sum, o) => sum + o.assets.length, 0));
   let thumbSize = $derived(totalAssets <= 1 ? 64 : Math.max(16, Math.floor(64 / Math.sqrt(totalAssets))));
