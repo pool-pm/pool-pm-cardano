@@ -1,7 +1,6 @@
 mod dbsync;
 
 use imbl::{hashmap::HashMap, hashset::HashSet};
-use sqlx::types::Decimal;
 use url::Url;
 
 use crate::model::{Pool, TxOutput};
@@ -15,7 +14,6 @@ pub struct BlockSnapshot {
     pub pool_delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
     pub drep_delegations: HashMap<Vec<u8>, Vec<u8>>,
     pub drep_delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
-    pub stakes: HashMap<Vec<u8>, Decimal>,
 }
 
 pub struct State {
@@ -84,7 +82,6 @@ impl State {
             pool_delegators,
             drep_delegations,
             drep_delegators,
-            stakes: HashMap::new(),
         });
 
         Ok(())
@@ -132,7 +129,6 @@ impl State {
             pool_delegators,
             drep_delegations,
             drep_delegators,
-            stakes: prev.stakes.clone(),
         });
 
         const MAX_HISTORY: usize = 2160;
