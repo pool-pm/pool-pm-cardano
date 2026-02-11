@@ -149,6 +149,7 @@
 
   .section {
     width: 100%;
+    min-width: min-content;
     max-width: var(--section-width);
     margin-top: var(--spacing);
     position: relative;
@@ -183,12 +184,16 @@
     align-items: baseline;
     margin-bottom: calc(var(--block-padding) + var(--block-border));
     line-height: 1;
+    white-space: nowrap;
+    gap: 8px;
   }
 
   .block-footer {
     display: flex;
     justify-content: space-between;
     margin-top: 8px;
+    white-space: nowrap;
+    gap: 8px;
   }
 
   .block-meta {
