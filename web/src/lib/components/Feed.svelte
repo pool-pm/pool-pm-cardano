@@ -7,6 +7,7 @@
   import Transaction from './Transaction.svelte';
 
   const MAX_BLOCKS = 30;
+  const MAX_MEMPOOL_AGE_MS = 600_000;
   const PX_PER_SECOND = 2;
   const BLOCK_PADDING = 10;
   const BLOCK_BORDER = 2;
@@ -25,7 +26,11 @@
   // Clean up old sections periodically
   $effect(() => {
     const interval = setInterval(() => {
-      sections.update((s) => s.slice(0, MAX_BLOCKS + 1));
+      const cutoff = Date.now() - MAX_MEMPOOL_AGE_MS;
+      sections.update((s) => {
+        s[0].txs = s[0].txs.filter((tx) => tx.receivedAt >= cutoff);
+        return s.slice(0, MAX_BLOCKS + 1);
+      });
     }, 10_000);
     return () => clearInterval(interval);
   });
