@@ -86,7 +86,9 @@
             >{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a
           >
         {/if}
-        <span class="deleg-arrow">{@html '&#x2191;'}</span>
+        {#if deleg.to_pool_id}
+          <span class="deleg-arrow">{@html '&#x2191;'}</span>
+        {/if}
         {#if deleg.from_pool_id}
           <a
             class="deleg-pool from"
