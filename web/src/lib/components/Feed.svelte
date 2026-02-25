@@ -82,10 +82,10 @@
 
   function formatTimeLeft(epochEnd: number): string {
     const sec = Math.max(0, Math.floor(epochEnd - now / 1000));
-    if (sec >= 86400) return `${Math.floor(sec / 86400)} days left`;
-    if (sec >= 3600) return `${Math.floor(sec / 3600)} hours left`;
-    if (sec >= 60) return `${Math.floor(sec / 60)} minutes left`;
-    return `${sec} seconds left`;
+    if (sec >= 172800) return `${Math.floor(sec / 86400)} days left`;
+    if (sec >= 7200) return `${Math.floor(sec / 3600)} hours left`;
+    if (sec >= 120) return `${Math.floor(sec / 60)} mins left`;
+    return `${sec} secs left`;
   }
 
   // Detect landscape orientation for horizontal layout
