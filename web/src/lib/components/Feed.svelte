@@ -1,7 +1,8 @@
 <script lang="ts">
   import { flip } from 'svelte/animate';
   import { slide } from 'svelte/transition';
-  import { sections } from '../stores';
+  import { sections, config } from '../stores';
+  import type { GenesisConfig } from '../types';
   import { TX_WIDTH, TX_GAP, FLIP_DURATION, squareWidth } from '../layout';
   import BinPackGrid from './BinPackGrid.svelte';
   import Transaction from './Transaction.svelte';
@@ -66,6 +67,27 @@
     return new Date(timestamp * 1000).toLocaleTimeString();
   }
 
+  function epochInfo(genesis: GenesisConfig): { epoch: number; epochEnd: number } {
+    const nowSec = Math.floor(now / 1000);
+    const slot =
+      genesis.shelley_known_slot + Math.floor((nowSec - genesis.shelley_known_time) / genesis.shelley_slot_length);
+    const shelleyStartEpoch = Math.floor(genesis.shelley_known_slot / genesis.byron_epoch_length);
+    const epochsSince = Math.floor((slot - genesis.shelley_known_slot) / genesis.shelley_epoch_length);
+    const epoch = shelleyStartEpoch + epochsSince;
+    const epochEndSlot = genesis.shelley_known_slot + (epochsSince + 1) * genesis.shelley_epoch_length;
+    const epochEnd =
+      genesis.shelley_known_time + (epochEndSlot - genesis.shelley_known_slot) * genesis.shelley_slot_length;
+    return { epoch, epochEnd };
+  }
+
+  function formatTimeLeft(epochEnd: number): string {
+    const sec = Math.max(0, Math.floor(epochEnd - now / 1000));
+    if (sec >= 86400) return `${Math.floor(sec / 86400)} days left`;
+    if (sec >= 3600) return `${Math.floor(sec / 3600)} hours left`;
+    if (sec >= 60) return `${Math.floor(sec / 60)} minutes left`;
+    return `${sec} seconds left`;
+  }
+
   // Detect landscape orientation for horizontal layout
   let horizontal = $state(false);
 
@@ -125,7 +147,13 @@
         </BinPackGrid>
       {/if}
 
-      {#if section.block}
+      {#if isMempool && $config?.genesis}
+        {@const ei = epochInfo($config.genesis)}
+        <div class="block-footer">
+          <span class="block-meta">Epoch {ei.epoch}</span>
+          <span class="block-meta">{formatTimeLeft(ei.epochEnd)}</span>
+        </div>
+      {:else if section.block}
         <div class="block-footer">
           <span class="block-meta">{section.block.hash.slice(0, 4)}…{section.block.hash.slice(-4)}</span>
           <span class="block-meta">

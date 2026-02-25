@@ -94,6 +94,13 @@ pub fn run(args: Args) -> Result<(), Error> {
     });
     let mainnet = args.network.magic() == 764824073;
     let genesis = GenesisValues::from(args.network.config().clone());
+    let genesis_config = server::GenesisConfig {
+        shelley_known_slot: genesis.shelley_known_slot,
+        shelley_known_time: genesis.shelley_known_time,
+        shelley_slot_length: genesis.shelley_slot_length as u32,
+        byron_epoch_length: genesis.byron_epoch_length as u32,
+        shelley_epoch_length: genesis.shelley_epoch_length as u32,
+    };
     let mempool_config = mempool::Config {
         socket_path: args.socket.clone(),
         magic: args.network.magic(),
@@ -139,7 +146,13 @@ pub fn run(args: Args) -> Result<(), Error> {
     let prometheus = tokio_rt.spawn(serve_prometheus(daemon.clone(), args.metrics));
 
     if let Some(addr) = listen {
-        tokio_rt.spawn(server::serve(addr, event_bus, state, nftcdn.subdomain));
+        tokio_rt.spawn(server::serve(
+            addr,
+            event_bus,
+            state,
+            nftcdn.subdomain,
+            genesis_config,
+        ));
     }
 
     daemon.block();

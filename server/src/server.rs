@@ -23,6 +23,16 @@ struct AppState {
     bus: Arc<EventBus>,
     chain_state: Arc<RwLock<State>>,
     nftcdn_subdomain: &'static str,
+    genesis: GenesisConfig,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct GenesisConfig {
+    pub shelley_known_slot: u64,
+    pub shelley_known_time: u64,
+    pub shelley_slot_length: u32,
+    pub byron_epoch_length: u32,
+    pub shelley_epoch_length: u32,
 }
 
 fn serialize_event(event: crate::event::Event) -> Option<Result<SseEvent, Infallible>> {
@@ -31,8 +41,12 @@ fn serialize_event(event: crate::event::Event) -> Option<Result<SseEvent, Infall
         .map(|json| Ok(SseEvent::default().data(json)))
 }
 
-fn config_event(nftcdn: &str) -> Result<SseEvent, Infallible> {
-    Ok(SseEvent::default().data(format!("{{\"type\":\"Config\",\"nftcdn\":\"{}\"}}", nftcdn)))
+fn config_event(nftcdn: &str, genesis: &GenesisConfig) -> Result<SseEvent, Infallible> {
+    let genesis_json = serde_json::to_string(genesis).unwrap();
+    Ok(SseEvent::default().data(format!(
+        "{{\"type\":\"Config\",\"nftcdn\":\"{}\",\"genesis\":{}}}",
+        nftcdn, genesis_json
+    )))
 }
 
 async fn events(
@@ -40,7 +54,7 @@ async fn events(
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let (snapshot, rx) = state.bus.subscribe().await;
 
-    let config = Some(config_event(state.nftcdn_subdomain));
+    let config = Some(config_event(state.nftcdn_subdomain, &state.genesis));
 
     let init = if snapshot.is_empty() {
         None
@@ -78,7 +92,7 @@ async fn filtered_events(
         .filter_map(|e| filter.filter_event(&e, &delegators))
         .collect();
 
-    let config = Some(config_event(state.nftcdn_subdomain));
+    let config = Some(config_event(state.nftcdn_subdomain, &state.genesis));
 
     let init = if filtered_snapshot.is_empty() {
         None
@@ -122,11 +136,13 @@ pub async fn serve(
     bus: Arc<EventBus>,
     chain_state: Arc<RwLock<State>>,
     nftcdn_subdomain: &'static str,
+    genesis: GenesisConfig,
 ) {
     let state = AppState {
         bus,
         chain_state,
         nftcdn_subdomain,
+        genesis,
     };
     let app = Router::new()
         .route("/events", get(events))

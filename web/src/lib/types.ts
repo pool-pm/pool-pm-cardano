@@ -1,5 +1,14 @@
+export interface GenesisConfig {
+  shelley_known_slot: number;
+  shelley_known_time: number;
+  shelley_slot_length: number;
+  byron_epoch_length: number;
+  shelley_epoch_length: number;
+}
+
 export interface Config {
   nftcdn: string;
+  genesis: GenesisConfig;
 }
 
 export interface TxInput {
