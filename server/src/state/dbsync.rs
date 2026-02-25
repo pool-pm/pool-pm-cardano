@@ -113,11 +113,10 @@ impl DbSync {
         let mut delegations: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
         let mut delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>> = HashMap::new();
         while let Some(row) = rows.try_next().await? {
-            delegations.insert(row.stake_address.clone(), row.pool_id.clone());
-            delegators
-                .entry(row.pool_id)
-                .or_default()
-                .insert(row.stake_address);
+            // db-sync hash_raw is 29 bytes (header + 28-byte credential); strip header
+            let cred = row.stake_address[1..].to_vec();
+            delegations.insert(cred.clone(), row.pool_id.clone());
+            delegators.entry(row.pool_id).or_default().insert(cred);
         }
 
         Ok((delegations, delegators))
@@ -170,11 +169,10 @@ impl DbSync {
             } else {
                 continue;
             };
-            delegations.insert(row.stake_address.clone(), drep_bytes.clone());
-            delegators
-                .entry(drep_bytes)
-                .or_default()
-                .insert(row.stake_address);
+            // db-sync hash_raw is 29 bytes (header + 28-byte credential); strip header
+            let cred = row.stake_address[1..].to_vec();
+            delegations.insert(cred.clone(), drep_bytes.clone());
+            delegators.entry(drep_bytes).or_default().insert(cred);
         }
 
         Ok((delegations, delegators))

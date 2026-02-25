@@ -59,7 +59,7 @@ impl Worker {
                 for input in tx.inputs() {
                     consumed.push((input.hash().as_ref().to_vec(), input.index() as i16));
                 }
-                txs.push(extract_tx(&tx, &state, &stage.nftcdn, &produced).await);
+                txs.push(extract_tx(&tx, &state, &stage.nftcdn, &produced, stage.mainnet).await);
                 for (idx, output) in tx.outputs().iter().enumerate() {
                     produced.insert(
                         (hash.as_ref().to_vec(), idx as i16),
@@ -171,6 +171,7 @@ impl gasket::framework::Worker<Stage> for Worker {
 #[stage(name = "sink-fetcher", unit = "ChainEvent", worker = "Worker")]
 pub struct Stage {
     genesis: GenesisValues,
+    mainnet: bool,
     event_bus: Arc<EventBus>,
     state: Arc<RwLock<State>>,
     nftcdn: NftcdnConfig,
@@ -191,8 +192,11 @@ pub fn bootstrapper(
     state: Arc<RwLock<State>>,
     nftcdn: NftcdnConfig,
 ) -> Result<Stage, Error> {
+    let genesis = GenesisValues::from(context.chain.clone());
+    let mainnet = genesis.magic == 764824073;
     Ok(Stage {
-        genesis: GenesisValues::from(context.chain.clone()),
+        genesis,
+        mainnet,
         event_bus,
         state,
         nftcdn,

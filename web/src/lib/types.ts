@@ -22,12 +22,21 @@ export interface AssetInfo {
   tk?: string;
 }
 
+export interface DelegationInfo {
+  stake_address: string;
+  from_pool_id?: string;
+  from_ticker?: string;
+  to_pool_id?: string;
+  to_ticker?: string;
+}
+
 export interface BlockTx {
   hash: string;
   fee: string;
   size: number;
   inputs: TxInput[];
   outputs: TxOutputInfo[];
+  delegations?: DelegationInfo[];
 }
 
 export interface MempoolTxEvent extends BlockTx {

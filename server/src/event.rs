@@ -16,9 +16,24 @@ pub struct BlockTx {
     pub size: usize,
     pub inputs: Vec<TxInput>,
     pub outputs: Vec<TxOutputInfo>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub delegations: Vec<DelegationInfo>,
     /// Pre-extracted stake credentials from input/output addresses.
     #[serde(skip)]
     pub stake_credentials: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct DelegationInfo {
+    pub stake_address: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_pool_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_ticker: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_pool_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_ticker: Option<String>,
 }
 
 #[derive(Clone, Serialize)]

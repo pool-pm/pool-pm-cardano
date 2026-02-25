@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AssetInfo, FeedTx, TxOutputInfo } from '../types';
+  import type { AssetInfo, DelegationInfo, FeedTx, TxOutputInfo } from '../types';
   import { bech32Decode, paymentCredential, stakeCredential } from '../bech32';
   import { config } from '../stores';
 
@@ -13,6 +13,28 @@
     const keep = a.startsWith('addr_test1') ? 14 : 9;
     return a.length > keep + 4 ? a.slice(0, keep) + '\u2026' + a.slice(-4) : a;
   }
+
+  function truncateStakeAddr(a: string): string {
+    return a.slice(0, 10) + '\u2026' + a.slice(-4);
+  }
+
+  function poolLabel(ticker?: string, poolId?: string): string {
+    return ticker ?? poolId?.slice(5, 10) ?? '';
+  }
+
+  function poolColor(poolId?: string): string {
+    const key = poolId?.slice(5) ?? '';
+    let h = 0;
+    for (let i = 0; i < key.length; i++) {
+      h = Math.imul(h ^ key.charCodeAt(i), 0x9e3779b9);
+    }
+    const hue = (h >>> 0) % 360;
+    return `oklch(0.7 0.25 ${hue})`;
+  }
+
+  let visibleDelegations: DelegationInfo[] = $derived(
+    (tx.delegations ?? []).filter((d) => d.from_pool_id || d.to_pool_id),
+  );
 
   function formatAda(lovelace: string): string {
     const padded = lovelace.padStart(7, '0');
@@ -65,6 +87,26 @@
 
 <div class="tx-card" style:--thumb-size="{thumbSize}px">
   <div class="addr-list">
+    {#each visibleDelegations as deleg}
+      {@const isDeregistration = !deleg.to_pool_id && !!deleg.from_pool_id}
+      <div class="addr-item">
+        {#if deleg.to_pool_id}
+          <a class="deleg-pool" href="/{deleg.to_pool_id}" style:color={poolColor(deleg.to_pool_id)}
+            >{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a
+          >
+        {/if}
+        <span class="deleg-arrow">{@html '&#x2191;'}</span>
+        {#if deleg.from_pool_id}
+          <a
+            class="deleg-pool from"
+            class:deregistered={isDeregistration}
+            href="/{deleg.from_pool_id}"
+            style:color={poolColor(deleg.from_pool_id)}>{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
+          >
+        {/if}
+        <span class="addr mono">{truncateStakeAddr(deleg.stake_address)}</span>
+      </div>
+    {/each}
     {#each filteredOutputs as output}
       <div class="addr-item">
         <span class="ada">{formatAda(output.lovelace)}</span>
@@ -167,9 +209,25 @@
     transform: rotate(120deg);
   }
 
-  .muted {
-    color: var(--text-muted);
+  .deleg-pool {
+    font-size: 11px;
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .deleg-pool.from {
+    opacity: 0.5;
+    font-weight: 400;
+  }
+
+  .deleg-pool.deregistered {
+    text-decoration: line-through;
+  }
+
+  .deleg-arrow {
+    color: rgb(255 255 255 / 0.4);
     font-size: 10px;
+    line-height: 1;
   }
 
   .assets {

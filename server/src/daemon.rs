@@ -92,9 +92,11 @@ pub fn run(args: Args) -> Result<(), Error> {
     let source_config = sources::Config::N2C(sources::n2c::Config {
         socket_path: args.socket.clone(),
     });
+    let mainnet = args.network.magic() == 764824073;
     let mempool_config = mempool::Config {
         socket_path: args.socket.clone(),
         magic: args.network.magic(),
+        mainnet,
     };
 
     let cursor_config = cursor::file::Config {

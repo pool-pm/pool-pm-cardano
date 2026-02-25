@@ -7,11 +7,12 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
 
-use crate::event::{AssetInfo, BlockTx, Event, TxInput, TxOutputInfo};
+use crate::event::{AssetInfo, BlockTx, DelegationInfo, Event, TxInput, TxOutputInfo};
 use crate::event_bus::EventBus;
 use crate::filter;
-use crate::model::{asset_fingerprint, TxOutput};
+use crate::model::{asset_fingerprint, pool_bech32_id, TxOutput};
 use crate::nftcdn::NftcdnConfig;
+use crate::pallas::{stake_address_bech32, stake_credential_bytes, MultiEraTxExt};
 use crate::state::State;
 
 pub async fn extract_tx(
@@ -19,6 +20,7 @@ pub async fn extract_tx(
     state: &State,
     nftcdn: &NftcdnConfig,
     block_utxos: &std::collections::HashMap<(Vec<u8>, i16), TxOutput>,
+    mainnet: bool,
 ) -> BlockTx {
     let hash = tx.hash().to_string();
     let fee = tx.fee().unwrap_or(0);
@@ -94,16 +96,60 @@ pub async fn extract_tx(
         })
         .collect();
 
+    let delegations = extract_delegations(tx, state, mainnet);
+
     let mut block_tx = BlockTx {
         hash,
         fee,
         size,
         inputs,
         outputs,
+        delegations,
         stake_credentials: Vec::new(),
     };
     block_tx.stake_credentials = filter::extract_stake_credentials(&block_tx);
     block_tx
+}
+
+fn extract_delegations(tx: &MultiEraTx<'_>, state: &State, mainnet: bool) -> Vec<DelegationInfo> {
+    let snap = match state.current() {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+
+    let resolve_pool = |hash: &[u8]| -> (Option<String>, Option<String>) {
+        let pool = snap.pools.get(&hex::encode(hash));
+        (
+            Some(pool_bech32_id(hash)),
+            pool.and_then(|p| p.ticker.clone()),
+        )
+    };
+
+    tx.pool_delegation_certs()
+        .iter()
+        .map(|(cred, pool_hash)| {
+            let cred_bytes = stake_credential_bytes(cred);
+
+            let (from_pool_id, from_ticker) = snap
+                .pool_delegations
+                .get(&cred_bytes)
+                .map(|h| resolve_pool(h))
+                .unwrap_or((None, None));
+
+            let (to_pool_id, to_ticker) = pool_hash
+                .as_ref()
+                .map(|h| resolve_pool(h))
+                .unwrap_or((None, None));
+
+            DelegationInfo {
+                stake_address: stake_address_bech32(cred, mainnet),
+                from_pool_id,
+                from_ticker,
+                to_pool_id,
+                to_ticker,
+            }
+        })
+        .collect()
 }
 
 pub struct Worker {
@@ -142,7 +188,14 @@ impl gasket::framework::Worker<Stage> for Worker {
 
             if !self.pending.contains(&hash) {
                 let state = stage.state.read().await;
-                let block_tx = extract_tx(&tx, &state, &stage.nftcdn, &Default::default()).await;
+                let block_tx = extract_tx(
+                    &tx,
+                    &state,
+                    &stage.nftcdn,
+                    &Default::default(),
+                    stage.config.mainnet,
+                )
+                .await;
                 drop(state);
                 stage.event_bus.send(Event::MempoolTx(block_tx)).await;
 
@@ -188,6 +241,7 @@ pub struct Stage {
 pub struct Config {
     pub socket_path: PathBuf,
     pub magic: u64,
+    pub mainnet: bool,
 }
 
 pub fn bootstrapper(
