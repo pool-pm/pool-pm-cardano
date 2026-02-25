@@ -107,19 +107,17 @@ impl State {
             utxos.insert(key, output);
         }
 
-        let (pool_delegations, pool_delegators) =
-            Self::apply_delegation_changes(
-                &prev.pool_delegations,
-                &prev.pool_delegators,
-                pool_delegation_changes,
-            );
+        let (pool_delegations, pool_delegators) = Self::apply_delegation_changes(
+            &prev.pool_delegations,
+            &prev.pool_delegators,
+            pool_delegation_changes,
+        );
 
-        let (drep_delegations, drep_delegators) =
-            Self::apply_delegation_changes(
-                &prev.drep_delegations,
-                &prev.drep_delegators,
-                drep_delegation_changes,
-            );
+        let (drep_delegations, drep_delegators) = Self::apply_delegation_changes(
+            &prev.drep_delegations,
+            &prev.drep_delegators,
+            drep_delegation_changes,
+        );
 
         self.history.push(BlockSnapshot {
             slot,
@@ -141,7 +139,10 @@ impl State {
         prev_delegations: &HashMap<Vec<u8>, Vec<u8>>,
         prev_delegators: &HashMap<Vec<u8>, HashSet<Vec<u8>>>,
         changes: &[(Vec<u8>, Option<Vec<u8>>)],
-    ) -> (HashMap<Vec<u8>, Vec<u8>>, HashMap<Vec<u8>, HashSet<Vec<u8>>>) {
+    ) -> (
+        HashMap<Vec<u8>, Vec<u8>>,
+        HashMap<Vec<u8>, HashSet<Vec<u8>>>,
+    ) {
         if changes.is_empty() {
             return (prev_delegations.clone(), prev_delegators.clone());
         }

@@ -32,10 +32,7 @@ fn serialize_event(event: crate::event::Event) -> Option<Result<SseEvent, Infall
 }
 
 fn config_event(nftcdn: &str) -> Result<SseEvent, Infallible> {
-    Ok(SseEvent::default().data(format!(
-        "{{\"type\":\"Config\",\"nftcdn\":\"{}\"}}",
-        nftcdn
-    )))
+    Ok(SseEvent::default().data(format!("{{\"type\":\"Config\",\"nftcdn\":\"{}\"}}", nftcdn)))
 }
 
 async fn events(

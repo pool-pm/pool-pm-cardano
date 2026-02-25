@@ -34,10 +34,7 @@ impl MultiEraTxExt for MultiEraTx<'_> {
             match cert {
                 MultiEraCert::AlonzoCompatible(c) => match &**c {
                     alonzo::Certificate::StakeDelegation(cred, pool) => {
-                        changes.push((
-                            stake_credential_bytes(cred),
-                            Some(pool.as_ref().to_vec()),
-                        ));
+                        changes.push((stake_credential_bytes(cred), Some(pool.as_ref().to_vec())));
                     }
                     alonzo::Certificate::StakeDeregistration(cred) => {
                         changes.push((stake_credential_bytes(cred), None));
@@ -49,10 +46,7 @@ impl MultiEraTxExt for MultiEraTx<'_> {
                     | conway::Certificate::StakeVoteDeleg(cred, pool, _)
                     | conway::Certificate::StakeRegDeleg(cred, pool, _)
                     | conway::Certificate::StakeVoteRegDeleg(cred, pool, _, _) => {
-                        changes.push((
-                            stake_credential_bytes(cred),
-                            Some(pool.as_ref().to_vec()),
-                        ));
+                        changes.push((stake_credential_bytes(cred), Some(pool.as_ref().to_vec())));
                     }
                     conway::Certificate::StakeDeregistration(cred)
                     | conway::Certificate::UnReg(cred, _) => {
@@ -75,10 +69,7 @@ impl MultiEraTxExt for MultiEraTx<'_> {
                     | conway::Certificate::StakeVoteDeleg(cred, _, drep)
                     | conway::Certificate::VoteRegDeleg(cred, drep, _)
                     | conway::Certificate::StakeVoteRegDeleg(cred, _, drep, _) => {
-                        changes.push((
-                            stake_credential_bytes(cred),
-                            Some(drep_to_bytes(drep)),
-                        ));
+                        changes.push((stake_credential_bytes(cred), Some(drep_to_bytes(drep))));
                     }
                     conway::Certificate::StakeDeregistration(cred)
                     | conway::Certificate::UnReg(cred, _) => {

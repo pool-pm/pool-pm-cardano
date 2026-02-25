@@ -89,7 +89,15 @@ impl Worker {
                 .map(|pool| (Some(pool_bech32_id(&pool.hash_raw)), pool.ticker.clone()))
                 .unwrap_or((None, None));
 
-            (txs, produced, consumed, pool_deleg, drep_deleg, pool_id, pool_ticker)
+            (
+                txs,
+                produced,
+                consumed,
+                pool_deleg,
+                drep_deleg,
+                pool_id,
+                pool_ticker,
+            )
         };
 
         let timestamp = stage.genesis.shelley_known_time
