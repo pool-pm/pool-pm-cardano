@@ -9,15 +9,6 @@
     return h.slice(0, 4) + '\u2026' + h.slice(-4);
   }
 
-  function truncateAddr(a: string): string {
-    const keep = a.startsWith('addr_test1') ? 14 : 9;
-    return a.length > keep + 4 ? a.slice(0, keep) + '\u2026' + a.slice(-4) : a;
-  }
-
-  function truncateStakeAddr(a: string): string {
-    return a.slice(0, 10) + '\u2026' + a.slice(-4);
-  }
-
   function poolLabel(ticker?: string, poolId?: string): string {
     return ticker ?? poolId?.slice(5, 10) ?? '';
   }
@@ -104,7 +95,7 @@
             style:color={poolColor(deleg.from_pool_id)}>{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
           >
         {/if}
-        <span class="addr mono">{truncateStakeAddr(deleg.stake_address)}</span>
+        <span class="addr mono">{deleg.stake_address}</span>
       </div>
     {/each}
     {#each filteredOutputs as output}
@@ -136,7 +127,7 @@
             {/each}
           </div>
         {/if}
-        <span class="addr mono">{truncateAddr(output.address)}</span>
+        <span class="addr mono">{output.address}</span>
       </div>
     {/each}
   </div>
@@ -149,7 +140,7 @@
   <div class="addr-list">
     {#each uniqueInputs as input}
       <div class="addr-item">
-        <span class="addr mono">{input.address ? truncateAddr(input.address) : '???'}</span>
+        <span class="addr mono">{input.address ?? '???'}</span>
       </div>
     {/each}
   </div>
@@ -166,6 +157,7 @@
     font-size: 11px;
     text-align: center;
     transition: filter var(--flip-duration) ease;
+    overflow: hidden;
   }
 
   .tx-hash {
@@ -179,12 +171,16 @@
     flex-direction: column;
     align-items: center;
     gap: 4px;
+    min-width: 0;
+    width: 100%;
   }
 
   .addr-item {
     display: flex;
     flex-direction: column;
     align-items: center;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .ada {
@@ -196,6 +192,10 @@
   .addr {
     color: rgb(255 255 255 / 0.4);
     font-size: 10px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .arrow {
@@ -226,7 +226,7 @@
 
   .deleg-arrow {
     color: rgb(255 255 255 / 0.4);
-    font-size: 10px;
+    font-size: 12px;
     line-height: 1;
   }
 
