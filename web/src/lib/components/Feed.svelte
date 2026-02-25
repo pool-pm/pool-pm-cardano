@@ -113,13 +113,12 @@
     {@const color = section.block ? blockColor(section.block.pool_id) : '#444'}
     {@const maxWidth = squareWidth(section.txs.length) + BLOCK_INSET}
     {@const prevTimestamp = i > 0 ? ($sections[i - 1].block?.timestamp ?? now / 1000) : undefined}
-    {@const gap =
-      prevTimestamp && section.block ? Math.max(0, (prevTimestamp - section.block.timestamp) * PX_PER_SECOND) : 0}
-    {@const spacing = gap}
+    {@const timeDelta = prevTimestamp && section.block ? Math.max(0, prevTimestamp - section.block.timestamp) : 0}
+    {@const spacing = PX_PER_SECOND * 120 * Math.log(1 + timeDelta / 120)}
     <div
       class="section"
       class:mempool={isMempool}
-      class:has-line={i > 0 && gap > 0}
+      class:has-line={i > 0 && spacing > 0}
       style:border-color={color}
       style:background-color={color}
       style:--section-color={color}
