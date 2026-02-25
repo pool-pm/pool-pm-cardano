@@ -107,8 +107,8 @@
     >
       <div class="block-header">
         {#if section.block}
-          <span class="block-ticker"
-            >{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</span
+          <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
+            >{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</a
           >
           <span class="block-meta">#{section.block.number}</span>
         {:else}
@@ -206,6 +206,7 @@
     font-size: 13px;
     font-weight: 700;
     line-height: 1;
+    text-decoration: none;
   }
 
   /* Landscape: horizontal right-to-left flow */

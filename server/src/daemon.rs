@@ -135,7 +135,7 @@ pub fn run(args: Args) -> Result<(), Error> {
     let prometheus = tokio_rt.spawn(serve_prometheus(daemon.clone(), args.metrics));
 
     if let Some(addr) = listen {
-        tokio_rt.spawn(server::serve(addr, event_bus, nftcdn.subdomain));
+        tokio_rt.spawn(server::serve(addr, event_bus, state, nftcdn.subdomain));
     }
 
     daemon.block();

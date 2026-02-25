@@ -16,6 +16,9 @@ pub struct BlockTx {
     pub size: usize,
     pub inputs: Vec<TxInput>,
     pub outputs: Vec<TxOutputInfo>,
+    /// Pre-extracted stake credentials from input/output addresses.
+    #[serde(skip)]
+    pub stake_credentials: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Serialize)]

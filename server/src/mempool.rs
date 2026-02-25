@@ -9,6 +9,7 @@ use tracing::info;
 
 use crate::event::{AssetInfo, BlockTx, Event, TxInput, TxOutputInfo};
 use crate::event_bus::EventBus;
+use crate::filter;
 use crate::model::{asset_fingerprint, TxOutput};
 use crate::nftcdn::NftcdnConfig;
 use crate::state::State;
@@ -93,13 +94,16 @@ pub async fn extract_tx(
         })
         .collect();
 
-    BlockTx {
+    let mut block_tx = BlockTx {
         hash,
         fee,
         size,
         inputs,
         outputs,
-    }
+        stake_credentials: Vec::new(),
+    };
+    block_tx.stake_credentials = filter::extract_stake_credentials(&block_tx);
+    block_tx
 }
 
 pub struct Worker {

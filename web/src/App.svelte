@@ -3,10 +3,15 @@
   import Feed from './lib/components/Feed.svelte';
   import './app.css';
 
-  const SSE_URL = import.meta.env.VITE_SSE_URL || 'http://localhost:3000/events';
+  const SSE_BASE = import.meta.env.VITE_SSE_URL || 'http://localhost:3000/events';
+
+  function sseUrl(): string {
+    const path = window.location.pathname.replace(/^\/+/, '');
+    return path ? `${SSE_BASE}/${path}` : SSE_BASE;
+  }
 
   $effect(() => {
-    connectSSE(SSE_URL);
+    connectSSE(sseUrl());
     return () => disconnectSSE();
   });
 </script>
