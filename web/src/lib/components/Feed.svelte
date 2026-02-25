@@ -6,7 +6,6 @@
   import BinPackGrid from './BinPackGrid.svelte';
   import Transaction from './Transaction.svelte';
 
-  const MAX_AGE_MS = 600_000;
   const MAX_BLOCKS = 30;
   const PX_PER_SECOND = 2;
   const BLOCK_PADDING = 10;
@@ -26,11 +25,7 @@
   // Clean up old sections periodically
   $effect(() => {
     const interval = setInterval(() => {
-      const cutoff = Date.now() - MAX_AGE_MS;
-      sections.update((s) => {
-        s[0].txs = s[0].txs.filter((tx) => tx.receivedAt >= cutoff);
-        return s.filter((section, i) => i === 0 || section.receivedAt >= cutoff).slice(0, MAX_BLOCKS + 1);
-      });
+      sections.update((s) => s.slice(0, MAX_BLOCKS + 1));
     }, 10_000);
     return () => clearInterval(interval);
   });
