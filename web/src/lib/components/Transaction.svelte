@@ -222,7 +222,8 @@
     color: rgb(255 255 255 / 0.4);
     text-align: center;
     font-size: 12px;
-    margin: 4px 0;
+    line-height: 1;
+    margin: 2px 0;
   }
 
   .arrow.flip {
