@@ -36,6 +36,7 @@ export interface BlockTx {
   size: number;
   inputs: TxInput[];
   outputs: TxOutputInfo[];
+  expiry?: number;
   delegations?: DelegationInfo[];
 }
 

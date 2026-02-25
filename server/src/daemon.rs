@@ -93,10 +93,12 @@ pub fn run(args: Args) -> Result<(), Error> {
         socket_path: args.socket.clone(),
     });
     let mainnet = args.network.magic() == 764824073;
+    let genesis = GenesisValues::from(args.network.config().clone());
     let mempool_config = mempool::Config {
         socket_path: args.socket.clone(),
         magic: args.network.magic(),
         mainnet,
+        genesis,
     };
 
     let cursor_config = cursor::file::Config {

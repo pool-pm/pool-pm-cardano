@@ -1,59 +1,61 @@
 :root {
-	color-scheme: dark;
-	--bg: #000;
-	--surface: #161b22;
-	--border: #30363d;
-	--text: #e6edf3;
-	--text-muted: #8b949e;
-	--accent: #58a6ff;
-	--positive: #3fb950;
-	--negative: #f85149;
+  color-scheme: dark;
+  --bg: #000;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #58a6ff;
+  --positive: #3fb950;
+  --negative: #f85149;
 }
 
 * {
-	margin: 0;
-	padding: 0;
-	box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
 }
 
 html,
 body,
 #app {
-	height: 100%;
-	width: 100%;
-	overflow: hidden;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
 }
 
 body {
-	font-family: Inter, sans-serif;
-	font-feature-settings: 'liga' 1, 'calt' 1;
-	background: var(--bg);
-	color: var(--text);
+  font-family: Inter, sans-serif;
+  font-feature-settings:
+    'liga' 1,
+    'calt' 1;
+  background: var(--bg);
+  color: var(--text);
 }
 
 @supports (font-variation-settings: normal) {
-	body {
-		font-family: InterVariable, sans-serif;
-	}
+  body {
+    font-family: InterVariable, sans-serif;
+  }
 }
 
 main {
-	height: 100%;
-	display: flex;
-	flex-direction: column;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 main > h1 {
-	padding: 12px 20px;
-	font-size: 18px;
-	font-weight: 600;
-	border-bottom: 1px solid var(--border);
-	flex-shrink: 0;
-	text-align: center;
+  padding: 12px 20px;
+  font-size: 18px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  text-align: center;
 }
 
 code,
 .mono {
-	font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
-	font-size: 12px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 12px;
 }

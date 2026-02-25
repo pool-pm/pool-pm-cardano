@@ -16,6 +16,8 @@ pub struct BlockTx {
     pub size: usize,
     pub inputs: Vec<TxInput>,
     pub outputs: Vec<TxOutputInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiry: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub delegations: Vec<DelegationInfo>,
     /// Pre-extracted stake credentials from input/output addresses.

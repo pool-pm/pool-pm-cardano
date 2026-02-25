@@ -7,7 +7,6 @@
   import Transaction from './Transaction.svelte';
 
   const MAX_BLOCKS = 30;
-  const MAX_MEMPOOL_AGE_MS = 600_000;
   const PX_PER_SECOND = 2;
   const BLOCK_PADDING = 10;
   const BLOCK_BORDER = 2;
@@ -23,12 +22,12 @@
     return () => clearInterval(interval);
   });
 
-  // Clean up old sections periodically
+  // Clean up expired mempool txs and old blocks periodically
   $effect(() => {
     const interval = setInterval(() => {
-      const cutoff = Date.now() - MAX_MEMPOOL_AGE_MS;
+      const nowSec = Math.floor(Date.now() / 1000);
       sections.update((s) => {
-        s[0].txs = s[0].txs.filter((tx) => tx.receivedAt >= cutoff);
+        s[0].txs = s[0].txs.filter((tx) => !tx.expiry || tx.expiry > nowSec);
         return s.slice(0, MAX_BLOCKS + 1);
       });
     }, 10_000);

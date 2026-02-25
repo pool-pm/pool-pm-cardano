@@ -59,7 +59,17 @@ impl Worker {
                 for input in tx.inputs() {
                     consumed.push((input.hash().as_ref().to_vec(), input.index() as i16));
                 }
-                txs.push(extract_tx(&tx, &state, &stage.nftcdn, &produced, stage.mainnet).await);
+                txs.push(
+                    extract_tx(
+                        &tx,
+                        &state,
+                        &stage.nftcdn,
+                        &produced,
+                        stage.mainnet,
+                        &stage.genesis,
+                    )
+                    .await,
+                );
                 for (idx, output) in tx.outputs().iter().enumerate() {
                     produced.insert(
                         (hash.as_ref().to_vec(), idx as i16),
@@ -100,9 +110,7 @@ impl Worker {
             )
         };
 
-        let timestamp = stage.genesis.shelley_known_time
-            + slot.saturating_sub(stage.genesis.shelley_known_slot)
-                * stage.genesis.shelley_slot_length as u64;
+        let timestamp = crate::mempool::slot_to_timestamp(slot, &stage.genesis);
 
         {
             let mut state = stage.state.write().await;

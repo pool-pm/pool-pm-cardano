@@ -15,12 +15,18 @@ use crate::nftcdn::NftcdnConfig;
 use crate::pallas::{stake_address_bech32, stake_credential_bytes, MultiEraTxExt};
 use crate::state::State;
 
+pub fn slot_to_timestamp(slot: u64, genesis: &oura::framework::GenesisValues) -> u64 {
+    genesis.shelley_known_time
+        + slot.saturating_sub(genesis.shelley_known_slot) * genesis.shelley_slot_length as u64
+}
+
 pub async fn extract_tx(
     tx: &MultiEraTx<'_>,
     state: &State,
     nftcdn: &NftcdnConfig,
     block_utxos: &std::collections::HashMap<(Vec<u8>, i16), TxOutput>,
     mainnet: bool,
+    genesis: &oura::framework::GenesisValues,
 ) -> BlockTx {
     let hash = tx.hash().to_string();
     let fee = tx.fee().unwrap_or(0);
@@ -98,12 +104,15 @@ pub async fn extract_tx(
 
     let delegations = extract_delegations(tx, state, mainnet);
 
+    let expiry = tx.ttl().map(|slot| slot_to_timestamp(slot, genesis));
+
     let mut block_tx = BlockTx {
         hash,
         fee,
         size,
         inputs,
         outputs,
+        expiry,
         delegations,
         stake_credentials: Vec::new(),
     };
@@ -194,6 +203,7 @@ impl gasket::framework::Worker<Stage> for Worker {
                     &stage.nftcdn,
                     &Default::default(),
                     stage.config.mainnet,
+                    &stage.config.genesis,
                 )
                 .await;
                 drop(state);
@@ -242,6 +252,7 @@ pub struct Config {
     pub socket_path: PathBuf,
     pub magic: u64,
     pub mainnet: bool,
+    pub genesis: oura::framework::GenesisValues,
 }
 
 pub fn bootstrapper(
