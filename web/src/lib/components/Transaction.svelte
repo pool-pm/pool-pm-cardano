@@ -77,89 +77,107 @@
 </script>
 
 <div class="tx-card" style:--thumb-size="{thumbSize}px">
-  <div class="addr-list">
-    {#each visibleDelegations as deleg}
-      {@const isDeregistration = !deleg.to_pool_id && !!deleg.from_pool_id}
-      <div class="addr-item">
-        {#if deleg.to_pool_id}
-          <a class="deleg-pool" href="/{deleg.to_pool_id}" style:color={poolColor(deleg.to_pool_id)}
-            >{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a
-          >
-        {/if}
-        {#if deleg.to_pool_id}
-          <span class="deleg-arrow">{@html '&#x2191;'}</span>
-        {/if}
-        {#if deleg.from_pool_id}
-          <a
-            class="deleg-pool from"
-            class:deregistered={isDeregistration}
-            href="/{deleg.from_pool_id}"
-            style:color={poolColor(deleg.from_pool_id)}>{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
-          >
-        {/if}
-        <span class="addr mono">{deleg.stake_address}</span>
-      </div>
-    {/each}
-    {#each filteredOutputs as output}
-      <div class="addr-item">
-        <span class="ada">{formatAda(output.lovelace)}</span>
-        {#if output.assets.length > 0 && $config}
-          <div class="assets">
-            {#each output.assets as asset}
-              <div class="asset">
-                <img
-                  class="asset-thumb"
-                  src={nftcdnUrl(asset)}
-                  alt={asset.fingerprint}
-                  loading="lazy"
-                  onload={(e: Event) => {
-                    (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
-                  }}
-                  onerror={(e: Event) => {
-                    const asset = (e.target as HTMLElement).parentElement!;
-                    const parent = asset.parentElement;
-                    asset.remove();
-                    parent?.dispatchEvent(new Event('remeasure', { bubbles: true }));
-                  }}
-                />
-                {#if thumbSize >= 32 && asset.quantity !== '1'}
-                  <span class="asset-label">{BigInt(asset.quantity).toLocaleString()}</span>
-                {/if}
-              </div>
-            {/each}
+  {#if visibleDelegations.length > 0}
+    <div class="deleg-section">
+      <div class="addr-list">
+        {#each visibleDelegations as deleg}
+          {@const isDeregistration = !deleg.to_pool_id && !!deleg.from_pool_id}
+          <div class="addr-item">
+            {#if deleg.to_pool_id}
+              <a class="deleg-pool" href="/{deleg.to_pool_id}" style:color={poolColor(deleg.to_pool_id)}
+                >{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a
+              >
+            {/if}
+            {#if deleg.to_pool_id}
+              <span class="deleg-arrow">{@html '&#x2191;'}</span>
+            {/if}
+            {#if deleg.from_pool_id}
+              <a
+                class="deleg-pool from"
+                class:deregistered={isDeregistration}
+                href="/{deleg.from_pool_id}"
+                style:color={poolColor(deleg.from_pool_id)}>{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
+              >
+            {/if}
+            <span class="addr mono">{deleg.stake_address}</span>
           </div>
-        {/if}
-        <span class="addr mono">{output.address}</span>
+        {/each}
       </div>
-    {/each}
-  </div>
-
-  {#if filteredOutputs.length === 0}
-    <span class="ada">{formatAda(tx.outputs.reduce((s, o) => s + BigInt(o.lovelace), 0n).toString())}</span>
+    </div>
   {/if}
-  <div class="arrow" class:flip={filteredOutputs.length === 0}>{filteredOutputs.length === 0 ? '↻' : '↑'}</div>
 
-  <div class="addr-list">
-    {#each uniqueInputs as input}
-      <div class="addr-item">
-        <span class="addr mono">{input.address ?? '???'}</span>
-      </div>
-    {/each}
+  <div class="tx-body">
+    <div class="addr-list">
+      {#each filteredOutputs as output}
+        <div class="addr-item">
+          <span class="ada">{formatAda(output.lovelace)}</span>
+          {#if output.assets.length > 0 && $config}
+            <div class="assets">
+              {#each output.assets as asset}
+                <div class="asset">
+                  <img
+                    class="asset-thumb"
+                    src={nftcdnUrl(asset)}
+                    alt={asset.fingerprint}
+                    loading="lazy"
+                    onload={(e: Event) => {
+                      (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
+                    }}
+                    onerror={(e: Event) => {
+                      const asset = (e.target as HTMLElement).parentElement!;
+                      const parent = asset.parentElement;
+                      asset.remove();
+                      parent?.dispatchEvent(new Event('remeasure', { bubbles: true }));
+                    }}
+                  />
+                  {#if thumbSize >= 32 && asset.quantity !== '1'}
+                    <span class="asset-label">{BigInt(asset.quantity).toLocaleString()}</span>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+          <span class="addr mono">{output.address}</span>
+        </div>
+      {/each}
+    </div>
+
+    {#if filteredOutputs.length === 0}
+      <span class="ada">{formatAda(tx.outputs.reduce((s, o) => s + BigInt(o.lovelace), 0n).toString())}</span>
+    {/if}
+    <div class="arrow" class:flip={filteredOutputs.length === 0}>{filteredOutputs.length === 0 ? '↻' : '↑'}</div>
+
+    <div class="addr-list">
+      {#each uniqueInputs as input}
+        <div class="addr-item">
+          <span class="addr mono">{input.address ?? '???'}</span>
+        </div>
+      {/each}
+    </div>
+
+    <div class="tx-hash mono">{truncateHash(tx.hash)}</div>
   </div>
-
-  <div class="tx-hash mono">{truncateHash(tx.hash)}</div>
 </div>
 
 <style>
   .tx-card {
-    background: rgb(0 0 0 / 0.5);
-    border-radius: 6px;
-    padding: 8px 10px;
     width: var(--item-width);
     font-size: 11px;
     text-align: center;
     transition: filter var(--flip-duration) ease;
     overflow: hidden;
+  }
+
+  .deleg-section {
+    background: rgb(0 0 0 / 0.5);
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+
+  .tx-body {
+    background: rgb(0 0 0 / 0.5);
+    border-radius: 6px;
+    padding: 8px 10px;
   }
 
   .tx-hash {
