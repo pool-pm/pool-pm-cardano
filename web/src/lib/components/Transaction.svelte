@@ -124,10 +124,9 @@
                       (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
                     }}
                     onerror={(e: Event) => {
-                      const asset = (e.target as HTMLElement).parentElement!;
-                      const parent = asset.parentElement;
-                      asset.remove();
-                      parent?.dispatchEvent(new Event('remeasure', { bubbles: true }));
+                      const el = (e.target as HTMLElement).parentElement!;
+                      el.style.display = 'none';
+                      el.dispatchEvent(new Event('remeasure', { bubbles: true }));
                     }}
                   />
                   {#if thumbSize >= 32 && asset.quantity !== '1'}

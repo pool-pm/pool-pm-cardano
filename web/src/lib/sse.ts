@@ -60,9 +60,8 @@ function handleEvent(event: Event): void {
       const now = Date.now();
       sections.update((s) => {
         const mempool = s[0];
-        if (!mempool.txs.some((t) => t.hash === event.hash)) {
-          mempool.txs = [{ ...event, receivedAt: now }, ...mempool.txs];
-        }
+        if (mempool.txs.some((t) => t.hash === event.hash)) return s;
+        mempool.txs = [{ ...event, receivedAt: now }, ...mempool.txs];
         resolveInputs(mempool.txs);
         return [...s];
       });
@@ -120,14 +119,18 @@ export function connectSSE(url: string): void {
   source = new EventSource(url);
 
   source.onmessage = (e: MessageEvent) => {
-    const data = JSON.parse(e.data);
+    try {
+      const data = JSON.parse(e.data);
 
-    if (data.type === 'Config') {
-      config.set(data as Config);
-    } else if (Array.isArray(data)) {
-      handleSnapshot(data as Event[]);
-    } else {
-      handleEvent(data as Event);
+      if (data.type === 'Config') {
+        config.set(data as Config);
+      } else if (Array.isArray(data)) {
+        handleSnapshot(data as Event[]);
+      } else {
+        handleEvent(data as Event);
+      }
+    } catch (err) {
+      console.error('SSE message error:', err);
     }
   };
 
