@@ -72,6 +72,10 @@
   let totalAssets = $derived(filteredOutputs.reduce((sum, o) => sum + o.assets.length, 0));
   let thumbSize = $derived(totalAssets <= 1 ? 64 : Math.max(16, Math.floor(64 / Math.sqrt(totalAssets))));
 
+  const MAX_OUTPUTS = 8;
+  let visibleOutputs = $derived(filteredOutputs.slice(0, MAX_OUTPUTS));
+  let hiddenOutputCount = $derived(filteredOutputs.length - visibleOutputs.length);
+
   // Deduplicate inputs by address
   let uniqueInputs = $derived([...new Map(tx.inputs.map((i) => [i.address, i])).values()]);
 </script>
@@ -108,7 +112,10 @@
 
   <div class="tx-body">
     <div class="addr-list">
-      {#each filteredOutputs as output}
+      {#if hiddenOutputCount > 0}
+        <span class="more-outputs">+{hiddenOutputCount} more</span>
+      {/if}
+      {#each visibleOutputs as output}
         <div class="addr-item">
           <span class="ada">{formatAda(output.lovelace)}</span>
           {#if output.assets.length > 0 && $config}
@@ -277,5 +284,10 @@
     align-self: center;
     border-radius: 3px;
     background: transparent;
+  }
+
+  .more-outputs {
+    color: var(--text-muted);
+    font-size: 10px;
   }
 </style>

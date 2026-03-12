@@ -1,9 +1,10 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { flip } from 'svelte/animate';
   import { slide } from 'svelte/transition';
   import { sections, config } from '../stores';
   import type { GenesisConfig } from '../types';
-  import { TX_WIDTH, TX_GAP, FLIP_DURATION, squareWidth } from '../layout';
+  import { TX_WIDTH, TX_GAP, FLIP_DURATION, gridWidth } from '../layout';
   import BinPackGrid from './BinPackGrid.svelte';
   import Transaction from './Transaction.svelte';
 
@@ -14,9 +15,20 @@
   const BLOCK_BORDER = 2;
   const BLOCK_INSET = (BLOCK_PADDING + BLOCK_BORDER) * 2;
 
+  let feedEl: HTMLDivElement;
+  let containerWidth = $state(0);
+
+  onMount(() => {
+    containerWidth = feedEl.offsetWidth;
+    const observer = new ResizeObserver((entries) => {
+      containerWidth = entries[0]?.contentRect.width ?? 0;
+    });
+    observer.observe(feedEl);
+    return () => observer.disconnect();
+  });
+
   let now = $state(Date.now());
 
-  // Update current time every second for timeAgo display
   $effect(() => {
     const interval = setInterval(() => {
       now = Date.now();
@@ -24,7 +36,6 @@
     return () => clearInterval(interval);
   });
 
-  // Clean up expired mempool txs and old blocks periodically
   $effect(() => {
     const interval = setInterval(() => {
       const nowSec = Math.floor(Date.now() / 1000);
@@ -37,8 +48,6 @@
     return () => clearInterval(interval);
   });
 
-  // Hash pool_id (minus "pool1" prefix) to a hue using a Fibonacci hashing variant
-  // (multiply by golden ratio constant 0x9e3779b9) for uniform distribution across 0-359°
   function blockColor(poolId?: string): string {
     const key = poolId?.slice(5) ?? '';
     let h = 0;
@@ -87,11 +96,11 @@
     if (sec >= 120) return `${Math.floor(sec / 60)} mins left`;
     return `${sec} secs left`;
   }
-
 </script>
 
 <div
   class="feed"
+  bind:this={feedEl}
   style:--block-padding="{BLOCK_PADDING}px"
   style:--block-border="{BLOCK_BORDER}px"
   style:--flip-duration="{FLIP_DURATION}ms"
@@ -99,7 +108,7 @@
   {#each $sections as section, i (section.id)}
     {@const isMempool = !section.block}
     {@const color = section.block ? blockColor(section.block.pool_id) : '#444'}
-    {@const maxWidth = squareWidth(section.txs.length) + BLOCK_INSET}
+    {@const maxWidth = gridWidth(section.txs.length, containerWidth - BLOCK_INSET) + BLOCK_INSET}
     {@const prevTimestamp = i > 0 ? ($sections[i - 1].block?.timestamp ?? now / 1000) : undefined}
     {@const timeDelta = prevTimestamp && section.block ? Math.max(0, prevTimestamp - section.block.timestamp) : 0}
     {@const spacing = PX_PER_SECOND * 120 * Math.log(1 + timeDelta / 120)}
@@ -165,8 +174,8 @@
 
   .section {
     width: 100%;
-    min-width: min-content;
     max-width: var(--section-width);
+    min-width: min-content;
     margin-top: var(--spacing);
     position: relative;
     border: var(--block-border) solid;
@@ -224,5 +233,4 @@
     line-height: 1;
     text-decoration: none;
   }
-
 </style>
