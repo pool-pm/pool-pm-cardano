@@ -76,6 +76,14 @@ export interface MempoolPruneEvent {
 
 export type Event = MempoolTxEvent | BlockEvent | RollbackEvent | MempoolPruneEvent;
 
+export interface PoolInfo {
+  pool_id: string;
+  ticker: string | null;
+  pledge: string;
+  margin: number;
+  fixed_cost: string;
+}
+
 export interface FeedTx extends BlockTx {
   receivedAt: number;
 }

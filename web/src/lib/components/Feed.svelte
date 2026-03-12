@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { sections, config } from '../stores';
+  import { sections, config, pool } from '../stores';
   import type { GenesisConfig, Section } from '../types';
   import { TX_WIDTH, TX_GAP, FLIP_DURATION } from '../layout';
   import BinPackGrid from './BinPackGrid.svelte';
@@ -66,7 +66,10 @@
     }
     sectionPositions = positions;
     canvasHeight = y;
-    if (!animated) tick().then(() => { animated = true; });
+    if (!animated)
+      tick().then(() => {
+        animated = true;
+      });
   }
 
   onMount(() => {
@@ -144,6 +147,20 @@
       .slice(0, 5);
   }
 
+  function formatAda(lovelace: string): string {
+    const padded = lovelace.padStart(7, '0');
+    const whole = padded.slice(0, -6) || '0';
+    const frac = padded.slice(-6);
+    const wholeNum = Number(whole);
+    if (wholeNum >= 1000) return wholeNum.toLocaleString() + ' ADA';
+    if (wholeNum >= 1) return whole + '.' + frac.slice(0, 2) + ' ADA';
+    return '0.' + frac + ' ADA';
+  }
+
+  function formatMargin(m: number): string {
+    return (m * 100).toFixed(1).replace(/\.0$/, '') + '%';
+  }
+
   function formatTime(timestamp: number): string {
     return new Date(timestamp * 1000).toLocaleTimeString();
   }
@@ -177,6 +194,14 @@
   style:--block-border="{BLOCK_BORDER}px"
   style:--flip-duration="{FLIP_DURATION}ms"
 >
+  {#if $pool}
+    <div class="pool-header" style:border-color={blockColor($pool.pool_id)}>
+      <span class="pool-ticker">{$pool.ticker ?? $pool.pool_id.slice(5, 10)}</span>
+      <span class="pool-stat">{formatAda($pool.pledge)} pledge</span>
+      <span class="pool-stat">{formatMargin($pool.margin)} margin</span>
+      <span class="pool-stat">{formatAda($pool.fixed_cost)} cost</span>
+    </div>
+  {/if}
   <div class="canvas" style="height: {canvasHeight}px">
     {#each $sections as section, i (section.id)}
       {@const isMempool = !section.block}
@@ -194,7 +219,9 @@
         style:--section-width={sectionMaxWidth(section)}
         style:--spacing="{layout?.spacing ?? 0}px"
         style:transform="translateY({layout?.y ?? 0}px)"
-        ongridwidth={(e: CustomEvent<number>) => { actualGridWidths[section.id] = e.detail; }}
+        ongridwidth={(e: CustomEvent<number>) => {
+          actualGridWidths[section.id] = e.detail;
+        }}
         use:trackSection={section.id}
         out:slide={{ duration: FLIP_DURATION, axis: 'y' }}
       >
@@ -210,7 +237,13 @@
         </div>
 
         {#if section.txs.length > 0}
-          <BinPackGrid items={section.txs} key={(tx) => tx.hash} itemWidth={TX_WIDTH} gap={TX_GAP} availableWidth={feedWidth - BLOCK_INSET}>
+          <BinPackGrid
+            items={section.txs}
+            key={(tx) => tx.hash}
+            itemWidth={TX_WIDTH}
+            gap={TX_GAP}
+            availableWidth={feedWidth - BLOCK_INSET}
+          >
             {#snippet children(tx)}
               <Transaction {tx} />
             {/snippet}
@@ -242,6 +275,27 @@
     overflow-y: auto;
     scrollbar-gutter: stable;
     padding: 16px 20px;
+  }
+
+  .pool-header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 8px 12px;
+    margin-bottom: 16px;
+    border-left: 3px solid;
+    white-space: nowrap;
+  }
+
+  .pool-ticker {
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--text);
+  }
+
+  .pool-stat {
+    font-size: 11px;
+    color: var(--text-muted);
   }
 
   .canvas {

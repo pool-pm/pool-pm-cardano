@@ -16,6 +16,7 @@ use tracing::info;
 
 use crate::event_bus::EventBus;
 use crate::filter;
+use crate::model::pool_bech32_id;
 use crate::state::State;
 
 #[derive(Clone)]
@@ -78,13 +79,29 @@ async fn filtered_events(
 
     let (snapshot, rx) = state.bus.subscribe().await;
 
-    let delegators = {
+    let (delegators, pool_event) = {
         let guard = state.chain_state.read().await;
-        guard
+        let delegators = guard
             .current()
             .and_then(|snap| filter.delegators(snap))
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let pool_event = if let filter::FeedFilter::Pool(ref hash) = filter {
+            guard.current().and_then(|snap| {
+                let pool = snap.pools.get(&hex::encode(hash))?;
+                Some(Ok::<_, Infallible>(SseEvent::default().data(format!(
+                    r#"{{"type":"Pool","pool_id":"{}","ticker":{},"pledge":"{}","margin":{},"fixed_cost":"{}"}}"#,
+                    pool_bech32_id(&pool.hash_raw),
+                    serde_json::to_string(&pool.ticker).unwrap(),
+                    pool.pledge,
+                    pool.margin,
+                    pool.fixed_cost
+                ))))
+            })
+        } else {
+            None
+        };
+        (delegators, pool_event)
     };
 
     let filtered_snapshot: Vec<crate::event::Event> = snapshot
@@ -101,7 +118,7 @@ async fn filtered_events(
             .ok()
             .map(|json| Ok(SseEvent::default().data(json)))
     };
-    let replay = futures::stream::iter(config.into_iter().chain(init));
+    let replay = futures::stream::iter(config.into_iter().chain(pool_event).chain(init));
 
     let chain_state = state.chain_state.clone();
     let live = futures::stream::unfold(

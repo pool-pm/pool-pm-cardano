@@ -1,5 +1,5 @@
-import { sections, newSection, config } from './stores';
-import type { BlockEvent, BlockTx, Config, Event, MempoolTxEvent, Section } from './types';
+import { sections, newSection, config, pool } from './stores';
+import type { BlockEvent, BlockTx, Config, Event, MempoolTxEvent, PoolInfo, Section } from './types';
 
 let source: EventSource | null = null;
 let pendingPrune = new Set<string>();
@@ -130,6 +130,8 @@ export function connectSSE(url: string): void {
 
       if (data.type === 'Config') {
         config.set(data as Config);
+      } else if (data.type === 'Pool') {
+        pool.set(data as PoolInfo);
       } else if (Array.isArray(data)) {
         handleSnapshot(data as Event[]);
       } else {
