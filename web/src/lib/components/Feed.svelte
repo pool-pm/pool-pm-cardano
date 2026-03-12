@@ -321,6 +321,7 @@
 
   .section.animated {
     transition: transform var(--flip-duration) ease;
+    will-change: transform;
   }
 
   .section.has-line::before {

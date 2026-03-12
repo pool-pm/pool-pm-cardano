@@ -176,5 +176,6 @@
     position: absolute;
     width: var(--item-width);
     transition: transform var(--flip-duration) ease;
+    will-change: transform;
   }
 </style>
