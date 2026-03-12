@@ -64,12 +64,12 @@ impl DbSync {
         Ok(sqlx::query_as!(
             Pool,
             r#"SELECT DISTINCT ON (hash_raw)
-            hash_raw, vrf_key_hash, pledge, margin, fixed_cost,
+            hash_raw, pledge, margin, fixed_cost,
             (SELECT ticker_name FROM off_chain_pool_data WHERE pool_id = pool_hash.id ORDER BY id DESC LIMIT 1) as ticker
             FROM pool_update
             JOIN pool_hash ON pool_hash.id=hash_id
             WHERE registered_tx_id <= $1
-            GROUP BY hash_raw, vrf_key_hash, pool_update.id, pool_hash.id
+            GROUP BY hash_raw, pool_update.id, pool_hash.id
             ORDER BY hash_raw, pool_update.id DESC"#,
             last_tx_id
         )
