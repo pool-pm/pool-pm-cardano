@@ -2,6 +2,7 @@ import { sections, newSection, config } from './stores';
 import type { BlockEvent, BlockTx, Config, Event, MempoolTxEvent, Section } from './types';
 
 let source: EventSource | null = null;
+let pendingPrune = new Set<string>();
 
 /** Resolve unresolved input addresses from other txs' outputs in the same set */
 function resolveInputs(txs: BlockTx[]): void {
@@ -77,11 +78,10 @@ function handleEvent(event: Event): void {
 
         const excluded = mempool.txs.filter((tx) => !blockByHash.has(tx.hash));
 
-        // Mempool-order first, then block-only txs appended
+        // Mempool-order first (keep mempool version for visual continuity),
+        // then block-only txs appended
         const inBlock = [
-          ...mempool.txs
-            .filter((tx) => blockByHash.has(tx.hash))
-            .map((tx) => ({ ...blockByHash.get(tx.hash)!, receivedAt: tx.receivedAt })),
+          ...mempool.txs.filter((tx) => blockByHash.has(tx.hash)),
           ...event.txs.filter((tx) => !mempoolByHash.has(tx.hash)).map((tx) => ({ ...tx, receivedAt: now })),
         ];
 
@@ -96,12 +96,18 @@ function handleEvent(event: Event): void {
         };
         mempool.txs = inBlock;
 
-        // New mempool with excluded txs
+        // New mempool with excluded txs, minus any pruned
         const next = newSection();
-        next.txs = excluded;
+        next.txs = excluded.filter((tx) => !pendingPrune.has(tx.hash));
+        pendingPrune.clear();
 
         return [next, ...s];
       });
+      break;
+    }
+
+    case 'MempoolPrune': {
+      for (const h of event.removed) pendingPrune.add(h);
       break;
     }
 

@@ -221,6 +221,19 @@ impl gasket::framework::Worker<Stage> for Worker {
             pending.insert(hash);
         }
 
+        let removed: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|h| !pending.contains(h.as_str()))
+            .cloned()
+            .collect();
+        if !removed.is_empty() {
+            stage
+                .event_bus
+                .send(Event::MempoolPrune { removed })
+                .await;
+        }
+
         let count = pending.len();
         self.pending = pending;
 

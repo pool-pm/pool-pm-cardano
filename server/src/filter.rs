@@ -109,7 +109,7 @@ impl FeedFilter {
                     })
                 }
             }
-            Event::Rollback { .. } => Some(event.clone()),
+            Event::Rollback { .. } | Event::MempoolPrune { .. } => Some(event.clone()),
         }
     }
 }

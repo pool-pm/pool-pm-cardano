@@ -54,6 +54,14 @@ impl EventBus {
                     _ => true,
                 });
             }
+            Event::MempoolPrune { removed } => {
+                let removed_set: std::collections::HashSet<&str> =
+                    removed.iter().map(|h| h.as_str()).collect();
+                inner.mempool.retain(|e| match e {
+                    Event::MempoolTx(BlockTx { hash, .. }) => !removed_set.contains(hash.as_str()),
+                    _ => true,
+                });
+            }
         }
 
         let _ = inner.tx.send(event);

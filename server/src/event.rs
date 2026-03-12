@@ -56,6 +56,9 @@ pub enum Event {
     Rollback {
         slot: u64,
     },
+    MempoolPrune {
+        removed: Vec<String>,
+    },
 }
 
 #[derive(Clone, Serialize)]

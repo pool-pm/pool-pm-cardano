@@ -69,7 +69,12 @@ export interface RollbackEvent {
   slot: number;
 }
 
-export type Event = MempoolTxEvent | BlockEvent | RollbackEvent;
+export interface MempoolPruneEvent {
+  type: 'MempoolPrune';
+  removed: string[];
+}
+
+export type Event = MempoolTxEvent | BlockEvent | RollbackEvent | MempoolPruneEvent;
 
 export interface FeedTx extends BlockTx {
   receivedAt: number;

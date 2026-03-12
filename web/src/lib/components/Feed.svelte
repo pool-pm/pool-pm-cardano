@@ -88,18 +88,6 @@
     return `${sec} secs left`;
   }
 
-  // Detect landscape orientation for horizontal layout
-  let horizontal = $state(false);
-
-  $effect(() => {
-    const mql = window.matchMedia('(orientation: landscape)');
-    horizontal = mql.matches;
-    const handler = (e: MediaQueryListEvent) => {
-      horizontal = e.matches;
-    };
-    mql.addEventListener('change', handler);
-    return () => mql.removeEventListener('change', handler);
-  });
 </script>
 
 <div
@@ -125,7 +113,7 @@
       style:--section-width="{maxWidth}px"
       style:--spacing="{spacing}px"
       animate:flip={{ duration: FLIP_DURATION }}
-      out:slide={{ duration: FLIP_DURATION, axis: horizontal ? 'x' : 'y' }}
+      out:slide={{ duration: FLIP_DURATION, axis: 'y' }}
     >
       <div class="block-header">
         {#if section.block}
@@ -237,32 +225,4 @@
     text-decoration: none;
   }
 
-  /* Landscape: horizontal right-to-left flow */
-  @media (orientation: landscape) {
-    .feed {
-      direction: rtl;
-      flex-direction: row;
-      overflow-x: auto;
-      overflow-y: hidden;
-      align-items: center;
-      scrollbar-gutter: auto;
-    }
-
-    .section {
-      direction: ltr;
-      width: var(--section-width);
-      max-width: none;
-      flex-shrink: 0;
-      margin-top: 0;
-      margin-right: var(--spacing);
-    }
-
-    .section.has-line::before {
-      bottom: auto;
-      left: calc(100% + var(--block-border));
-      top: 50%;
-      width: var(--spacing);
-      height: 1px;
-    }
-  }
 </style>
