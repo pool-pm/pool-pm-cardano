@@ -21,9 +21,10 @@
     itemWidth: number;
     gap: number;
     children: import('svelte').Snippet<[T]>;
+    availableWidth?: number;
   };
 
-  let { items, key, itemWidth, gap, children }: Props = $props();
+  let { items, key, itemWidth, gap, children, availableWidth }: Props = $props();
 
   let container: HTMLDivElement;
   let containerWidth = $state(0);
@@ -31,11 +32,8 @@
   let itemPositions = $state<Map<string, { x: number; y: number }>>(new Map());
   let itemRefs = new Map<string, HTMLElement>();
 
-  const colCount = $derived(Math.max(1, Math.floor((containerWidth + gap) / (itemWidth + gap))));
-
-  // Center the grid within container
-  const gridWidth = $derived(colCount * itemWidth + (colCount - 1) * gap);
-  const offsetX = $derived(Math.max(0, (containerWidth - gridWidth) / 2));
+  const layoutWidth = $derived(availableWidth ?? containerWidth);
+  const colCount = $derived(Math.max(1, Math.floor((layoutWidth + gap) / (itemWidth + gap))));
 
   function measure() {
     if (!container || items.length === 0 || containerWidth === 0) {
@@ -57,16 +55,24 @@
 
       const height = el.offsetHeight;
 
-      // Find rightmost column with minimum height (prefer right when equal)
-      let targetCol = Math.min(maxColUsed + 1, colCount - 1);
-      if (maxColUsed >= colCount - 1) {
-        // All columns used, find shortest (rightmost if tie)
-        targetCol = colCount - 1;
-        for (let c = colCount - 2; c >= 0; c--) {
-          if (colHeights[c] < colHeights[targetCol]) {
-            targetCol = c;
-          }
+      // Among used columns, find shortest (rightmost if tie)
+      let shortestUsed = 0;
+      for (let c = 1; c <= maxColUsed; c++) {
+        if (colHeights[c] <= colHeights[shortestUsed]) {
+          shortestUsed = c;
         }
+      }
+
+      const currentMax = maxColUsed >= 0 ? Math.max(...colHeights.slice(0, maxColUsed + 1)) : 0;
+      const canStack = maxColUsed >= 0 && colHeights[shortestUsed] + height + gap <= currentMax;
+
+      let targetCol: number;
+      if (canStack) {
+        targetCol = shortestUsed;
+      } else if (maxColUsed < colCount - 1) {
+        targetCol = maxColUsed + 1;
+      } else {
+        targetCol = shortestUsed;
       }
 
       maxColUsed = Math.max(maxColUsed, targetCol);
@@ -94,6 +100,7 @@
 
     itemPositions = newPositions;
     containerHeight = totalHeight;
+    container.dispatchEvent(new CustomEvent('gridwidth', { detail: actualGridWidth, bubbles: true }));
   }
 
   function registerItem(k: string, el: HTMLElement) {
@@ -136,11 +143,9 @@
   // Re-measure when dependencies change
   let measurePending = false;
   $effect(() => {
-    // Track these dependencies
     items;
-    containerWidth;
     colCount;
-    offsetX;
+    containerWidth;
     untrack(scheduleMeasure);
   });
 </script>

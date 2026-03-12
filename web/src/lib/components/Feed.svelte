@@ -3,8 +3,8 @@
   import { flip } from 'svelte/animate';
   import { slide } from 'svelte/transition';
   import { sections, config } from '../stores';
-  import type { GenesisConfig } from '../types';
-  import { TX_WIDTH, TX_GAP, FLIP_DURATION, gridWidth } from '../layout';
+  import type { GenesisConfig, Section } from '../types';
+  import { TX_WIDTH, TX_GAP, FLIP_DURATION } from '../layout';
   import BinPackGrid from './BinPackGrid.svelte';
   import Transaction from './Transaction.svelte';
 
@@ -16,16 +16,24 @@
   const BLOCK_INSET = (BLOCK_PADDING + BLOCK_BORDER) * 2;
 
   let feedEl: HTMLDivElement;
-  let containerWidth = $state(0);
+  let feedWidth = $state(0);
+  let actualGridWidths = $state<Record<string, number>>({});
 
   onMount(() => {
-    containerWidth = feedEl.offsetWidth;
+    feedWidth = feedEl.offsetWidth;
     const observer = new ResizeObserver((entries) => {
-      containerWidth = entries[0]?.contentRect.width ?? 0;
+      feedWidth = entries[0]?.contentRect.width ?? 0;
     });
     observer.observe(feedEl);
     return () => observer.disconnect();
   });
+
+  function sectionMaxWidth(section: Section): string {
+    const gw = actualGridWidths[section.id];
+    if (gw) return `${gw + BLOCK_INSET}px`;
+    if (section.txs.length === 0) return 'min-content';
+    return 'none';
+  }
 
   let now = $state(Date.now());
 
@@ -108,10 +116,10 @@
   {#each $sections as section, i (section.id)}
     {@const isMempool = !section.block}
     {@const color = section.block ? blockColor(section.block.pool_id) : '#444'}
-    {@const maxWidth = gridWidth(section.txs.length, containerWidth - BLOCK_INSET) + BLOCK_INSET}
     {@const prevTimestamp = i > 0 ? ($sections[i - 1].block?.timestamp ?? now / 1000) : undefined}
     {@const timeDelta = prevTimestamp && section.block ? Math.max(0, prevTimestamp - section.block.timestamp) : 0}
     {@const spacing = PX_PER_SECOND * 120 * Math.log(1 + timeDelta / 120)}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="section"
       class:mempool={isMempool}
@@ -119,8 +127,9 @@
       style:border-color={color}
       style:background-color={color}
       style:--section-color={color}
-      style:--section-width="{maxWidth}px"
+      style:--section-width={sectionMaxWidth(section)}
       style:--spacing="{spacing}px"
+      ongridwidth={(e: CustomEvent<number>) => { actualGridWidths[section.id] = e.detail; }}
       animate:flip={{ duration: FLIP_DURATION }}
       out:slide={{ duration: FLIP_DURATION, axis: 'y' }}
     >
@@ -136,7 +145,7 @@
       </div>
 
       {#if section.txs.length > 0}
-        <BinPackGrid items={section.txs} key={(tx) => tx.hash} itemWidth={TX_WIDTH} gap={TX_GAP}>
+        <BinPackGrid items={section.txs} key={(tx) => tx.hash} itemWidth={TX_WIDTH} gap={TX_GAP} availableWidth={feedWidth - BLOCK_INSET}>
           {#snippet children(tx)}
             <Transaction {tx} />
           {/snippet}
