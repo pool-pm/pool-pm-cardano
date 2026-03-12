@@ -153,12 +153,15 @@
     const frac = padded.slice(-6);
     const wholeNum = Number(whole);
     if (wholeNum >= 1000) return wholeNum.toLocaleString() + ' ADA';
-    if (wholeNum >= 1) return whole + '.' + frac.slice(0, 2) + ' ADA';
+    if (wholeNum >= 1) {
+      const trimmed = frac.slice(0, 2).replace(/0+$/, '');
+      return trimmed ? whole + '.' + trimmed + ' ADA' : whole + ' ADA';
+    }
     return '0.' + frac + ' ADA';
   }
 
   function formatMargin(m: number): string {
-    return (m * 100).toFixed(1).replace(/\.0$/, '') + '%';
+    return (m * 100).toFixed(2).replace(/\.?0+$/, '') + '%';
   }
 
   function formatTime(timestamp: number): string {

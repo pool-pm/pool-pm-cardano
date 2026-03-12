@@ -238,13 +238,13 @@
 
   .deleg-pool {
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 700;
     text-decoration: none;
   }
 
   .deleg-pool.from {
     opacity: 0.5;
-    font-weight: 400;
+    font-weight: 500;
   }
 
   .deleg-pool.deregistered {
