@@ -96,4 +96,5 @@ Values that can exceed `Number.MAX_SAFE_INTEGER` (`lovelace`, `fee`, `quantity`)
 - **Animations**: Prefer Svelte's built-in animation features (`svelte/animate`, `svelte/transition`) over pure CSS when they provide a better, smoother, or simpler solution. Use `animate:flip` for list reordering, transitions for enter/exit animations.
 - **Package versions**: Use LTS or stable versions when possible, particularly for TypeScript, JavaScript runtimes, and Svelte.
 - **Type safety**: Prefer specific types over `any`. Use `unknown` when the type is genuinely dynamic, narrowing it before use. `any` is acceptable when interfacing with untyped libraries or when proper typing would require disproportionately complex generics.
+- **No macros**: Avoid Rust macros (`macro_rules!`, proc macros) for deduplication or abstraction. Prefer functions, generics, or a small amount of repetition. Ask for confirmation before introducing any macro.
 

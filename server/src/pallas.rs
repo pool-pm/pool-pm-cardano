@@ -6,6 +6,9 @@ use pallas::ledger::traverse::{MultiEraCert, MultiEraTx};
 pub type PoolDelegationChange = (Vec<u8>, Option<Vec<u8>>);
 pub type DrepDelegationChange = (Vec<u8>, Option<Vec<u8>>);
 
+/// (operator_hash, pledge, cost, margin_numerator, margin_denominator)
+pub type PoolUpdate = (Vec<u8>, u64, u64, u64, u64);
+
 /// (full StakeCredential, Some(pool_hash)) for delegation,
 /// (full StakeCredential, None) for deregistration.
 pub type PoolDelegationCert = (StakeCredential, Option<Vec<u8>>);
@@ -54,6 +57,9 @@ pub trait MultiEraTxExt {
     }
 
     fn drep_delegation_changes(&self) -> Vec<DrepDelegationChange>;
+
+    /// Pool registration certificates (used for both new pools and parameter updates).
+    fn pool_updates(&self) -> Vec<PoolUpdate>;
 }
 
 impl MultiEraTxExt for MultiEraTx<'_> {
@@ -109,5 +115,43 @@ impl MultiEraTxExt for MultiEraTx<'_> {
             }
         }
         changes
+    }
+
+    fn pool_updates(&self) -> Vec<PoolUpdate> {
+        self.certs()
+            .iter()
+            .filter_map(|cert| match cert {
+                MultiEraCert::AlonzoCompatible(c) => match &***c {
+                    alonzo::Certificate::PoolRegistration {
+                        operator,
+                        pledge,
+                        cost,
+                        margin,
+                        ..
+                    } => Some((operator, pledge, cost, margin)),
+                    _ => None,
+                },
+                MultiEraCert::Conway(c) => match &***c {
+                    conway::Certificate::PoolRegistration {
+                        operator,
+                        pledge,
+                        cost,
+                        margin,
+                        ..
+                    } => Some((operator, pledge, cost, margin)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .map(|(operator, pledge, cost, margin)| {
+                (
+                    operator.as_ref().to_vec(),
+                    *pledge,
+                    *cost,
+                    margin.numerator,
+                    margin.denominator,
+                )
+            })
+            .collect()
     }
 }

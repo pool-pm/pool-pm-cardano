@@ -14,7 +14,7 @@ use crate::event_bus::EventBus;
 use crate::mempool::extract_tx;
 use crate::model::{pool_bech32_id, TxOutput};
 use crate::nftcdn::NftcdnConfig;
-use crate::pallas::MultiEraTxExt;
+use crate::pallas::{MultiEraTxExt, PoolUpdate};
 use crate::state::State;
 
 pub struct Worker;
@@ -45,7 +45,7 @@ impl Worker {
 
         // Single pass: txs are ordered in a block, so chained tx outputs
         // are available for resolving later txs' inputs.
-        let (txs, produced, consumed, pool_deleg, drep_deleg, pool_id, pool_ticker) = {
+        let (txs, produced, consumed, pool_deleg, drep_deleg, pool_updates, pool_id, pool_ticker) = {
             let state = stage.state.read().await;
             let mut txs = Vec::new();
             let mut consumed = Vec::new();
@@ -53,6 +53,7 @@ impl Worker {
                 std::collections::HashMap::new();
             let mut pool_deleg: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
             let mut drep_deleg: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
+            let mut pool_updates: Vec<PoolUpdate> = Vec::new();
 
             for tx in block.txs() {
                 let hash = tx.hash();
@@ -85,6 +86,7 @@ impl Worker {
                 }
                 pool_deleg.extend(tx.pool_delegation_changes());
                 drep_deleg.extend(tx.drep_delegation_changes());
+                pool_updates.extend(tx.pool_updates());
             }
 
             let produced: Vec<_> = produced.into_iter().collect();
@@ -105,6 +107,7 @@ impl Worker {
                 consumed,
                 pool_deleg,
                 drep_deleg,
+                pool_updates,
                 pool_id,
                 pool_ticker,
             )
@@ -114,7 +117,14 @@ impl Worker {
 
         {
             let mut state = stage.state.write().await;
-            state.apply_block(slot, produced, &consumed, &pool_deleg, &drep_deleg);
+            state.apply_block(
+                slot,
+                produced,
+                &consumed,
+                &pool_deleg,
+                &drep_deleg,
+                &pool_updates,
+            );
         }
 
         let tx_count = txs.len();

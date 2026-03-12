@@ -2,13 +2,31 @@ use bech32::{Bech32, Hrp};
 use pallas::crypto::hash::Hasher;
 use sqlx::types::Decimal;
 
-#[derive(sqlx::FromRow, Clone)]
+#[derive(sqlx::FromRow, Clone, PartialEq)]
 pub struct Pool {
     pub hash_raw: Vec<u8>,
     pub pledge: Decimal,
     pub margin: f64,
     pub fixed_cost: Decimal,
     pub ticker: Option<String>,
+}
+
+impl Pool {
+    pub fn from_registration(
+        hash_raw: Vec<u8>,
+        pledge: u64,
+        cost: u64,
+        margin_num: u64,
+        margin_den: u64,
+    ) -> Self {
+        Pool {
+            hash_raw,
+            pledge: Decimal::from(pledge),
+            margin: margin_num as f64 / margin_den as f64,
+            fixed_cost: Decimal::from(cost),
+            ticker: None,
+        }
+    }
 }
 
 pub fn pool_bech32_id(hash_raw: &[u8]) -> String {

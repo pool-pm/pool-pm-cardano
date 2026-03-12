@@ -16,7 +16,7 @@ use tracing::info;
 
 use crate::event_bus::EventBus;
 use crate::filter;
-use crate::model::pool_bech32_id;
+use crate::model::{pool_bech32_id, Pool};
 use crate::state::State;
 
 #[derive(Clone)]
@@ -34,6 +34,17 @@ pub struct GenesisConfig {
     pub shelley_slot_length: u32,
     pub byron_epoch_length: u32,
     pub shelley_epoch_length: u32,
+}
+
+fn pool_sse_event(pool: &Pool) -> Result<SseEvent, Infallible> {
+    Ok(SseEvent::default().data(format!(
+        r#"{{"type":"Pool","pool_id":"{}","ticker":{},"pledge":"{}","margin":{},"fixed_cost":"{}"}}"#,
+        pool_bech32_id(&pool.hash_raw),
+        serde_json::to_string(&pool.ticker).unwrap(),
+        pool.pledge,
+        pool.margin,
+        pool.fixed_cost
+    )))
 }
 
 fn serialize_event(event: crate::event::Event) -> Option<Result<SseEvent, Infallible>> {
@@ -87,17 +98,10 @@ async fn filtered_events(
             .cloned()
             .unwrap_or_default();
         let pool_event = if let filter::FeedFilter::Pool(ref hash) = filter {
-            guard.current().and_then(|snap| {
-                let pool = snap.pools.get(&hex::encode(hash))?;
-                Some(Ok::<_, Infallible>(SseEvent::default().data(format!(
-                    r#"{{"type":"Pool","pool_id":"{}","ticker":{},"pledge":"{}","margin":{},"fixed_cost":"{}"}}"#,
-                    pool_bech32_id(&pool.hash_raw),
-                    serde_json::to_string(&pool.ticker).unwrap(),
-                    pool.pledge,
-                    pool.margin,
-                    pool.fixed_cost
-                ))))
-            })
+            guard
+                .current()
+                .and_then(|snap| snap.pools.get(&hex::encode(hash)))
+                .map(pool_sse_event)
         } else {
             None
         };
@@ -121,11 +125,57 @@ async fn filtered_events(
     let replay = futures::stream::iter(config.into_iter().chain(pool_event).chain(init));
 
     let chain_state = state.chain_state.clone();
+
+    // For pool feeds, track the last-seen pool to detect parameter changes.
+    let last_pool = if let filter::FeedFilter::Pool(ref hash) = filter {
+        state
+            .chain_state
+            .read()
+            .await
+            .current()
+            .and_then(|snap| snap.pools.get(&hex::encode(hash)).cloned())
+    } else {
+        None
+    };
+
     let live = futures::stream::unfold(
-        (BroadcastStream::new(rx), filter, chain_state),
-        |(mut rx, filter, chain_state)| async move {
+        (
+            BroadcastStream::new(rx),
+            filter,
+            chain_state,
+            last_pool,
+            std::collections::VecDeque::<Result<SseEvent, Infallible>>::new(),
+        ),
+        |(mut rx, filter, chain_state, mut last_pool, mut buf)| async move {
             loop {
+                // Drain buffered events first (pool update events).
+                if let Some(sse) = buf.pop_front() {
+                    return Some((sse, (rx, filter, chain_state, last_pool, buf)));
+                }
+
                 let event = rx.next().await?.ok()?;
+
+                // After Block or Rollback, check if pool parameters changed.
+                if let filter::FeedFilter::Pool(ref hash) = filter {
+                    if matches!(
+                        event,
+                        crate::event::Event::Block { .. } | crate::event::Event::Rollback { .. }
+                    ) {
+                        let current_pool = {
+                            let guard = chain_state.read().await;
+                            guard
+                                .current()
+                                .and_then(|snap| snap.pools.get(&hex::encode(hash)).cloned())
+                        };
+                        if current_pool != last_pool {
+                            if let Some(pool) = &current_pool {
+                                buf.push_back(pool_sse_event(pool));
+                            }
+                            last_pool = current_pool;
+                        }
+                    }
+                }
+
                 let delegators = {
                     let guard = chain_state.read().await;
                     guard
@@ -138,7 +188,7 @@ async fn filtered_events(
                     .filter_event(&event, &delegators)
                     .and_then(serialize_event)
                 {
-                    return Some((sse, (rx, filter, chain_state)));
+                    return Some((sse, (rx, filter, chain_state, last_pool, buf)));
                 }
             }
         },

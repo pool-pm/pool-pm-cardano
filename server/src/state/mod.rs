@@ -4,6 +4,7 @@ use imbl::{hashmap::HashMap, hashset::HashSet};
 use url::Url;
 
 use crate::model::{Pool, TxOutput};
+use crate::pallas::PoolUpdate;
 use dbsync::DbSync;
 
 pub struct BlockSnapshot {
@@ -96,6 +97,7 @@ impl State {
         consumed: &[(Vec<u8>, i16)],
         pool_delegation_changes: &[(Vec<u8>, Option<Vec<u8>>)],
         drep_delegation_changes: &[(Vec<u8>, Option<Vec<u8>>)],
+        pool_updates: &[PoolUpdate],
     ) {
         let prev = self.history.last().expect("state not initialized");
 
@@ -119,10 +121,30 @@ impl State {
             drep_delegation_changes,
         );
 
+        let pools = if pool_updates.is_empty() {
+            prev.pools.clone()
+        } else {
+            let mut pools = prev.pools.clone();
+            for (operator, pledge, cost, margin_num, margin_den) in pool_updates {
+                let key = hex::encode(operator);
+                let ticker = pools.get(&key).and_then(|p| p.ticker.clone());
+                let mut pool = Pool::from_registration(
+                    operator.clone(),
+                    *pledge,
+                    *cost,
+                    *margin_num,
+                    *margin_den,
+                );
+                pool.ticker = ticker;
+                pools.insert(key, pool);
+            }
+            pools
+        };
+
         self.history.push(BlockSnapshot {
             slot,
             utxos,
-            pools: prev.pools.clone(),
+            pools,
             pool_delegations,
             pool_delegators,
             drep_delegations,
