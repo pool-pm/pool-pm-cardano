@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { flip } from 'svelte/animate';
+  import { onMount, tick, untrack } from 'svelte';
   import { slide } from 'svelte/transition';
   import { sections, config } from '../stores';
   import type { GenesisConfig, Section } from '../types';
@@ -19,13 +18,71 @@
   let feedWidth = $state(0);
   let actualGridWidths = $state<Record<string, number>>({});
 
+  // Section positioning: absolute layout with smooth CSS transitions
+  let sectionRefs = new Map<string, HTMLElement>();
+  let sectionPositions = $state<Map<string, { y: number; spacing: number }>>(new Map());
+  let canvasHeight = $state(0);
+  let animated = $state(false);
+  let sectionObserver: ResizeObserver | undefined;
+  let measurePending = false;
+
+  function trackSection(node: HTMLElement, id: string) {
+    sectionRefs.set(id, node);
+    sectionObserver?.observe(node);
+    scheduleMeasure();
+    return {
+      destroy() {
+        sectionObserver?.unobserve(node);
+        sectionRefs.delete(id);
+      },
+    };
+  }
+
+  function scheduleMeasure() {
+    if (!measurePending) {
+      measurePending = true;
+      tick().then(() => {
+        measurePending = false;
+        measureSections();
+      });
+    }
+  }
+
+  function measureSections() {
+    const sects = $sections;
+    const positions = new Map<string, { y: number; spacing: number }>();
+    let y = 0;
+    for (let i = 0; i < sects.length; i++) {
+      const section = sects[i];
+      let spacing = 0;
+      if (i > 0) {
+        const prev = sects[i - 1].block?.timestamp ?? now / 1000;
+        const delta = section.block ? Math.max(0, prev - section.block.timestamp) : 0;
+        spacing = PX_PER_SECOND * 120 * Math.log(1 + delta / 120);
+        y += spacing;
+      }
+      positions.set(section.id, { y: Math.round(y), spacing: Math.round(spacing) });
+      y += sectionRefs.get(section.id)?.offsetHeight ?? 0;
+    }
+    sectionPositions = positions;
+    canvasHeight = y;
+    if (!animated) tick().then(() => { animated = true; });
+  }
+
   onMount(() => {
     feedWidth = feedEl.offsetWidth;
-    const observer = new ResizeObserver((entries) => {
+    const feedObserver = new ResizeObserver((entries) => {
       feedWidth = entries[0]?.contentRect.width ?? 0;
     });
-    observer.observe(feedEl);
-    return () => observer.disconnect();
+    feedObserver.observe(feedEl);
+
+    sectionObserver = new ResizeObserver(scheduleMeasure);
+    for (const el of sectionRefs.values()) sectionObserver.observe(el);
+
+    return () => {
+      feedObserver.disconnect();
+      sectionObserver?.disconnect();
+    };
   });
 
   function sectionMaxWidth(section: Section): string {
@@ -54,6 +111,13 @@
       });
     }, 10_000);
     return () => clearInterval(interval);
+  });
+
+  // Re-measure positions when sections change or time advances (spacing depends on now)
+  $effect(() => {
+    $sections;
+    now;
+    untrack(scheduleMeasure);
   });
 
   function blockColor(poolId?: string): string {
@@ -113,61 +177,63 @@
   style:--block-border="{BLOCK_BORDER}px"
   style:--flip-duration="{FLIP_DURATION}ms"
 >
-  {#each $sections as section, i (section.id)}
-    {@const isMempool = !section.block}
-    {@const color = section.block ? blockColor(section.block.pool_id) : '#444'}
-    {@const prevTimestamp = i > 0 ? ($sections[i - 1].block?.timestamp ?? now / 1000) : undefined}
-    {@const timeDelta = prevTimestamp && section.block ? Math.max(0, prevTimestamp - section.block.timestamp) : 0}
-    {@const spacing = PX_PER_SECOND * 120 * Math.log(1 + timeDelta / 120)}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="section"
-      class:mempool={isMempool}
-      class:has-line={i > 0 && spacing > 0}
-      style:border-color={color}
-      style:background-color={color}
-      style:--section-color={color}
-      style:--section-width={sectionMaxWidth(section)}
-      style:--spacing="{spacing}px"
-      ongridwidth={(e: CustomEvent<number>) => { actualGridWidths[section.id] = e.detail; }}
-      animate:flip={{ duration: FLIP_DURATION }}
-      out:slide={{ duration: FLIP_DURATION, axis: 'y' }}
-    >
-      <div class="block-header">
-        {#if section.block}
-          <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
-            >{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</a
-          >
-          <span class="block-meta">#{section.block.number}</span>
-        {:else}
-          <span class="block-ticker">MEMPOOL</span>
+  <div class="canvas" style="height: {canvasHeight}px">
+    {#each $sections as section, i (section.id)}
+      {@const isMempool = !section.block}
+      {@const color = section.block ? blockColor(section.block.pool_id) : '#444'}
+      {@const layout = sectionPositions.get(section.id)}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="section"
+        class:mempool={isMempool}
+        class:animated
+        class:has-line={i > 0 && (layout?.spacing ?? 0) > 0}
+        style:border-color={color}
+        style:background-color={color}
+        style:--section-color={color}
+        style:--section-width={sectionMaxWidth(section)}
+        style:--spacing="{layout?.spacing ?? 0}px"
+        style:transform="translateY({layout?.y ?? 0}px)"
+        ongridwidth={(e: CustomEvent<number>) => { actualGridWidths[section.id] = e.detail; }}
+        use:trackSection={section.id}
+        out:slide={{ duration: FLIP_DURATION, axis: 'y' }}
+      >
+        <div class="block-header">
+          {#if section.block}
+            <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
+              >{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</a
+            >
+            <span class="block-meta">#{section.block.number}</span>
+          {:else}
+            <span class="block-ticker">MEMPOOL</span>
+          {/if}
+        </div>
+
+        {#if section.txs.length > 0}
+          <BinPackGrid items={section.txs} key={(tx) => tx.hash} itemWidth={TX_WIDTH} gap={TX_GAP} availableWidth={feedWidth - BLOCK_INSET}>
+            {#snippet children(tx)}
+              <Transaction {tx} />
+            {/snippet}
+          </BinPackGrid>
+        {/if}
+
+        {#if isMempool && $config?.genesis}
+          {@const ei = epochInfo($config.genesis)}
+          <div class="block-footer">
+            <span class="block-meta">Epoch {ei.epoch}</span>
+            <span class="block-meta">{formatTimeLeft(ei.epochEnd)}</span>
+          </div>
+        {:else if section.block}
+          <div class="block-footer">
+            <span class="block-meta">{section.block.hash.slice(0, 4)}…{section.block.hash.slice(-4)}</span>
+            <span class="block-meta">
+              {#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
+            </span>
+          </div>
         {/if}
       </div>
-
-      {#if section.txs.length > 0}
-        <BinPackGrid items={section.txs} key={(tx) => tx.hash} itemWidth={TX_WIDTH} gap={TX_GAP} availableWidth={feedWidth - BLOCK_INSET}>
-          {#snippet children(tx)}
-            <Transaction {tx} />
-          {/snippet}
-        </BinPackGrid>
-      {/if}
-
-      {#if isMempool && $config?.genesis}
-        {@const ei = epochInfo($config.genesis)}
-        <div class="block-footer">
-          <span class="block-meta">Epoch {ei.epoch}</span>
-          <span class="block-meta">{formatTimeLeft(ei.epochEnd)}</span>
-        </div>
-      {:else if section.block}
-        <div class="block-footer">
-          <span class="block-meta">{section.block.hash.slice(0, 4)}…{section.block.hash.slice(-4)}</span>
-          <span class="block-meta">
-            {#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
-          </span>
-        </div>
-      {/if}
-    </div>
-  {/each}
+    {/each}
+  </div>
 </div>
 
 <style>
@@ -176,22 +242,28 @@
     overflow-y: auto;
     scrollbar-gutter: stable;
     padding: 16px 20px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
+  }
+
+  .canvas {
+    position: relative;
   }
 
   .section {
-    width: 100%;
+    position: absolute;
+    left: 0;
+    right: 0;
+    margin: 0 auto;
     max-width: var(--section-width);
     min-width: min-content;
-    margin-top: var(--spacing);
-    position: relative;
     border: var(--block-border) solid;
     border-radius: 8px;
     padding: var(--block-padding);
     display: flex;
     flex-direction: column;
+  }
+
+  .section.animated {
+    transition: transform var(--flip-duration) ease;
   }
 
   .section.has-line::before {
