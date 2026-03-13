@@ -78,6 +78,8 @@
 
   // Deduplicate inputs by address
   let uniqueInputs = $derived([...new Map(tx.inputs.map((i) => [i.address, i])).values()]);
+  let visibleInputs = $derived(uniqueInputs.slice(0, MAX_OUTPUTS));
+  let hiddenInputCount = $derived(uniqueInputs.length - visibleInputs.length);
 </script>
 
 <div class="tx-card" style:--thumb-size="{thumbSize}px">
@@ -154,11 +156,14 @@
     <div class="arrow" class:flip={filteredOutputs.length === 0}>{filteredOutputs.length === 0 ? '↻' : '↑'}</div>
 
     <div class="addr-list">
-      {#each uniqueInputs as input}
+      {#each visibleInputs as input}
         <div class="addr-item">
           <span class="addr mono">{input.address ?? '???'}</span>
         </div>
       {/each}
+      {#if hiddenInputCount > 0}
+        <span class="more-outputs">+{hiddenInputCount} more</span>
+      {/if}
     </div>
 
     <div class="tx-hash mono">{truncateHash(tx.hash)}</div>

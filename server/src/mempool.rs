@@ -228,10 +228,7 @@ impl gasket::framework::Worker<Stage> for Worker {
             .cloned()
             .collect();
         if !removed.is_empty() {
-            stage
-                .event_bus
-                .send(Event::MempoolPrune { removed })
-                .await;
+            stage.event_bus.send(Event::MempoolPrune { removed }).await;
         }
 
         let count = pending.len();
