@@ -15,7 +15,7 @@ use crate::event_bus::EventBus;
 use crate::mempool::extract_tx;
 use crate::model::{pool_bech32_id, TxOutput};
 use crate::nftcdn::NftcdnConfig;
-use crate::pallas::{MultiEraTxExt, PoolUpdate};
+use crate::pallas::{stake_credential_from_address_bytes, MultiEraTxExt, PoolUpdate};
 use crate::state::State;
 
 pub struct Worker;
@@ -26,17 +26,14 @@ impl Worker {
 
         {
             let mut state = stage.state.write().await;
-            if state.current().is_some() {
-                if !state.rollback(slot) {
-                    // Snapshot was too old for this reset point, full reset
-                    state.reset(slot).await.or_panic()?;
-                }
+            if state.rollback(slot) {
+                // Snapshot covered this slot, just truncate history
             } else {
-                state.reset(slot).await.or_panic()?;
-            }
-            match state.save_snapshot(&stage.snapshot_path, stage.snapshot_depth) {
-                Ok(saved_slot) => info!(saved_slot, "snapshot saved after reset"),
-                Err(e) => warn!("failed to save snapshot after reset: {}", e),
+                state.reset(slot, &stage.genesis).await.or_panic()?;
+                match state.save_snapshot(&stage.snapshot_path, stage.snapshot_depth) {
+                    Ok(saved_slot) => info!(saved_slot, "snapshot saved after reset"),
+                    Err(e) => warn!("failed to save snapshot after reset: {}", e),
+                }
             }
         }
 
@@ -53,7 +50,8 @@ impl Worker {
 
         // Single pass: txs are ordered in a block, so chained tx outputs
         // are available for resolving later txs' inputs.
-        let (txs, produced, consumed, pool_deleg, drep_deleg, pool_updates, pool_id, pool_ticker) = {
+        let (txs, produced, consumed, pool_deleg, drep_deleg, pool_updates,
+             stake_changes, withdrawal_changes, pool_id, pool_ticker) = {
             let state = stage.state.read().await;
             let mut txs = Vec::new();
             let mut consumed = Vec::new();
@@ -62,12 +60,35 @@ impl Worker {
             let mut pool_deleg: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
             let mut drep_deleg: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
             let mut pool_updates: Vec<PoolUpdate> = Vec::new();
+            let mut stake_changes: Vec<(Vec<u8>, i64)> = Vec::new();
+            let mut withdrawal_changes: Vec<(Vec<u8>, i64)> = Vec::new();
 
             for tx in block.txs() {
                 let hash = tx.hash();
+
+                // Track consumed UTXOs: subtract lovelaces from stake credentials
                 for input in tx.inputs() {
-                    consumed.push((input.hash().as_ref().to_vec(), input.index() as i16));
+                    let key = (input.hash().as_ref().to_vec(), input.index() as i16);
+                    // Check block-local UTXOs first, then in-memory state
+                    let resolved = if let Some(utxo) = produced.get(&key) {
+                        Some((utxo.address.clone(), utxo.lovelaces))
+                    } else {
+                        state
+                            .current()
+                            .and_then(|s| s.utxos.get(&key))
+                            .map(|utxo| (utxo.address.clone(), utxo.lovelaces))
+                    };
+                    if let Some((addr, lovelaces)) = resolved {
+                        if let Some(cred) = stake_credential_from_address_bytes(&addr) {
+                            let amount: i64 = lovelaces
+                                .try_into()
+                                .expect("lovelace value must fit i64");
+                            stake_changes.push((cred, -amount));
+                        }
+                    }
+                    consumed.push(key);
                 }
+
                 txs.push(
                     extract_tx(
                         &tx,
@@ -79,19 +100,38 @@ impl Worker {
                     )
                     .await,
                 );
+
+                // Track produced UTXOs: add lovelaces to stake credentials
                 for (idx, output) in tx.outputs().iter().enumerate() {
+                    let addr = output
+                        .address()
+                        .ok()
+                        .map(|a| a.to_vec())
+                        .unwrap_or_default();
+                    let lovelaces = Decimal::from(output.value().coin());
+                    if let Some(cred) = stake_credential_from_address_bytes(&addr) {
+                        let amount: i64 = lovelaces
+                            .try_into()
+                            .expect("lovelace value must fit i64");
+                        stake_changes.push((cred, amount));
+                    }
                     produced.insert(
                         (hash.as_ref().to_vec(), idx as i16),
                         TxOutput {
-                            lovelaces: Decimal::from(output.value().coin()),
-                            address: output
-                                .address()
-                                .ok()
-                                .map(|a| a.to_vec())
-                                .unwrap_or_default(),
+                            lovelaces,
+                            address: addr,
                         },
                     );
                 }
+
+                // Track withdrawals (reduce reward balance)
+                for (reward_addr, amount) in tx.withdrawals_sorted_set() {
+                    if reward_addr.len() >= 29 {
+                        let cred = reward_addr[1..29].to_vec();
+                        withdrawal_changes.push((cred, amount as i64));
+                    }
+                }
+
                 pool_deleg.extend(tx.pool_delegation_changes());
                 drep_deleg.extend(tx.drep_delegation_changes());
                 pool_updates.extend(tx.pool_updates());
@@ -116,12 +156,27 @@ impl Worker {
                 pool_deleg,
                 drep_deleg,
                 pool_updates,
+                stake_changes,
+                withdrawal_changes,
                 pool_id,
                 pool_ticker,
             )
         };
 
         let timestamp = crate::mempool::slot_to_timestamp(slot, &stage.genesis);
+        let epoch = State::epoch_for_slot(slot, &stage.genesis);
+
+        // Check for epoch boundary and fetch reward deltas from db-sync
+        let reward_deltas = {
+            let state = stage.state.read().await;
+            let last_epoch = state.current().and_then(|s| s.last_epoch);
+            if last_epoch.is_some() && last_epoch != Some(epoch) {
+                info!(epoch, "epoch boundary detected, fetching reward deltas");
+                state.epoch_reward_delta(epoch).await
+            } else {
+                None
+            }
+        };
 
         {
             let mut state = stage.state.write().await;
@@ -133,6 +188,10 @@ impl Worker {
                 &pool_deleg,
                 &drep_deleg,
                 &pool_updates,
+                &stake_changes,
+                &withdrawal_changes,
+                epoch,
+                reward_deltas.as_ref(),
             );
         }
 

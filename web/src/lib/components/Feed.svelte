@@ -200,6 +200,12 @@
   {#if $pool}
     <div class="pool-header" style:border-color={blockColor($pool.pool_id)}>
       <span class="pool-ticker">{$pool.ticker ?? $pool.pool_id.slice(5, 10)}</span>
+      {#if $pool.live_stake}
+        <span class="pool-stat">{formatAda($pool.live_stake)} stake</span>
+      {/if}
+      {#if $pool.delegators != null}
+        <span class="pool-stat">{$pool.delegators.toLocaleString()} delegators</span>
+      {/if}
       <span class="pool-stat">{formatAda($pool.pledge)} pledge</span>
       <span class="pool-stat">{formatMargin($pool.margin)} margin</span>
       <span class="pool-stat">{formatAda($pool.fixed_cost)} cost</span>

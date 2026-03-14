@@ -17,7 +17,7 @@ use tracing::info;
 use crate::event_bus::EventBus;
 use crate::filter;
 use crate::model::{pool_bech32_id, Pool};
-use crate::state::State;
+use crate::state::{BlockSnapshot, State};
 
 #[derive(Clone)]
 struct AppState {
@@ -36,14 +36,24 @@ pub struct GenesisConfig {
     pub shelley_epoch_length: u32,
 }
 
-fn pool_sse_event(pool: &Pool) -> Result<SseEvent, Infallible> {
+fn pool_sse_event(pool: &Pool, snap: Option<&BlockSnapshot>) -> Result<SseEvent, Infallible> {
+    let live_stake = snap
+        .and_then(|s| State::pool_live_stake(s, &pool.hash_raw))
+        .map(|v| format!(r#","live_stake":"{}""#, v))
+        .unwrap_or_default();
+    let delegators = snap
+        .and_then(|s| s.pool_delegators.get(&pool.hash_raw))
+        .map(|d| format!(r#","delegators":{}"#, d.len()))
+        .unwrap_or_default();
     Ok(SseEvent::default().data(format!(
-        r#"{{"type":"Pool","pool_id":"{}","ticker":{},"pledge":"{}","margin":{},"fixed_cost":"{}"}}"#,
+        r#"{{"type":"Pool","pool_id":"{}","ticker":{},"pledge":"{}","margin":{},"fixed_cost":"{}"{}{}}}"#,
         pool_bech32_id(&pool.hash_raw),
         serde_json::to_string(&pool.ticker).unwrap(),
         pool.pledge,
         pool.margin,
-        pool.fixed_cost
+        pool.fixed_cost,
+        live_stake,
+        delegators
     )))
 }
 
@@ -98,10 +108,10 @@ async fn filtered_events(
             .cloned()
             .unwrap_or_default();
         let pool_event = if let filter::FeedFilter::Pool(ref hash) = filter {
-            guard
-                .current()
-                .and_then(|snap| snap.pools.get(&hex::encode(hash)))
-                .map(pool_sse_event)
+            guard.current().and_then(|snap| {
+                let pool = snap.pools.get(&hex::encode(hash))?;
+                Some(pool_sse_event(pool, Some(snap)))
+            })
         } else {
             None
         };
@@ -126,16 +136,15 @@ async fn filtered_events(
 
     let chain_state = state.chain_state.clone();
 
-    // For pool feeds, track the last-seen pool to detect parameter changes.
-    let last_pool = if let filter::FeedFilter::Pool(ref hash) = filter {
-        state
-            .chain_state
-            .read()
-            .await
-            .current()
-            .and_then(|snap| snap.pools.get(&hex::encode(hash)).cloned())
+    // For pool feeds, track the last-seen pool and live stake to detect changes.
+    let (last_pool, last_live_stake) = if let filter::FeedFilter::Pool(ref hash) = filter {
+        let guard = state.chain_state.read().await;
+        let snap = guard.current();
+        let pool = snap.and_then(|s| s.pools.get(&hex::encode(hash)).cloned());
+        let live_stake = snap.and_then(|s| State::pool_live_stake(s, hash));
+        (pool, live_stake)
     } else {
-        None
+        (None, None)
     };
 
     let live = futures::stream::unfold(
@@ -144,34 +153,39 @@ async fn filtered_events(
             filter,
             chain_state,
             last_pool,
+            last_live_stake,
             std::collections::VecDeque::<Result<SseEvent, Infallible>>::new(),
         ),
-        |(mut rx, filter, chain_state, mut last_pool, mut buf)| async move {
+        |(mut rx, filter, chain_state, mut last_pool, mut last_live_stake, mut buf)| async move {
             loop {
                 // Drain buffered events first (pool update events).
                 if let Some(sse) = buf.pop_front() {
-                    return Some((sse, (rx, filter, chain_state, last_pool, buf)));
+                    return Some((sse, (rx, filter, chain_state, last_pool, last_live_stake, buf)));
                 }
 
                 let event = rx.next().await?.ok()?;
 
-                // After Block or Rollback, check if pool parameters changed.
+                // After Block or Rollback, check if pool params or live stake changed.
                 if let filter::FeedFilter::Pool(ref hash) = filter {
                     if matches!(
                         event,
                         crate::event::Event::Block { .. } | crate::event::Event::Rollback { .. }
                     ) {
-                        let current_pool = {
+                        let (current_pool, current_live_stake, pool_event) = {
                             let guard = chain_state.read().await;
-                            guard
-                                .current()
-                                .and_then(|snap| snap.pools.get(&hex::encode(hash)).cloned())
+                            let snap = guard.current();
+                            let pool = snap
+                                .and_then(|s| s.pools.get(&hex::encode(hash)).cloned());
+                            let live_stake = snap.and_then(|s| State::pool_live_stake(s, hash));
+                            let event = pool.as_ref().map(|p| pool_sse_event(p, snap));
+                            (pool, live_stake, event)
                         };
-                        if current_pool != last_pool {
-                            if let Some(pool) = &current_pool {
-                                buf.push_back(pool_sse_event(pool));
+                        if current_pool != last_pool || current_live_stake != last_live_stake {
+                            if let Some(event) = pool_event {
+                                buf.push_back(event);
                             }
                             last_pool = current_pool;
+                            last_live_stake = current_live_stake;
                         }
                     }
                 }
@@ -188,7 +202,7 @@ async fn filtered_events(
                     .filter_event(&event, &delegators)
                     .and_then(serialize_event)
                 {
-                    return Some((sse, (rx, filter, chain_state, last_pool, buf)));
+                    return Some((sse, (rx, filter, chain_state, last_pool, last_live_stake, buf)));
                 }
             }
         },

@@ -82,6 +82,8 @@ export interface PoolInfo {
   pledge: string;
   margin: number;
   fixed_cost: string;
+  live_stake?: string;
+  delegators?: number;
 }
 
 export interface FeedTx extends BlockTx {

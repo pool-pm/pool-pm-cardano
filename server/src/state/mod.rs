@@ -12,12 +12,15 @@ use dbsync::DbSync;
 pub struct BlockSnapshot {
     pub slot: u64,
     pub block_hash: Option<String>,
+    pub last_epoch: Option<u64>,
     pub utxos: HashMap<(Vec<u8>, i16), TxOutput>,
     pub pools: HashMap<String, Pool>,
     pub pool_delegations: HashMap<Vec<u8>, Vec<u8>>,
     pub pool_delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
     pub drep_delegations: HashMap<Vec<u8>, Vec<u8>>,
     pub drep_delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
+    pub stakes: HashMap<Vec<u8>, i64>,
+    pub rewards: HashMap<Vec<u8>, i64>,
 }
 
 pub struct State {
@@ -47,9 +50,9 @@ impl State {
     }
 
     /// Initialize state from db-sync data at a given reset point.
-    /// Fetches pools and delegations from db-sync, replaces all history
-    /// with a single snapshot.
-    pub async fn reset(&mut self, slot: u64) -> Result<(), sqlx::Error> {
+    /// Fetches pools, delegations, stakes, and rewards from db-sync,
+    /// replaces all history with a single snapshot.
+    pub async fn reset(&mut self, slot: u64, genesis: &oura::framework::GenesisValues) -> Result<(), sqlx::Error> {
         let db = self
             .db
             .get_or_try_init(|| async { DbSync::new(&self.db_url).await })
@@ -77,23 +80,44 @@ impl State {
             drep_delegators.len()
         );
 
+        tracing::info!("Fetching UTXO stakes...");
+        let stakes = db.utxo_stakes(last_tx_id).await?;
+        tracing::info!("{} stake addresses with UTXOs", stakes.len());
+
+        let current_epoch = Self::epoch_for_slot(slot, genesis);
+        tracing::info!("Fetching rewards (epoch {})...", current_epoch);
+        let rewards = db.rewards(current_epoch, last_tx_id).await?;
+        tracing::info!("{} stake addresses with rewards", rewards.len());
+
         self.history.clear();
         self.history.push(BlockSnapshot {
             slot,
             block_hash: Some(block_hash),
+            last_epoch: Some(current_epoch),
             utxos: HashMap::new(),
             pools,
             pool_delegations,
             pool_delegators,
             drep_delegations,
             drep_delegators,
+            stakes,
+            rewards,
         });
 
         Ok(())
     }
 
+    pub fn epoch_for_slot(slot: u64, genesis: &oura::framework::GenesisValues) -> u64 {
+        // shelley_known_slot is in Byron slot numbering; byron_epoch_length is in seconds
+        let shelley_start_epoch = genesis.shelley_known_slot
+            * genesis.byron_slot_length as u64
+            / genesis.byron_epoch_length as u64;
+        shelley_start_epoch
+            + (slot - genesis.shelley_known_slot) / genesis.shelley_epoch_length as u64
+    }
+
     /// Apply a new block: clone current snapshot (O(1) structural sharing),
-    /// apply UTXO changes, and push to history.
+    /// apply UTXO changes, stake changes, withdrawals, and push to history.
     pub fn apply_block(
         &mut self,
         slot: u64,
@@ -103,6 +127,10 @@ impl State {
         pool_delegation_changes: &[(Vec<u8>, Option<Vec<u8>>)],
         drep_delegation_changes: &[(Vec<u8>, Option<Vec<u8>>)],
         pool_updates: &[PoolUpdate],
+        stake_changes: &[(Vec<u8>, i64)],
+        withdrawal_changes: &[(Vec<u8>, i64)],
+        epoch: u64,
+        reward_deltas: Option<&HashMap<Vec<u8>, i64>>,
     ) {
         let prev = self.history.last().expect("state not initialized");
 
@@ -146,15 +174,36 @@ impl State {
             pools
         };
 
+        let mut stakes = prev.stakes.clone();
+        for (cred, delta) in stake_changes {
+            let entry = stakes.entry(cred.clone()).or_insert(0);
+            *entry += delta;
+        }
+
+        let mut rewards = prev.rewards.clone();
+        for (cred, amount) in withdrawal_changes {
+            let entry = rewards.entry(cred.clone()).or_insert(0);
+            *entry -= amount;
+        }
+        if let Some(deltas) = reward_deltas {
+            for (cred, delta) in deltas {
+                let entry = rewards.entry(cred.clone()).or_insert(0);
+                *entry += delta;
+            }
+        }
+
         self.history.push(BlockSnapshot {
             slot,
             block_hash: Some(block_hash),
+            last_epoch: Some(epoch),
             utxos,
             pools,
             pool_delegations,
             pool_delegators,
             drep_delegations,
             drep_delegators,
+            stakes,
+            rewards,
         });
 
         const MAX_HISTORY: usize = 2160;
@@ -191,6 +240,43 @@ impl State {
             }
         }
         (delegations, delegators)
+    }
+
+    /// Compute total live stake for a pool by summing stakes + rewards
+    /// of all its delegators.
+    pub fn pool_live_stake(snap: &BlockSnapshot, pool_hash: &[u8]) -> Option<i64> {
+        let delegators = snap.pool_delegators.get(pool_hash)?;
+        let mut utxo_total: i64 = 0;
+        let mut reward_total: i64 = 0;
+        let mut with_stake = 0u32;
+        let mut with_reward = 0u32;
+        for cred in delegators.iter() {
+            if let Some(&s) = snap.stakes.get(cred) {
+                utxo_total += s;
+                with_stake += 1;
+            }
+            if let Some(&r) = snap.rewards.get(cred) {
+                reward_total += r;
+                with_reward += 1;
+            }
+        }
+        tracing::debug!(
+            pool = hex::encode(pool_hash),
+            delegators = delegators.len(),
+            with_stake,
+            with_reward,
+            utxo_total,
+            reward_total,
+            total = utxo_total + reward_total,
+            "pool_live_stake"
+        );
+        Some(utxo_total + reward_total)
+    }
+
+    /// Fetch epoch reward deltas from db-sync for a new epoch.
+    pub async fn epoch_reward_delta(&self, epoch: u64) -> Option<HashMap<Vec<u8>, i64>> {
+        let db = self.db().await?;
+        db.epoch_reward_delta(epoch).await.ok()
     }
 
     /// Rollback to the given slot: drop all snapshots after it.
@@ -233,6 +319,7 @@ impl State {
                 return None;
             }
         };
+        tracing::info!("loading snapshot from {}...", path.display());
         match rmp_serde::from_slice(&data) {
             Ok(snap) => Some(snap),
             Err(e) => {
@@ -267,5 +354,20 @@ impl State {
             }
         }
         (None, 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oura::framework::GenesisValues;
+
+    #[test]
+    fn epoch_for_slot_mainnet() {
+        let genesis = GenesisValues::mainnet();
+        // Shelley start: epoch 208, slot 4492800
+        assert_eq!(State::epoch_for_slot(4492800, &genesis), 208);
+        // Known block at slot 181914346 is epoch 618
+        assert_eq!(State::epoch_for_slot(181914346, &genesis), 618);
     }
 }

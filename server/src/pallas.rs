@@ -20,6 +20,22 @@ pub fn stake_credential_bytes(cred: &StakeCredential) -> Vec<u8> {
     }
 }
 
+/// Extract the 28-byte stake credential from raw address bytes.
+/// Works for base addresses (types 0-3) and reward addresses (types 14-15).
+pub fn stake_credential_from_address_bytes(addr: &[u8]) -> Option<Vec<u8>> {
+    if addr.is_empty() {
+        return None;
+    }
+    let addr_type = addr[0] >> 4;
+    match addr_type {
+        // Base addresses: 1 header + 28 payment + 28 stake
+        0..=3 if addr.len() >= 57 => Some(addr[29..57].to_vec()),
+        // Reward addresses: 1 header + 28 stake
+        14 | 15 if addr.len() >= 29 => Some(addr[1..29].to_vec()),
+        _ => None,
+    }
+}
+
 pub fn stake_address_bech32(cred: &StakeCredential, mainnet: bool) -> String {
     use bech32::{Bech32, Hrp};
     let (header, hrp) = match (cred, mainnet) {
