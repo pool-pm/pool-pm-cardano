@@ -26,6 +26,8 @@ tracing = "0.1.44"
 tracing-subscriber = "0.3.22"
 url = "2.5.8"
 base64 = "0.22"
+rmp-serde = "1"
+rust_decimal = { version = "1", features = ["serde-with-str"] }
 dotenvy = "0.15"
 hmac = "0.12"
 sha2 = "0.10"

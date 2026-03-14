@@ -40,7 +40,8 @@ Cardano Node (N2C) → Source Stage (Oura) → Sink Stage → Cursor Stage (JSON
 - **Source**: Oura N2C source connects to a Cardano node and emits `ChainEvent`s (blocks or rollback points).
 - **Sink** (`sink.rs`): Processes chain events, maintains versioned in-memory state using immutable data structures (`im` crate) with structural sharing. On blocks: updates UTXOs, sends `Event::Block`. On rollback: reverts state, sends `Event::Rollback`.
 - **Mempool** (`mempool.rs`): Monitors the node mempool via LocalTxMonitor mini-protocol. Decodes transactions, resolves input addresses from UTXO state, computes CIP-14 asset fingerprints, and sends `Event::MempoolTx`.
-- **Cursor**: Persists the current chain position to a JSON file on disk for resumption after restart.
+- **Cursor**: Persists the current chain position to a JSON file on disk (kept for debugging, not used for resume).
+- **Snapshot**: Serializes a `BlockSnapshot` to `{output}/snapshot.bin` using bitcode for fast resume on restart (see Snapshot Persistence below).
 - **SSE Server** (`server.rs`): axum HTTP server with `GET /events` endpoint that streams events as JSON via Server-Sent Events.
 - **Daemon** (`daemon.rs`): Orchestrates the full Gasket pipeline with retry policies, optional Prometheus metrics, and SSE server.
 
@@ -73,10 +74,23 @@ The server is configured via CLI args:
 - `-d, --db` — PostgreSQL connection string (default: `postgresql:///NETWORK?host=/var/run/postgresql`)
 - `-l, --listen` — SSE server listen address (e.g., `0.0.0.0:3000`; omit to disable SSE)
 - `-m, --metrics` — Prometheus metrics endpoint (`ADDR:PORT` or `default` for `127.0.0.1:9188`)
-- `-o, --output` — Directory for cursor file (default: `/tmp/cardano`)
+- `-o, --output` — Directory for snapshot and cursor files (default: `/tmp/cardano`)
+- `--snapshot-depth` — How many blocks back from tip to persist the snapshot (default: `8`)
 - `-v, --verbose` — Enable DEBUG-level logging
 
 Requires a running cardano-db-sync PostgreSQL database for the target network.
+
+### Snapshot Persistence
+
+On startup, the server tries to load `{output}/snapshot.bin`. If found, it restores the in-memory state and requests the node to resume from the snapshot's slot/block hash (`IntersectConfig::Point`). If the snapshot is missing, corrupt, or the node rejects the intersection point (e.g., snapshot too old), the server falls back to starting from tip with a full reset from db-sync.
+
+Snapshots are saved:
+- Immediately after a reset (so a restart doesn't repeat the expensive db-sync queries)
+- Every 50 blocks during normal operation
+
+The snapshot is written `--snapshot-depth` blocks behind the tip (default 8) to provide rollback safety — on mainnet, rollbacks rarely exceed 3 blocks. The write is atomic (temp file + rename) to prevent corruption from crashes.
+
+The cursor file (`cursor.json`) is still written by the Gasket cursor stage but is no longer used for resume — it serves as a debug aid to see the current chain position.
 
 ## Frontend (web/)
 

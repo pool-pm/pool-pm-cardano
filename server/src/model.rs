@@ -2,7 +2,7 @@ use bech32::{Bech32, Hrp};
 use pallas::crypto::hash::Hasher;
 use sqlx::types::Decimal;
 
-#[derive(sqlx::FromRow, Clone, PartialEq)]
+#[derive(sqlx::FromRow, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Pool {
     pub hash_raw: Vec<u8>,
     pub pledge: Decimal,
@@ -33,7 +33,7 @@ pub fn pool_bech32_id(hash_raw: &[u8]) -> String {
     bech32::encode::<Bech32>(Hrp::parse("pool").unwrap(), hash_raw).unwrap()
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct TxOutput {
     pub lovelaces: Decimal,
     pub address: Vec<u8>,

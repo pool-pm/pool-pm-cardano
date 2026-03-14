@@ -38,6 +38,10 @@ pub struct Args {
     #[clap(short, long)]
     pub listen: Option<SocketAddr>,
 
+    /// Snapshot depth (blocks back from tip for persistence)
+    #[clap(long, default_value = "8")]
+    pub snapshot_depth: usize,
+
     /// Verbose logs
     #[clap(short, long)]
     pub verbose: bool,

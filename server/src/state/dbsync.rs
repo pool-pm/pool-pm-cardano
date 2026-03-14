@@ -26,9 +26,9 @@ impl DbSync {
         Ok(Self { db })
     }
 
-    pub async fn last_slot_tx_id(&self, slot: u64) -> Result<i64, sqlx::Error> {
-        let tx = sqlx::query!(
-            r#"SELECT tx.id FROM tx
+    pub async fn slot_info(&self, slot: u64) -> Result<(i64, String), sqlx::Error> {
+        let row = sqlx::query!(
+            r#"SELECT tx.id, block.hash FROM tx
             JOIN block ON block.id=tx.block_id
             WHERE block.slot_no <= $1
             ORDER BY tx.id DESC
@@ -38,7 +38,7 @@ impl DbSync {
         .fetch_one(&self.db)
         .await?;
 
-        Ok(tx.id)
+        Ok((row.id, hex::encode(row.hash)))
     }
 
     pub async fn resolve_utxo(

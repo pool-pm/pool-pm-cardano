@@ -85,7 +85,7 @@ pub fn run(args: Args) -> Result<(), Error> {
     let event_bus = Arc::new(EventBus::new(4096));
     let db_url = Url::parse(&args.db.replace("NETWORK", &args.network.to_string()))
         .expect("invalid database URL");
-    let state = Arc::new(RwLock::new(State::new(db_url)));
+    let mut state = State::new(db_url);
 
     let listen = args.listen;
 
@@ -108,6 +108,23 @@ pub fn run(args: Args) -> Result<(), Error> {
         genesis,
     };
 
+    let snapshot_path: PathBuf = [&args.output, &"snapshot.bin".to_string()].iter().collect();
+    let snapshot_depth = args.snapshot_depth;
+
+    // Try loading snapshot for fast resume
+    let intersect = if let Some(snapshot) = State::load_snapshot(&snapshot_path) {
+        let slot = snapshot.slot;
+        let hash = snapshot.block_hash.clone().unwrap_or_default();
+        info!(slot, hash = hash.as_str(), "loaded snapshot, resuming");
+        state.restore_from_snapshot(snapshot);
+        IntersectConfig::Point(slot, hash)
+    } else {
+        info!("no snapshot found, starting from tip");
+        IntersectConfig::Tip
+    };
+
+    let state = Arc::new(RwLock::new(state));
+
     let cursor_config = cursor::file::Config {
         path: Some([&args.output, &"cursor.json".to_string()].iter().collect()),
         ..Default::default()
@@ -115,14 +132,21 @@ pub fn run(args: Args) -> Result<(), Error> {
 
     let ctx = Context {
         chain: args.network.config().clone(),
-        intersect: IntersectConfig::Tip,
+        intersect,
         finalize: None,
         current_dir: PathBuf::from(args.output),
-        breadcrumbs: cursor_config.initial_load()?,
+        breadcrumbs: Breadcrumbs::new(0),
     };
 
     let source = source_config.bootstrapper(&ctx)?;
-    let sink = sink::bootstrapper(&ctx, event_bus.clone(), state.clone(), nftcdn.clone())?;
+    let sink = sink::bootstrapper(
+        &ctx,
+        event_bus.clone(),
+        state.clone(),
+        nftcdn.clone(),
+        snapshot_path,
+        snapshot_depth,
+    )?;
     let cursor = cursor::Bootstrapper::File(cursor_config.bootstrapper(&ctx)?);
     let mempool = mempool::bootstrapper(
         mempool_config,

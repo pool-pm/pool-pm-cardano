@@ -1,14 +1,17 @@
 mod dbsync;
 
 use imbl::{hashmap::HashMap, hashset::HashSet};
+use std::path::Path;
 use url::Url;
 
 use crate::model::{Pool, TxOutput};
 use crate::pallas::PoolUpdate;
 use dbsync::DbSync;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BlockSnapshot {
     pub slot: u64,
+    pub block_hash: Option<String>,
     pub utxos: HashMap<(Vec<u8>, i16), TxOutput>,
     pub pools: HashMap<String, Pool>,
     pub pool_delegations: HashMap<Vec<u8>, Vec<u8>>,
@@ -52,7 +55,7 @@ impl State {
             .get_or_try_init(|| async { DbSync::new(&self.db_url).await })
             .await?;
 
-        let last_tx_id = db.last_slot_tx_id(slot).await?;
+        let (last_tx_id, block_hash) = db.slot_info(slot).await?;
 
         tracing::info!("Fetching pools...");
         let pools = db.pools(last_tx_id).await?;
@@ -77,6 +80,7 @@ impl State {
         self.history.clear();
         self.history.push(BlockSnapshot {
             slot,
+            block_hash: Some(block_hash),
             utxos: HashMap::new(),
             pools,
             pool_delegations,
@@ -93,6 +97,7 @@ impl State {
     pub fn apply_block(
         &mut self,
         slot: u64,
+        block_hash: String,
         produced: Vec<((Vec<u8>, i16), TxOutput)>,
         consumed: &[(Vec<u8>, i16)],
         pool_delegation_changes: &[(Vec<u8>, Option<Vec<u8>>)],
@@ -143,6 +148,7 @@ impl State {
 
         self.history.push(BlockSnapshot {
             slot,
+            block_hash: Some(block_hash),
             utxos,
             pools,
             pool_delegations,
@@ -188,7 +194,8 @@ impl State {
     }
 
     /// Rollback to the given slot: drop all snapshots after it.
-    pub fn rollback(&mut self, slot: u64) {
+    /// Returns false if history is empty after truncation (snapshot was too old).
+    pub fn rollback(&mut self, slot: u64) -> bool {
         let keep = self
             .history
             .iter()
@@ -196,6 +203,43 @@ impl State {
             .map(|i| i + 1)
             .unwrap_or(0);
         self.history.truncate(keep);
+        !self.history.is_empty()
+    }
+
+    /// Restore state from a previously saved snapshot.
+    pub fn restore_from_snapshot(&mut self, snapshot: BlockSnapshot) {
+        self.history.clear();
+        self.history.push(snapshot);
+    }
+
+    /// Save a snapshot to disk. Picks the snapshot `depth` blocks back from tip.
+    /// Writes atomically via tmp file + rename.
+    pub fn save_snapshot(&self, path: &Path, depth: usize) -> Result<u64, Box<dyn std::error::Error>> {
+        let idx = self.history.len().saturating_sub(depth);
+        let snap = &self.history[idx];
+        let data = rmp_serde::to_vec(snap)?;
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, &data)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(snap.slot)
+    }
+
+    /// Load a snapshot from disk. Returns None on any error.
+    pub fn load_snapshot(path: &Path) -> Option<BlockSnapshot> {
+        let data = match std::fs::read(path) {
+            Ok(data) => data,
+            Err(e) => {
+                tracing::warn!("failed to read snapshot from {}: {}", path.display(), e);
+                return None;
+            }
+        };
+        match rmp_serde::from_slice(&data) {
+            Ok(snap) => Some(snap),
+            Err(e) => {
+                tracing::warn!("failed to deserialize snapshot: {}", e);
+                None
+            }
+        }
     }
 
     /// Resolve an input by (tx_hash, output_index): check in-memory UTXOs first,

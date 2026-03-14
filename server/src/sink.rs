@@ -3,6 +3,7 @@ use oura::framework::*;
 use pallas::ledger::traverse::MultiEraBlock;
 use pallas::network::miniprotocols::Point;
 use sqlx::types::Decimal;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -26,9 +27,16 @@ impl Worker {
         {
             let mut state = stage.state.write().await;
             if state.current().is_some() {
-                state.rollback(slot);
+                if !state.rollback(slot) {
+                    // Snapshot was too old for this reset point, full reset
+                    state.reset(slot).await.or_panic()?;
+                }
             } else {
                 state.reset(slot).await.or_panic()?;
+            }
+            match state.save_snapshot(&stage.snapshot_path, stage.snapshot_depth) {
+                Ok(saved_slot) => info!(saved_slot, "snapshot saved after reset"),
+                Err(e) => warn!("failed to save snapshot after reset: {}", e),
             }
         }
 
@@ -119,6 +127,7 @@ impl Worker {
             let mut state = stage.state.write().await;
             state.apply_block(
                 slot,
+                block_hash.clone(),
                 produced,
                 &consumed,
                 &pool_deleg,
@@ -142,6 +151,14 @@ impl Worker {
             .await;
 
         info!(slot, height, tx_count, "apply block");
+
+        if height % 50 == 0 {
+            let state = stage.state.read().await;
+            match state.save_snapshot(&stage.snapshot_path, stage.snapshot_depth) {
+                Ok(saved_slot) => info!(saved_slot, "snapshot saved"),
+                Err(e) => warn!("failed to save snapshot: {}", e),
+            }
+        }
 
         Ok(())
     }
@@ -193,6 +210,8 @@ pub struct Stage {
     event_bus: Arc<EventBus>,
     state: Arc<RwLock<State>>,
     nftcdn: NftcdnConfig,
+    snapshot_path: PathBuf,
+    snapshot_depth: usize,
 
     pub input: MapperInputPort,
     pub cursor: SinkCursorPort,
@@ -209,6 +228,8 @@ pub fn bootstrapper(
     event_bus: Arc<EventBus>,
     state: Arc<RwLock<State>>,
     nftcdn: NftcdnConfig,
+    snapshot_path: PathBuf,
+    snapshot_depth: usize,
 ) -> Result<Stage, Error> {
     let genesis = GenesisValues::from(context.chain.clone());
     let mainnet = genesis.magic == 764824073;
@@ -218,6 +239,8 @@ pub fn bootstrapper(
         event_bus,
         state,
         nftcdn,
+        snapshot_path,
+        snapshot_depth,
         ops_count: Default::default(),
         latest_block: Default::default(),
         input: Default::default(),
