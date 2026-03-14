@@ -160,6 +160,14 @@
     return '0.' + frac + ' ADA';
   }
 
+  function formatAdaFull(lovelace: string): string {
+    const padded = lovelace.padStart(7, '0');
+    const whole = padded.slice(0, -6) || '0';
+    const frac = padded.slice(-6).replace(/0+$/, '');
+    const wholeStr = Number(whole).toLocaleString();
+    return frac ? wholeStr + '.' + frac + ' ADA' : wholeStr + ' ADA';
+  }
+
   function formatMargin(m: number): string {
     return (m * 100).toFixed(2).replace(/\.?0+$/, '') + '%';
   }
@@ -172,7 +180,7 @@
     const nowSec = Math.floor(now / 1000);
     const slot =
       genesis.shelley_known_slot + Math.floor((nowSec - genesis.shelley_known_time) / genesis.shelley_slot_length);
-    const shelleyStartEpoch = Math.floor(genesis.shelley_known_slot / genesis.byron_epoch_length);
+    const shelleyStartEpoch = Math.floor(genesis.shelley_known_slot * genesis.byron_slot_length / genesis.byron_epoch_length);
     const epochsSince = Math.floor((slot - genesis.shelley_known_slot) / genesis.shelley_epoch_length);
     const epoch = shelleyStartEpoch + epochsSince;
     const epochEndSlot = genesis.shelley_known_slot + (epochsSince + 1) * genesis.shelley_epoch_length;
@@ -201,7 +209,7 @@
     <div class="pool-header" style:border-color={blockColor($pool.pool_id)}>
       <span class="pool-ticker">{$pool.ticker ?? $pool.pool_id.slice(5, 10)}</span>
       {#if $pool.live_stake}
-        <span class="pool-stat">{formatAda($pool.live_stake)} stake</span>
+        <span class="pool-stat">{formatAdaFull($pool.live_stake)} stake</span>
       {/if}
       {#if $pool.delegators != null}
         <span class="pool-stat">{$pool.delegators.toLocaleString()} delegators</span>

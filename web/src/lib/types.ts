@@ -3,6 +3,7 @@ export interface GenesisConfig {
   shelley_known_time: number;
   shelley_slot_length: number;
   byron_epoch_length: number;
+  byron_slot_length: number;
   shelley_epoch_length: number;
 }
 

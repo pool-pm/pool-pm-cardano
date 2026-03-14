@@ -69,14 +69,23 @@ impl Worker {
                 // Track consumed UTXOs: subtract lovelaces from stake credentials
                 for input in tx.inputs() {
                     let key = (input.hash().as_ref().to_vec(), input.index() as i16);
-                    // Check block-local UTXOs first, then in-memory state
+                    // Check block-local UTXOs first, then in-memory state,
+                    // then fall back to db-sync for pre-reset UTXOs
                     let resolved = if let Some(utxo) = produced.get(&key) {
                         Some((utxo.address.clone(), utxo.lovelaces))
+                    } else if let Some(utxo) = state.current().and_then(|s| s.utxos.get(&key)) {
+                        Some((utxo.address.clone(), utxo.lovelaces))
                     } else {
-                        state
-                            .current()
-                            .and_then(|s| s.utxos.get(&key))
-                            .map(|utxo| (utxo.address.clone(), utxo.lovelaces))
+                        let (addr_str, lovelace) = state
+                            .resolve_input(input.hash().as_ref(), input.index() as i16)
+                            .await;
+                        addr_str
+                            .and_then(|a| {
+                                pallas::ledger::addresses::Address::from_bech32(&a)
+                                    .ok()
+                                    .map(|a| a.to_vec())
+                            })
+                            .map(|addr| (addr, Decimal::from(lovelace)))
                     };
                     if let Some((addr, lovelaces)) = resolved {
                         if let Some(cred) = stake_credential_from_address_bytes(&addr) {

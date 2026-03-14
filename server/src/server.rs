@@ -33,6 +33,7 @@ pub struct GenesisConfig {
     pub shelley_known_time: u64,
     pub shelley_slot_length: u32,
     pub byron_epoch_length: u32,
+    pub byron_slot_length: u32,
     pub shelley_epoch_length: u32,
 }
 

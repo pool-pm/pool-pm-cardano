@@ -99,6 +99,7 @@ pub fn run(args: Args) -> Result<(), Error> {
         shelley_known_time: genesis.shelley_known_time,
         shelley_slot_length: genesis.shelley_slot_length as u32,
         byron_epoch_length: genesis.byron_epoch_length as u32,
+        byron_slot_length: genesis.byron_slot_length as u32,
         shelley_epoch_length: genesis.shelley_epoch_length as u32,
     };
     let mempool_config = mempool::Config {
