@@ -395,7 +395,7 @@
     left: 50%;
     width: 1px;
     height: var(--spacing);
-    background: var(--border);
+    background: #444;
   }
 
   /* Landscape: horizontal connecting line to the right of the block */
