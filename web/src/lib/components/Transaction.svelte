@@ -2,7 +2,7 @@
   import type { AssetInfo, DelegationInfo, FeedTx, TxOutputInfo } from '../types';
   import { bech32Decode, paymentCredential, stakeCredential } from '../bech32';
   import { config } from '../stores';
-  import { poolColor } from '../layout';
+  import { poolColor, formatTicker } from '../layout';
 
   let { tx }: { tx: FeedTx } = $props();
 
@@ -11,7 +11,7 @@
   }
 
   function poolLabel(ticker?: string, poolId?: string): string {
-    return ticker ?? poolId?.slice(5, 10) ?? '';
+    return formatTicker(ticker ?? poolId?.slice(5, 10) ?? '');
   }
 
   let visibleDelegations: DelegationInfo[] = $derived(

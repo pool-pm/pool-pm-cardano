@@ -2,6 +2,13 @@ export const TX_WIDTH = 108;
 export const TX_GAP = 6;
 export const FLIP_DURATION = 300;
 
+export function formatTicker(ticker: string): string {
+  return ticker
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 5);
+}
+
 export function poolColor(poolId?: string): string {
   const key = poolId?.slice(5) ?? '';
   let h = 0;

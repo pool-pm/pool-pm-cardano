@@ -3,7 +3,7 @@
   import { slide } from 'svelte/transition';
   import { sections, config, pool } from '../stores';
   import type { GenesisConfig, Section } from '../types';
-  import { TX_WIDTH, TX_GAP, FLIP_DURATION, poolColor } from '../layout';
+  import { TX_WIDTH, TX_GAP, FLIP_DURATION, poolColor, formatTicker } from '../layout';
   import BinPackGrid from './BinPackGrid.svelte';
   import Transaction from './Transaction.svelte';
 
@@ -130,12 +130,6 @@
     return `${Math.floor(sec / 3600)}h ago`;
   }
 
-  function formatTicker(ticker: string): string {
-    return ticker
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '')
-      .slice(0, 5);
-  }
 
   function formatAda(lovelace: string): string {
     const padded = lovelace.padStart(7, '0');
@@ -197,7 +191,7 @@
 >
   {#if $pool}
     <div class="pool-header" style:border-color={poolColor($pool.pool_id)}>
-      <span class="pool-ticker">{$pool.ticker ?? $pool.pool_id.slice(5, 10)}</span>
+      <span class="pool-ticker">{formatTicker($pool.ticker ?? $pool.pool_id.slice(5, 10))}</span>
       {#if $pool.live_stake}
         <span class="pool-stat">{formatAdaFull($pool.live_stake)} stake</span>
       {/if}
