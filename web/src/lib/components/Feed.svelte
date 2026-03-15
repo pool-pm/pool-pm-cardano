@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
   import { slide } from 'svelte/transition';
+  import { flip } from 'svelte/animate';
   import { sections, config, pool } from '../stores';
   import type { GenesisConfig, Section } from '../types';
   import { TX_WIDTH, TX_GAP, FLIP_DURATION, poolColor, formatTicker } from '../layout';
@@ -79,7 +80,14 @@
   }
 
   function updateLandscape() {
+    const was = landscape;
     landscape = window.innerWidth > window.innerHeight;
+    if (was !== landscape) {
+      animated = false;
+      tick().then(() => {
+        animated = true;
+      });
+    }
   }
 
   onMount(() => {
@@ -242,7 +250,7 @@
         style:--section-width={sectionMaxWidth(section)}
         style:--spacing="{layout?.spacing ?? 0}px"
         style:transform={landscape
-          ? `translateX(${-(layout?.pos ?? 0)}px) translateY(-50%)`
+          ? `translate(${-(layout?.pos ?? 0)}px, ${Math.round((feedHeight - (sectionRefs.get(section.id)?.offsetHeight ?? 0)) / 2)}px)`
           : `translateY(${layout?.pos ?? 0}px)`}
         ongridwidth={(e: CustomEvent<number>) => {
           actualGridWidths[section.id] = e.detail;
@@ -265,7 +273,7 @@
           {#if landscape}
             <div class="column-grid" style:--tx-area-height="{txAreaHeight}px">
               {#each section.txs as tx (tx.hash)}
-                <div class="column-grid-item">
+                <div class="column-grid-item" animate:flip={{ duration: FLIP_DURATION }} in:slide={{ duration: FLIP_DURATION, axis: 'y' }}>
                   <Transaction {tx} />
                 </div>
               {/each}
@@ -370,7 +378,7 @@
   .landscape .section {
     left: auto;
     right: 0;
-    top: 50%;
+    top: 0;
     margin: 0;
   }
 
@@ -388,7 +396,6 @@
     width: 1px;
     height: var(--spacing);
     background: var(--border);
-    z-index: -1;
   }
 
   /* Landscape: horizontal connecting line to the right of the block */
