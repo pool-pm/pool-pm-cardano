@@ -91,7 +91,7 @@
   function sectionMaxWidth(section: Section): string {
     const gw = actualGridWidths[section.id];
     if (gw) return `${gw + BLOCK_INSET}px`;
-    if (section.txs.length === 0) return 'min-content';
+    if (section.txs.length === 0) return `${TX_WIDTH + BLOCK_INSET}px`;
     return 'none';
   }
 
@@ -315,7 +315,7 @@
     right: 0;
     margin: 0 auto;
     max-width: var(--section-width);
-    min-width: 200px;
+    min-width: 132px;
     border: var(--block-border) solid;
     border-radius: 8px;
     padding: var(--block-padding);
