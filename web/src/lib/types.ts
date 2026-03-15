@@ -38,6 +38,7 @@ export interface DelegationInfo {
   from_ticker?: string;
   to_pool_id?: string;
   to_ticker?: string;
+  live_stake: string;
 }
 
 export interface BlockTx {

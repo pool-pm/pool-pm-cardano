@@ -3,7 +3,7 @@
   import { slide } from 'svelte/transition';
   import { sections, config, pool } from '../stores';
   import type { GenesisConfig, Section } from '../types';
-  import { TX_WIDTH, TX_GAP, FLIP_DURATION } from '../layout';
+  import { TX_WIDTH, TX_GAP, FLIP_DURATION, poolHue } from '../layout';
   import BinPackGrid from './BinPackGrid.svelte';
   import Transaction from './Transaction.svelte';
 
@@ -124,13 +124,7 @@
   });
 
   function blockColor(poolId?: string): string {
-    const key = poolId?.slice(5) ?? '';
-    let h = 0;
-    for (let i = 0; i < key.length; i++) {
-      h = Math.imul(h ^ key.charCodeAt(i), 0x9e3779b9);
-    }
-    const hue = (h >>> 0) % 360;
-    return `oklch(0.7 0.25 ${hue})`;
+    return `oklch(0.7 0.25 ${poolHue(poolId)})`;
   }
 
   function timeAgo(timestamp: number): string {

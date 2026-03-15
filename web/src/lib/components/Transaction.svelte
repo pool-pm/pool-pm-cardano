@@ -2,6 +2,7 @@
   import type { AssetInfo, DelegationInfo, FeedTx, TxOutputInfo } from '../types';
   import { bech32Decode, paymentCredential, stakeCredential } from '../bech32';
   import { config } from '../stores';
+  import { poolHue } from '../layout';
 
   let { tx }: { tx: FeedTx } = $props();
 
@@ -14,13 +15,7 @@
   }
 
   function poolColor(poolId?: string): string {
-    const key = poolId?.slice(5) ?? '';
-    let h = 0;
-    for (let i = 0; i < key.length; i++) {
-      h = Math.imul(h ^ key.charCodeAt(i), 0x9e3779b9);
-    }
-    const hue = (h >>> 0) % 360;
-    return `oklch(0.7 0.25 ${hue})`;
+    return `oklch(0.8 0.2 ${poolHue(poolId)})`;
   }
 
   let visibleDelegations: DelegationInfo[] = $derived(
@@ -95,6 +90,7 @@
         {#each visibleDelegations as deleg}
           {@const isDeregistration = !deleg.to_pool_id && !!deleg.from_pool_id}
           <div class="addr-item">
+            <span class="ada">{formatAda(deleg.live_stake)}</span>
             {#if deleg.to_pool_id}
               <a class="deleg-pool" href="/{deleg.to_pool_id}" style:color={poolColor(deleg.to_pool_id)}
                 >{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a
@@ -248,8 +244,9 @@
   }
 
   .deleg-pool {
-    font-size: 11px;
-    font-weight: 700;
+    font-family: Inter, sans-serif;
+    font-size: 12px;
+    font-weight: 900;
     text-decoration: none;
   }
 

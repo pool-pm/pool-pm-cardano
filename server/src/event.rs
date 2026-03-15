@@ -8,6 +8,14 @@ mod string {
     }
 }
 
+mod string_i64 {
+    use serde::Serializer;
+
+    pub fn serialize<S: Serializer>(value: &i64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&value.to_string())
+    }
+}
+
 #[derive(Clone, Serialize)]
 pub struct BlockTx {
     pub hash: String,
@@ -36,6 +44,8 @@ pub struct DelegationInfo {
     pub to_pool_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to_ticker: Option<String>,
+    #[serde(with = "string_i64")]
+    pub live_stake: i64,
 }
 
 #[derive(Clone, Serialize)]

@@ -150,12 +150,16 @@ fn extract_delegations(tx: &MultiEraTx<'_>, state: &State, mainnet: bool) -> Vec
                 .map(|h| resolve_pool(h))
                 .unwrap_or((None, None));
 
+            let live_stake = snap.stakes.get(&cred_bytes).copied().unwrap_or(0)
+                + snap.rewards.get(&cred_bytes).copied().unwrap_or(0);
+
             DelegationInfo {
                 stake_address: stake_address_bech32(cred, mainnet),
                 from_pool_id,
                 from_ticker,
                 to_pool_id,
                 to_ticker,
+                live_stake,
             }
         })
         .collect()
