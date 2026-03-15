@@ -3,7 +3,7 @@
   import { slide } from 'svelte/transition';
   import { sections, config, pool } from '../stores';
   import type { GenesisConfig, Section } from '../types';
-  import { TX_WIDTH, TX_GAP, FLIP_DURATION, poolHue } from '../layout';
+  import { TX_WIDTH, TX_GAP, FLIP_DURATION, poolColor } from '../layout';
   import BinPackGrid from './BinPackGrid.svelte';
   import Transaction from './Transaction.svelte';
 
@@ -123,10 +123,6 @@
     untrack(scheduleMeasure);
   });
 
-  function blockColor(poolId?: string): string {
-    return `oklch(0.7 0.25 ${poolHue(poolId)})`;
-  }
-
   function timeAgo(timestamp: number): string {
     const sec = Math.floor((now - timestamp * 1000) / 1000);
     if (sec < 60) return `${sec}s ago`;
@@ -200,7 +196,7 @@
   style:--flip-duration="{FLIP_DURATION}ms"
 >
   {#if $pool}
-    <div class="pool-header" style:border-color={blockColor($pool.pool_id)}>
+    <div class="pool-header" style:border-color={poolColor($pool.pool_id)}>
       <span class="pool-ticker">{$pool.ticker ?? $pool.pool_id.slice(5, 10)}</span>
       {#if $pool.live_stake}
         <span class="pool-stat">{formatAdaFull($pool.live_stake)} stake</span>
@@ -216,7 +212,7 @@
   <div class="canvas" style="height: {canvasHeight}px">
     {#each $sections as section, i (section.id)}
       {@const isMempool = !section.block}
-      {@const color = section.block ? blockColor(section.block.pool_id) : '#444'}
+      {@const color = section.block ? poolColor(section.block.pool_id) : '#444'}
       {@const layout = sectionPositions.get(section.id)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div

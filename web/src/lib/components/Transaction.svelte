@@ -2,7 +2,7 @@
   import type { AssetInfo, DelegationInfo, FeedTx, TxOutputInfo } from '../types';
   import { bech32Decode, paymentCredential, stakeCredential } from '../bech32';
   import { config } from '../stores';
-  import { poolHue } from '../layout';
+  import { poolColor } from '../layout';
 
   let { tx }: { tx: FeedTx } = $props();
 
@@ -12,10 +12,6 @@
 
   function poolLabel(ticker?: string, poolId?: string): string {
     return ticker ?? poolId?.slice(5, 10) ?? '';
-  }
-
-  function poolColor(poolId?: string): string {
-    return `oklch(0.8 0.2 ${poolHue(poolId)})`;
   }
 
   let visibleDelegations: DelegationInfo[] = $derived(
@@ -90,7 +86,6 @@
         {#each visibleDelegations as deleg}
           {@const isDeregistration = !deleg.to_pool_id && !!deleg.from_pool_id}
           <div class="addr-item">
-            <span class="ada">{formatAda(deleg.live_stake)}</span>
             {#if deleg.to_pool_id}
               <a class="deleg-pool" href="/{deleg.to_pool_id}" style:color={poolColor(deleg.to_pool_id)}
                 >{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a
@@ -101,12 +96,13 @@
             {/if}
             {#if deleg.from_pool_id}
               <a
-                class="deleg-pool from"
+                class="deleg-pool"
                 class:deregistered={isDeregistration}
                 href="/{deleg.from_pool_id}"
                 style:color={poolColor(deleg.from_pool_id)}>{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
               >
             {/if}
+            <span class="ada" style:color={poolColor(deleg.to_pool_id ?? deleg.from_pool_id)}>{formatAda(deleg.live_stake)}</span>
             <span class="addr mono">{deleg.stake_address}</span>
           </div>
         {/each}
@@ -245,17 +241,12 @@
 
   .deleg-pool {
     font-family: Inter, sans-serif;
-    font-size: 12px;
-    font-weight: 900;
+    font-size: 11px;
+    font-weight: 700;
     text-decoration: none;
   }
 
-  .deleg-pool.from {
-    opacity: 0.5;
-    font-weight: 500;
-  }
-
-  .deleg-pool.deregistered {
+.deleg-pool.deregistered {
     text-decoration: line-through;
   }
 
