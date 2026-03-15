@@ -16,15 +16,20 @@
 
   let feedEl: HTMLDivElement;
   let feedWidth = $state(0);
+  let feedHeight = $state(0);
+  let landscape = $state(false);
   let actualGridWidths = $state<Record<string, number>>({});
 
   // Section positioning: absolute layout with smooth CSS transitions
   let sectionRefs = new Map<string, HTMLElement>();
-  let sectionPositions = $state<Map<string, { y: number; spacing: number }>>(new Map());
-  let canvasHeight = $state(0);
+  let sectionPositions = $state<Map<string, { pos: number; spacing: number }>>(new Map());
+  let canvasSize = $state(0);
   let animated = $state(false);
   let sectionObserver: ResizeObserver | undefined;
   let measurePending = false;
+
+  // Available height for tx columns in landscape mode
+  let txAreaHeight = $derived(feedHeight - BLOCK_INSET - 40);
 
   function trackSection(node: HTMLElement, id: string) {
     sectionRefs.set(id, node);
@@ -50,8 +55,8 @@
 
   function measureSections() {
     const sects = $sections;
-    const positions = new Map<string, { y: number; spacing: number }>();
-    let y = 0;
+    const positions = new Map<string, { pos: number; spacing: number }>();
+    let pos = 0;
     for (let i = 0; i < sects.length; i++) {
       const section = sects[i];
       let spacing = 0;
@@ -59,23 +64,33 @@
         const prev = sects[i - 1].block?.timestamp ?? now / 1000;
         const delta = section.block ? Math.max(0, prev - section.block.timestamp) : 0;
         spacing = PX_PER_SECOND * 120 * Math.log(1 + delta / 120);
-        y += spacing;
+        pos += spacing;
       }
-      positions.set(section.id, { y: Math.round(y), spacing: Math.round(spacing) });
-      y += sectionRefs.get(section.id)?.offsetHeight ?? 0;
+      positions.set(section.id, { pos: Math.round(pos), spacing: Math.round(spacing) });
+      const el = sectionRefs.get(section.id);
+      pos += landscape ? (el?.offsetWidth ?? 0) : (el?.offsetHeight ?? 0);
     }
     sectionPositions = positions;
-    canvasHeight = y;
+    canvasSize = pos;
     if (!animated)
       tick().then(() => {
         animated = true;
       });
   }
 
+  function updateLandscape() {
+    landscape = window.innerWidth > window.innerHeight;
+  }
+
   onMount(() => {
+    updateLandscape();
+    window.addEventListener('resize', updateLandscape);
+
     feedWidth = feedEl.offsetWidth;
+    feedHeight = feedEl.offsetHeight;
     const feedObserver = new ResizeObserver((entries) => {
       feedWidth = entries[0]?.contentRect.width ?? 0;
+      feedHeight = entries[0]?.contentRect.height ?? 0;
     });
     feedObserver.observe(feedEl);
 
@@ -83,12 +98,14 @@
     for (const el of sectionRefs.values()) sectionObserver.observe(el);
 
     return () => {
+      window.removeEventListener('resize', updateLandscape);
       feedObserver.disconnect();
       sectionObserver?.disconnect();
     };
   });
 
   function sectionMaxWidth(section: Section): string {
+    if (landscape) return 'none';
     const gw = actualGridWidths[section.id];
     if (gw) return `${gw + BLOCK_INSET}px`;
     if (section.txs.length === 0) return `${TX_WIDTH + BLOCK_INSET}px`;
@@ -116,10 +133,11 @@
     return () => clearInterval(interval);
   });
 
-  // Re-measure positions when sections change or time advances (spacing depends on now)
+  // Re-measure positions when sections change, time advances, or orientation changes
   $effect(() => {
     $sections;
     now;
+    landscape;
     untrack(scheduleMeasure);
   });
 
@@ -184,6 +202,7 @@
 
 <div
   class="feed"
+  class:landscape
   bind:this={feedEl}
   style:--block-padding="{BLOCK_PADDING}px"
   style:--block-border="{BLOCK_BORDER}px"
@@ -203,7 +222,10 @@
       <span class="pool-stat">{formatAda($pool.fixed_cost)} cost</span>
     </div>
   {/if}
-  <div class="canvas" style="height: {canvasHeight}px">
+  <div
+    class="canvas"
+    style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}
+  >
     {#each $sections as section, i (section.id)}
       {@const isMempool = !section.block}
       {@const color = section.block ? poolColor(section.block.pool_id) : '#444'}
@@ -219,12 +241,14 @@
         style:--section-color={color}
         style:--section-width={sectionMaxWidth(section)}
         style:--spacing="{layout?.spacing ?? 0}px"
-        style:transform="translateY({layout?.y ?? 0}px)"
+        style:transform={landscape
+          ? `translateX(${-(layout?.pos ?? 0)}px) translateY(-50%)`
+          : `translateY(${layout?.pos ?? 0}px)`}
         ongridwidth={(e: CustomEvent<number>) => {
           actualGridWidths[section.id] = e.detail;
         }}
         use:trackSection={section.id}
-        out:slide={{ duration: FLIP_DURATION, axis: 'y' }}
+        out:slide={{ duration: FLIP_DURATION, axis: landscape ? 'x' : 'y' }}
       >
         <div class="block-header">
           {#if section.block}
@@ -238,17 +262,27 @@
         </div>
 
         {#if section.txs.length > 0}
-          <BinPackGrid
-            items={section.txs}
-            key={(tx) => tx.hash}
-            itemWidth={TX_WIDTH}
-            gap={TX_GAP}
-            availableWidth={feedWidth - BLOCK_INSET}
-          >
-            {#snippet children(tx)}
-              <Transaction {tx} />
-            {/snippet}
-          </BinPackGrid>
+          {#if landscape}
+            <div class="column-grid" style:--tx-area-height="{txAreaHeight}px">
+              {#each section.txs as tx (tx.hash)}
+                <div class="column-grid-item">
+                  <Transaction {tx} />
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <BinPackGrid
+              items={section.txs}
+              key={(tx) => tx.hash}
+              itemWidth={TX_WIDTH}
+              gap={TX_GAP}
+              availableWidth={feedWidth - BLOCK_INSET}
+            >
+              {#snippet children(tx)}
+                <Transaction {tx} />
+              {/snippet}
+            </BinPackGrid>
+          {/if}
         {/if}
 
         {#if isMempool && $config?.genesis}
@@ -278,6 +312,12 @@
     padding: 16px 20px;
   }
 
+  .feed.landscape {
+    overflow-y: hidden;
+    overflow-x: auto;
+    direction: rtl;
+  }
+
   .pool-header {
     display: flex;
     align-items: baseline;
@@ -286,6 +326,11 @@
     margin-bottom: 16px;
     border-left: 3px solid;
     white-space: nowrap;
+  }
+
+  .landscape .pool-header {
+    direction: ltr;
+    margin-bottom: 16px;
   }
 
   .pool-ticker {
@@ -303,6 +348,11 @@
     position: relative;
   }
 
+  .landscape .canvas {
+    height: 100%;
+    direction: ltr;
+  }
+
   .section {
     position: absolute;
     left: 0;
@@ -317,11 +367,19 @@
     flex-direction: column;
   }
 
+  .landscape .section {
+    left: auto;
+    right: 0;
+    top: 50%;
+    margin: 0;
+  }
+
   .section.animated {
     transition: transform var(--flip-duration) ease;
     will-change: transform;
   }
 
+  /* Portrait: vertical connecting line above the block */
   .section.has-line::before {
     content: '';
     position: absolute;
@@ -330,6 +388,21 @@
     width: 1px;
     height: var(--spacing);
     background: var(--border);
+    z-index: -1;
+  }
+
+  /* Landscape: horizontal connecting line to the right of the block */
+  .landscape .section.has-line::before {
+    bottom: auto;
+    left: calc(100% + var(--block-border));
+    top: 50%;
+    width: var(--spacing);
+    height: 1px;
+  }
+
+  .landscape .section.mempool {
+    max-height: calc(100vh - 72px);
+    overflow: hidden;
   }
 
   .section.mempool {
@@ -369,5 +442,19 @@
     font-weight: 700;
     line-height: 1;
     text-decoration: none;
+  }
+
+  .column-grid {
+    display: flex;
+    flex-direction: column;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-height: var(--tx-area-height);
+    justify-content: flex-end;
+    align-content: flex-start;
+  }
+
+  .column-grid-item {
+    width: 108px;
   }
 </style>
