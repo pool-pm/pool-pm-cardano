@@ -23,9 +23,10 @@
     const whole = padded.slice(0, -6) || '0';
     const frac = padded.slice(-6);
     const wholeNum = Number(whole);
+    const dec = (d: string) => `<span class="ada-dec">.${d}</span>`;
     if (wholeNum >= 1000) return wholeNum.toLocaleString() + ' ADA';
-    if (wholeNum >= 1) return whole + '.' + frac.slice(0, 2) + ' ADA';
-    return '0.' + frac + ' ADA';
+    if (wholeNum >= 1) return whole + dec(frac.slice(0, 2)) + ' ADA';
+    return '0' + dec(frac) + ' ADA';
   }
 
   function nftcdnUrl(asset: AssetInfo): string {
@@ -102,7 +103,7 @@
                 style:color={poolColor(deleg.from_pool_id)}>{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
               >
             {/if}
-            <span class="ada" style:color={poolColor(deleg.to_pool_id ?? deleg.from_pool_id)}>{formatAda(deleg.live_stake)}</span>
+            <span class="ada" style:color={poolColor(deleg.to_pool_id ?? deleg.from_pool_id)}>{@html formatAda(deleg.live_stake)}</span>
             <span class="addr mono">{deleg.stake_address}</span>
           </div>
         {/each}
@@ -117,7 +118,7 @@
       {/if}
       {#each visibleOutputs as output}
         <div class="addr-item">
-          <span class="ada">{formatAda(output.lovelace)}</span>
+          <span class="ada">{@html formatAda(output.lovelace)}</span>
           {#if output.assets.length > 0 && $config}
             <div class="assets">
               {#each output.assets as asset}
@@ -149,7 +150,7 @@
     </div>
 
     {#if filteredOutputs.length === 0}
-      <span class="ada">{formatAda(tx.outputs.reduce((s, o) => s + BigInt(o.lovelace), 0n).toString())}</span>
+      <span class="ada">{@html formatAda(tx.outputs.reduce((s, o) => s + BigInt(o.lovelace), 0n).toString())}</span>
     {/if}
     <div class="arrow" class:flip={filteredOutputs.length === 0}>{filteredOutputs.length === 0 ? '↻' : '↑'}</div>
 
@@ -216,6 +217,11 @@
     color: white;
     font-weight: 600;
     font-size: 10px;
+  }
+
+  .ada :global(.ada-dec) {
+    font-weight: 400;
+    font-size: 9px;
   }
 
   .addr {
