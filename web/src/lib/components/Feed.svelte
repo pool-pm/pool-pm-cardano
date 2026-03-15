@@ -140,7 +140,7 @@
       if (i > 0) {
         const prev = sects[i - 1].block?.timestamp ?? now / 1000;
         const delta = section.block ? Math.max(0, prev - section.block.timestamp) : 0;
-        spacing = Math.round(PX_PER_SECOND * 120 * Math.log(1 + delta / 120));
+        spacing = Math.round(PX_PER_SECOND * delta);
         pos += spacing;
       }
       positions.set(section.id, { pos, spacing });
