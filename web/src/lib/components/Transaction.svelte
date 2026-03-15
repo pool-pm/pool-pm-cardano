@@ -57,7 +57,7 @@
     });
     // Second pass: heuristic change detection for non-script addresses
     return afterPayment.filter((o) => {
-      if (o.assets.length <= 4) return true;
+      if (o.assets.length <= 1) return true;
       // Byron address with many assets, only if non-change outputs remain
       if (!o.address.startsWith('addr')) return afterPayment.length <= 1;
       // Same stake credential with many assets, but not a script address
@@ -73,7 +73,13 @@
   let thumbSize = $derived(totalAssets <= 1 ? 64 : Math.max(16, Math.floor(64 / Math.sqrt(totalAssets))));
 
   const MAX_OUTPUTS = 8;
-  let visibleOutputs = $derived(filteredOutputs.slice(0, MAX_OUTPUTS));
+  let sortedOutputs = $derived([...filteredOutputs].sort((a, b) => {
+    const aHas = a.assets.length > 0 ? 0 : 1;
+    const bHas = b.assets.length > 0 ? 0 : 1;
+    if (aHas !== bHas) return aHas - bHas;
+    return Number(BigInt(a.lovelace) - BigInt(b.lovelace));
+  }));
+  let visibleOutputs = $derived(sortedOutputs.slice(-MAX_OUTPUTS));
   let hiddenOutputCount = $derived(filteredOutputs.length - visibleOutputs.length);
 
   // Deduplicate inputs by address

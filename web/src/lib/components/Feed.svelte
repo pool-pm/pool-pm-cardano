@@ -325,7 +325,7 @@
     right: 0;
     margin: 0 auto;
     max-width: var(--section-width);
-    min-width: min-content;
+    min-width: 200px;
     border: var(--block-border) solid;
     border-radius: 8px;
     padding: var(--block-padding);
