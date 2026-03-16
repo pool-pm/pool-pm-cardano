@@ -47,7 +47,6 @@
 
   function balanceColumns(node: HTMLElement, availableHeight: number) {
     let lastMaxH = '';
-    let currentCols = 1;
     const gap = TX_GAP;
 
     function rebalance() {
@@ -57,19 +56,15 @@
       const heights = items.map((el) => el.offsetHeight);
       const total = heights.reduce((s, h) => s + h, 0) + Math.max(0, items.length - 1) * gap;
 
-      const naturalCols = Math.ceil(total / availableHeight);
-      if (naturalCols > currentCols) {
-        currentCols = naturalCols;
-      }
-
       let maxH: number;
-      if (currentCols <= 1) {
+      if (total <= availableHeight) {
         maxH = availableHeight;
       } else {
+        const targetCols = Math.ceil(total / availableHeight);
         let lo = Math.max(...heights), hi = availableHeight;
         while (hi - lo > 1) {
           const mid = Math.floor((lo + hi) / 2);
-          if (colsNeeded(heights, gap, mid) <= currentCols) hi = mid;
+          if (colsNeeded(heights, gap, mid) <= targetCols) hi = mid;
           else lo = mid;
         }
         maxH = hi;
@@ -82,16 +77,7 @@
       }
     }
 
-    const resizeObs = new ResizeObserver(() => requestAnimationFrame(rebalance));
-    for (const child of node.children) resizeObs.observe(child);
-
-    const mutObs = new MutationObserver((mutations) => {
-      for (const m of mutations) {
-        for (const added of m.addedNodes)
-          if (added instanceof HTMLElement) resizeObs.observe(added);
-      }
-      requestAnimationFrame(rebalance);
-    });
+    const mutObs = new MutationObserver(() => requestAnimationFrame(rebalance));
     mutObs.observe(node, { childList: true });
 
     requestAnimationFrame(rebalance);
@@ -99,10 +85,9 @@
     return {
       update(newAvailableHeight: number) {
         availableHeight = newAvailableHeight;
-        requestAnimationFrame(rebalance);
+        rebalance();
       },
       destroy() {
-        resizeObs.disconnect();
         mutObs.disconnect();
       },
     };
@@ -349,7 +334,7 @@
           {#if landscape}
             <div class="column-grid" use:balanceColumns={txAreaHeight}>
               {#each section.txs as tx (tx.hash)}
-                <div class="column-grid-item" animate:flip={{ duration: FLIP_DURATION }} in:slide={{ duration: FLIP_DURATION, axis: 'y' }}>
+                <div class="column-grid-item" animate:flip={{ duration: FLIP_DURATION }}>
                   <Transaction {tx} />
                 </div>
               {/each}
