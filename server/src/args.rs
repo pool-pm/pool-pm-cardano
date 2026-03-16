@@ -38,6 +38,10 @@ pub struct Args {
     #[clap(short, long)]
     pub listen: Option<SocketAddr>,
 
+    /// Node-to-node address for block-fetch
+    #[clap(long, default_value = "127.0.0.1:3001")]
+    pub n2n: SocketAddr,
+
     /// Snapshot depth (blocks back from tip for persistence)
     #[clap(long, default_value = "8")]
     pub snapshot_depth: usize,

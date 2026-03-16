@@ -72,6 +72,8 @@ function handleEvent(event: Event): void {
     case 'Block': {
       const now = Date.now();
       sections.update((s) => {
+        // Deduplicate: skip if this block is already in sections (from history replay)
+        if (s.some((sec, i) => i > 0 && sec.block?.slot === event.slot)) return s;
         const mempool = s[0];
         const mempoolByHash = new Map(mempool.txs.map((tx) => [tx.hash, tx]));
         const blockByHash = new Map(event.txs.map((tx) => [tx.hash, tx]));

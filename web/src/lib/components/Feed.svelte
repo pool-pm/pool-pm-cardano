@@ -10,7 +10,8 @@
 
   const MAX_BLOCKS = 30;
   const MAX_MEMPOOL_AGE_MS = 600_000;
-  const PX_PER_SECOND = 2;
+  const DEFAULT_PX_PER_SECOND = 2;
+  const MAX_TOTAL_GAP_PX = 400;
   const BLOCK_PADDING = 10;
   const BLOCK_BORDER = 2;
   const BLOCK_INSET = (BLOCK_PADDING + BLOCK_BORDER) * 2;
@@ -28,6 +29,18 @@
   let animated = $state(false);
   let sectionObserver: ResizeObserver | undefined;
   let measurePending = false;
+
+  // Dynamic spacing: shrink PX_PER_SECOND so total gaps fit on screen
+  let pxPerSecond = $derived.by(() => {
+    const sects = $sections;
+    if (sects.length <= 2) return DEFAULT_PX_PER_SECOND;
+    const oldest = sects[sects.length - 1].block?.timestamp;
+    const newest = sects[1]?.block?.timestamp;
+    if (!oldest || !newest) return DEFAULT_PX_PER_SECOND;
+    const totalTime = newest - oldest;
+    if (totalTime <= 0) return DEFAULT_PX_PER_SECOND;
+    return Math.min(DEFAULT_PX_PER_SECOND, MAX_TOTAL_GAP_PX / totalTime);
+  });
 
   // Available height for tx columns in landscape mode
   let txAreaHeight = $derived(feedHeight - BLOCK_INSET - 40);
@@ -125,7 +138,7 @@
       if (i > 0) {
         const prev = sects[i - 1].block?.timestamp ?? now / 1000;
         const delta = section.block ? Math.max(0, prev - section.block.timestamp) : 0;
-        spacing = Math.round(PX_PER_SECOND * delta);
+        spacing = Math.round(pxPerSecond * delta);
         pos += spacing;
       }
       positions.set(section.id, { pos, spacing });
@@ -207,6 +220,7 @@
     $sections;
     now;
     landscape;
+    pxPerSecond;
     untrack(scheduleMeasure);
   });
 
@@ -228,16 +242,10 @@
       const trimmed = frac.slice(0, 2).replace(/0+$/, '');
       return trimmed ? whole + '.' + trimmed + ' ADA' : whole + ' ADA';
     }
-    return '0.' + frac + ' ADA';
+    const trimmed = frac.replace(/0+$/, '');
+    return trimmed ? '0.' + trimmed + ' ADA' : '0 ADA';
   }
 
-  function formatAdaFull(lovelace: string): string {
-    const padded = lovelace.padStart(7, '0');
-    const whole = padded.slice(0, -6) || '0';
-    const frac = padded.slice(-6).replace(/0+$/, '');
-    const wholeStr = Number(whole).toLocaleString();
-    return frac ? wholeStr + '.' + frac + ' ADA' : wholeStr + ' ADA';
-  }
 
   function formatMargin(m: number): string {
     return (m * 100).toFixed(2).replace(/\.?0+$/, '') + '%';
@@ -281,14 +289,14 @@
     <div class="pool-header" style:border-color={poolColor($pool.pool_id)}>
       <span class="pool-ticker">{formatTicker($pool.ticker ?? $pool.pool_id.slice(5, 10))}</span>
       {#if $pool.live_stake}
-        <span class="pool-stat">{formatAdaFull($pool.live_stake)} stake</span>
+        <span class="pool-stat">{formatAda($pool.live_stake)} stake</span>
       {/if}
       {#if $pool.delegators != null}
         <span class="pool-stat">{$pool.delegators.toLocaleString()} delegators</span>
       {/if}
       <span class="pool-stat">{formatAda($pool.pledge)} pledge</span>
       <span class="pool-stat">{formatMargin($pool.margin)} margin</span>
-      <span class="pool-stat">{formatAda($pool.fixed_cost)} cost</span>
+      <span class="pool-stat">{formatAda($pool.fixed_cost)} fixed cost</span>
     </div>
   {/if}
   <div

@@ -279,6 +279,32 @@ impl State {
         db.epoch_reward_delta(epoch).await.ok()
     }
 
+    /// Batch-resolve input addresses and lovelace from db-sync.
+    pub async fn resolve_utxos_batch(
+        &self,
+        inputs: &[(Vec<u8>, i16)],
+    ) -> std::collections::HashMap<(Vec<u8>, i16), (String, u64)> {
+        if let Some(db) = self.db().await {
+            db.resolve_utxos_batch(inputs)
+                .await
+                .unwrap_or_default()
+        } else {
+            std::collections::HashMap::new()
+        }
+    }
+
+    /// Fetch recent blocks minted by a pool from db-sync.
+    /// Returns (slot, block_hash_hex, block_number) tuples, newest first.
+    pub async fn pool_recent_blocks(&self, pool_hash: &[u8], limit: i64) -> Vec<(u64, String, u64)> {
+        if let Some(db) = self.db().await {
+            db.pool_recent_blocks(pool_hash, limit)
+                .await
+                .unwrap_or_default()
+        } else {
+            vec![]
+        }
+    }
+
     /// Rollback to the given slot: drop all snapshots after it.
     /// Returns false if history is empty after truncation (snapshot was too old).
     pub fn rollback(&mut self, slot: u64) -> bool {

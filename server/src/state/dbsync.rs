@@ -60,6 +60,35 @@ impl DbSync {
         Ok(row.map(|r| (r.address, r.value)))
     }
 
+    pub async fn resolve_utxos_batch(
+        &self,
+        inputs: &[(Vec<u8>, i16)],
+    ) -> Result<std::collections::HashMap<(Vec<u8>, i16), (String, u64)>, sqlx::Error> {
+        if inputs.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let hashes: Vec<Vec<u8>> = inputs.iter().map(|(h, _)| h.clone()).collect();
+        let indices: Vec<i16> = inputs.iter().map(|(_, i)| *i).collect();
+        let rows = sqlx::query!(
+            r#"SELECT tx.hash, tx_out.index AS "index!: i16", tx_out.address, tx_out.value
+            FROM tx_out
+            JOIN tx ON tx.id = tx_out.tx_id
+            WHERE (tx.hash, tx_out.index) IN (SELECT * FROM UNNEST($1::bytea[], $2::smallint[]))"#,
+            &hashes,
+            &indices
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let lovelace: u64 = r.value.try_into().expect("lovelace must fit u64");
+                ((r.hash, r.index), (r.address, lovelace))
+            })
+            .collect())
+    }
+
     pub async fn pools(&self, last_tx_id: i64) -> Result<HashMap<String, Pool>, sqlx::Error> {
         Ok(sqlx::query_as!(
             Pool,
@@ -203,6 +232,34 @@ impl DbSync {
         }
 
         Ok(deltas)
+    }
+
+    pub async fn pool_recent_blocks(
+        &self,
+        pool_hash: &[u8],
+        limit: i64,
+    ) -> Result<Vec<(u64, String, u64)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT slot_no AS "slot!", hash, block_no AS "block_no!"
+            FROM block
+            WHERE slot_leader_id = (
+                SELECT sl.id FROM slot_leader sl
+                JOIN pool_hash ph ON ph.id = sl.pool_hash_id
+                WHERE ph.hash_raw = $1
+                LIMIT 1
+            )
+            ORDER BY slot_no DESC
+            LIMIT $2"#,
+            pool_hash,
+            limit
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.slot as u64, hex::encode(r.hash), r.block_no as u64))
+            .collect())
     }
 
     pub async fn drep_delegations(

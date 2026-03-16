@@ -175,8 +175,10 @@ pub fn run(args: Args) -> Result<(), Error> {
             addr,
             event_bus,
             state,
-            nftcdn.subdomain,
+            nftcdn,
             genesis_config,
+            args.n2n,
+            args.network.magic(),
         ));
     }
 
