@@ -523,5 +523,6 @@
 
   .column-grid-item {
     width: 108px;
+    will-change: transform;
   }
 </style>
