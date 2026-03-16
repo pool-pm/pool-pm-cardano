@@ -190,33 +190,30 @@ async fn filtered_events(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(feed_id): axum::extract::Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, StatusCode> {
+    info!("/events/{feed_id}");
     let filter = filter::FeedFilter::from_path(&feed_id).ok_or(StatusCode::BAD_REQUEST)?;
 
     let (snapshot, rx) = state.bus.subscribe().await;
 
-    let (delegators, pool_event, pool_id, pool_ticker, pool_hash) = {
+    let (delegators, pool_id, pool_ticker, pool_hash) = {
         let guard = state.chain_state.read().await;
         let delegators = guard
             .current()
             .and_then(|snap| filter.delegators(snap))
             .cloned()
             .unwrap_or_default();
-        let (pool_event, pool_id, pool_ticker, pool_hash) =
+        let (pool_id, pool_ticker, pool_hash) =
             if let filter::FeedFilter::Pool(ref hash) = filter {
-                let pool_event = guard.current().and_then(|snap| {
-                    let pool = snap.pools.get(&hex::encode(hash))?;
-                    Some(pool_sse_event(pool, Some(snap)))
-                });
                 let (pool_id, pool_ticker) = guard
                     .current()
                     .and_then(|snap| snap.pools.get(&hex::encode(hash)))
                     .map(|p| (Some(pool_bech32_id(&p.hash_raw)), p.ticker.clone()))
                     .unwrap_or((None, None));
-                (pool_event, pool_id, pool_ticker, Some(hash.clone()))
+                (pool_id, pool_ticker, Some(hash.clone()))
             } else {
-                (None, None, None, None)
+                (None, None, None)
             };
-        (delegators, pool_event, pool_id, pool_ticker, pool_hash)
+        (delegators, pool_id, pool_ticker, pool_hash)
     };
 
     // Stream replay via mpsc: blocks arrive one by one as they're fetched
@@ -235,17 +232,24 @@ async fn filtered_events(
         // Config
         let _ = sender.send(config_event(nftcdn_sub, &genesis)).await;
 
-        // Pool info
-        if let Some(pe) = pool_event {
-            let _ = sender.send(pe).await;
-        }
-
         // Historical blocks via db-sync query + N2N block-fetch (streamed)
         if let Some(ref ph) = pool_hash {
             let block_points = {
                 let guard = chain_state_clone.read().await;
                 guard.pool_recent_blocks(ph, 20).await
             };
+
+            // Pool info
+            {
+                let guard = chain_state_clone.read().await;
+                if let Some(snap) = guard.current() {
+                    if let Some(pool) = snap.pools.get(&hex::encode(ph)) {
+                        let _ = sender
+                            .send(pool_sse_event(pool, Some(snap)))
+                            .await;
+                    }
+                }
+            }
             let history_slots: std::collections::HashSet<u64> =
                 block_points.iter().map(|(slot, _, _)| *slot).collect();
 
@@ -345,7 +349,7 @@ async fn filtered_events(
 
     let chain_state = state.chain_state.clone();
 
-    // For pool feeds, track the last-seen pool and live stake to detect changes.
+    // For pool feeds, track the last-seen pool, live stake, and blocks_minted to detect changes.
     let (last_pool, last_live_stake) = if let filter::FeedFilter::Pool(ref hash) = filter {
         let guard = state.chain_state.read().await;
         let snap = guard.current();

@@ -35,9 +35,8 @@
     const sects = $sections;
     if (sects.length <= 2) return DEFAULT_PX_PER_SECOND;
     const oldest = sects[sects.length - 1].block?.timestamp;
-    const newest = sects[1]?.block?.timestamp;
-    if (!oldest || !newest) return DEFAULT_PX_PER_SECOND;
-    const totalTime = newest - oldest;
+    if (!oldest) return DEFAULT_PX_PER_SECOND;
+    const totalTime = Date.now() / 1000 - oldest;
     if (totalTime <= 0) return DEFAULT_PX_PER_SECOND;
     return Math.min(DEFAULT_PX_PER_SECOND, MAX_TOTAL_GAP_PX / totalTime);
   });

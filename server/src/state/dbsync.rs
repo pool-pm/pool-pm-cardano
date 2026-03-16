@@ -239,27 +239,38 @@ impl DbSync {
         pool_hash: &[u8],
         limit: i64,
     ) -> Result<Vec<(u64, String, u64)>, sqlx::Error> {
+        let leader_id = sqlx::query_scalar!(
+            r#"SELECT sl.id AS "id!"
+            FROM slot_leader sl
+            JOIN pool_hash ph ON ph.id = sl.pool_hash_id
+            WHERE ph.hash_raw = $1
+            LIMIT 1"#,
+            pool_hash
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let leader_id = match leader_id {
+            Some(id) => id,
+            None => return Ok(vec![]),
+        };
+
         let rows = sqlx::query!(
             r#"SELECT slot_no AS "slot!", hash, block_no AS "block_no!"
             FROM block
-            WHERE slot_leader_id = (
-                SELECT sl.id FROM slot_leader sl
-                JOIN pool_hash ph ON ph.id = sl.pool_hash_id
-                WHERE ph.hash_raw = $1
-                LIMIT 1
-            )
-            ORDER BY slot_no DESC
-            LIMIT $2"#,
-            pool_hash,
-            limit
+            WHERE slot_leader_id = $1"#,
+            leader_id,
         )
         .fetch_all(&self.db)
         .await?;
 
-        Ok(rows
+        let mut result: Vec<_> = rows
             .into_iter()
             .map(|r| (r.slot as u64, hex::encode(r.hash), r.block_no as u64))
-            .collect())
+            .collect();
+        result.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        result.truncate(limit as usize);
+        Ok(result)
     }
 
     pub async fn drep_delegations(
