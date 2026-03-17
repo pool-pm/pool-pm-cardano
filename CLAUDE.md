@@ -61,6 +61,7 @@ Cardano Node (N2C) → Source Stage (Oura) → Sink Stage → Cursor Stage (JSON
 
 - **Immutable data structures**: State is held in `im::HashMap`/`im::HashSet` for safe structural sharing and efficient rollbacks.
 - **Versioned state**: `State` maintains a `Vec<BlockSnapshot>` history; each snapshot shares structure with the previous via `im` crate O(1) clone. Always store new per-block data in `BlockSnapshot` so rollbacks are handled automatically by history truncation — never maintain separate delta/rollback logic.
+- **Rollback correctness is critical**: Every new feature that tracks or derives data from blocks must handle rollbacks correctly. A `Rollback { slot }` event removes all blocks with `slot > rollback_slot` from the event bus, state history, and frontend sections. If a feature maintains counters, caches, or derived state from block data, it must revert cleanly on rollback — do not add features that only increment/accumulate without a rollback path.
 - **Event broadcasting**: `tokio::sync::broadcast` channel fans out events from pipeline stages to multiple SSE clients.
 - **Gasket error handling**: Worker methods return `gasket::error::Error` with `or_panic()` / `or_retry()` combinators.
 - **Async throughout**: tokio runtime with sqlx async database access.

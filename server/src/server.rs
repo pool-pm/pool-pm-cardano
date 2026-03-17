@@ -8,9 +8,11 @@ use futures::stream::Stream;
 use pallas::ledger::traverse::MultiEraBlock;
 use pallas::network::facades::PeerClient;
 use pallas::network::miniprotocols::Point;
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
@@ -49,6 +51,16 @@ fn slot_to_timestamp(slot: u64, genesis: &GenesisConfig) -> u64 {
         + slot.saturating_sub(genesis.shelley_known_slot) * genesis.shelley_slot_length as u64
 }
 
+// --- SSE event builders ---
+
+fn config_event(nftcdn_subdomain: &str, genesis: &GenesisConfig) -> Result<SseEvent, Infallible> {
+    let genesis_json = serde_json::to_string(genesis).unwrap();
+    Ok(SseEvent::default().data(format!(
+        "{{\"type\":\"Config\",\"nftcdn\":\"{}\",\"genesis\":{}}}",
+        nftcdn_subdomain, genesis_json
+    )))
+}
+
 fn pool_sse_event(pool: &Pool, snap: Option<&BlockSnapshot>) -> Result<SseEvent, Infallible> {
     let live_stake = snap
         .and_then(|s| State::pool_live_stake(s, &pool.hash_raw))
@@ -76,34 +88,7 @@ fn serialize_event(event: crate::event::Event) -> Option<Result<SseEvent, Infall
         .map(|json| Ok(SseEvent::default().data(json)))
 }
 
-fn config_event(nftcdn_subdomain: &str, genesis: &GenesisConfig) -> Result<SseEvent, Infallible> {
-    let genesis_json = serde_json::to_string(genesis).unwrap();
-    Ok(SseEvent::default().data(format!(
-        "{{\"type\":\"Config\",\"nftcdn\":\"{}\",\"genesis\":{}}}",
-        nftcdn_subdomain, genesis_json
-    )))
-}
-
-async fn events(
-    axum::extract::State(state): axum::extract::State<AppState>,
-) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let (snapshot, rx) = state.bus.subscribe().await;
-
-    let config = Some(config_event(state.nftcdn.subdomain, &state.genesis));
-
-    let init = if snapshot.is_empty() {
-        None
-    } else {
-        serde_json::to_string(&snapshot)
-            .ok()
-            .map(|json| Ok(SseEvent::default().data(json)))
-    };
-    let replay = futures::stream::iter(config.into_iter().chain(init));
-    let live = BroadcastStream::new(rx).filter_map(|result| result.ok().and_then(serialize_event));
-    let stream = replay.chain(live);
-
-    Sse::new(stream).keep_alive(KeepAlive::default())
-}
+// --- Block decoding ---
 
 /// Decode a block CBOR into a BlockTx list.
 fn decode_block_txs(cbor: &[u8], nftcdn: &NftcdnConfig) -> Vec<BlockTx> {
@@ -186,181 +171,156 @@ fn decode_block_txs(cbor: &[u8], nftcdn: &NftcdnConfig) -> Vec<BlockTx> {
         .collect()
 }
 
-async fn filtered_events(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    axum::extract::Path(feed_id): axum::extract::Path<String>,
-) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, StatusCode> {
-    info!("/events/{feed_id}");
-    let filter = filter::FeedFilter::from_path(&feed_id).ok_or(StatusCode::BAD_REQUEST)?;
-
-    let (snapshot, rx) = state.bus.subscribe().await;
-
-    let (delegators, pool_id, pool_ticker, pool_hash) = {
-        let guard = state.chain_state.read().await;
-        let delegators = guard
-            .current()
-            .and_then(|snap| filter.delegators(snap))
-            .cloned()
-            .unwrap_or_default();
-        let (pool_id, pool_ticker, pool_hash) =
-            if let filter::FeedFilter::Pool(ref hash) = filter {
-                let (pool_id, pool_ticker) = guard
-                    .current()
-                    .and_then(|snap| snap.pools.get(&hex::encode(hash)))
-                    .map(|p| (Some(pool_bech32_id(&p.hash_raw)), p.ticker.clone()))
-                    .unwrap_or((None, None));
-                (pool_id, pool_ticker, Some(hash.clone()))
-            } else {
-                (None, None, None)
-            };
-        (delegators, pool_id, pool_ticker, pool_hash)
+/// Resolve input addresses for a list of transactions via batch db-sync query.
+async fn resolve_block_inputs(txs: &mut Vec<BlockTx>, chain_state: &RwLock<State>) {
+    let input_keys: Vec<(Vec<u8>, i16)> = txs
+        .iter()
+        .flat_map(|tx| {
+            tx.inputs
+                .iter()
+                .map(|inp| (hex::decode(&inp.tx_hash).unwrap_or_default(), inp.index))
+        })
+        .collect();
+    if input_keys.is_empty() {
+        return;
+    }
+    let resolved = {
+        let guard = chain_state.read().await;
+        guard.resolve_utxos_batch(&input_keys).await
     };
-
-    // Stream replay via mpsc: blocks arrive one by one as they're fetched
-    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<SseEvent, Infallible>>(32);
-
-    let nftcdn = state.nftcdn.clone();
-    let genesis = state.genesis.clone();
-    let n2n_addr = state.n2n_addr;
-    let magic = state.magic;
-    let nftcdn_sub = state.nftcdn.subdomain;
-    let chain_state_clone = state.chain_state.clone();
-    let replay_filter = filter.clone();
-    let replay_delegators = delegators.clone();
-
-    tokio::spawn(async move {
-        // Config
-        let _ = sender.send(config_event(nftcdn_sub, &genesis)).await;
-
-        // Historical blocks via db-sync query + N2N block-fetch (streamed)
-        if let Some(ref ph) = pool_hash {
-            let block_points = {
-                let guard = chain_state_clone.read().await;
-                guard.pool_recent_blocks(ph, 20).await
-            };
-
-            // Pool info
-            {
-                let guard = chain_state_clone.read().await;
-                if let Some(snap) = guard.current() {
-                    if let Some(pool) = snap.pools.get(&hex::encode(ph)) {
-                        let _ = sender
-                            .send(pool_sse_event(pool, Some(snap)))
-                            .await;
-                    }
-                }
-            }
-            let history_slots: std::collections::HashSet<u64> =
-                block_points.iter().map(|(slot, _, _)| *slot).collect();
-
-            if !block_points.is_empty() {
-                if let Ok(mut client) = PeerClient::connect(n2n_addr, magic).await {
-                    for &(slot, ref hash_hex, number) in block_points.iter().rev() {
-                        let hash_bytes = match hex::decode(hash_hex) {
-                            Ok(b) => b,
-                            Err(_) => continue,
-                        };
-                        let point = Point::Specific(slot, hash_bytes);
-                        match client.blockfetch().fetch_single(point).await {
-                            Ok(cbor) => {
-                                let mut txs = decode_block_txs(&cbor, &nftcdn);
-
-                                // Batch-resolve input addresses
-                                let input_keys: Vec<(Vec<u8>, i16)> = txs
-                                    .iter()
-                                    .flat_map(|tx| {
-                                        tx.inputs.iter().map(|inp| {
-                                            (hex::decode(&inp.tx_hash).unwrap_or_default(), inp.index)
-                                        })
-                                    })
-                                    .collect();
-                                if !input_keys.is_empty() {
-                                    let resolved = {
-                                        let guard = chain_state_clone.read().await;
-                                        guard.resolve_utxos_batch(&input_keys).await
-                                    };
-                                    for tx in &mut txs {
-                                        for inp in &mut tx.inputs {
-                                            let key = (
-                                                hex::decode(&inp.tx_hash).unwrap_or_default(),
-                                                inp.index,
-                                            );
-                                            if let Some((addr, lovelace)) = resolved.get(&key) {
-                                                inp.address = Some(addr.clone());
-                                                inp.lovelace = *lovelace;
-                                            }
-                                        }
-                                    }
-                                }
-                                let event = crate::event::Event::Block {
-                                    slot,
-                                    hash: hash_hex.clone(),
-                                    number,
-                                    timestamp: slot_to_timestamp(slot, &genesis),
-                                    pool_id: pool_id.clone(),
-                                    pool_ticker: pool_ticker.clone(),
-                                    txs,
-                                };
-                                if let Some(sse) = serialize_event(event) {
-                                    let _ = sender.send(sse).await;
-                                }
-                            }
-                            Err(e) => {
-                                warn!(slot, "block-fetch failed: {}", e);
-                            }
-                        }
-                    }
-                    let _ = client.abort().await;
-                } else {
-                    warn!("N2N connect to {} failed", n2n_addr);
-                }
-            }
-
-            // EventBus snapshot events, deduped against history
-            let filtered_snapshot: Vec<crate::event::Event> = snapshot
-                .into_iter()
-                .filter_map(|e| replay_filter.filter_event(&e, &replay_delegators))
-                .filter(|e| match e {
-                    crate::event::Event::Block { slot, .. } => !history_slots.contains(slot),
-                    _ => true,
-                })
-                .collect();
-            for event in filtered_snapshot {
-                if let Some(sse) = serialize_event(event) {
-                    let _ = sender.send(sse).await;
-                }
-            }
-        } else {
-            // Non-pool feeds: just send filtered snapshot
-            let filtered_snapshot: Vec<crate::event::Event> = snapshot
-                .into_iter()
-                .filter_map(|e| replay_filter.filter_event(&e, &replay_delegators))
-                .collect();
-            for event in filtered_snapshot {
-                if let Some(sse) = serialize_event(event) {
-                    let _ = sender.send(sse).await;
-                }
+    for tx in txs {
+        for inp in &mut tx.inputs {
+            let key = (
+                hex::decode(&inp.tx_hash).unwrap_or_default(),
+                inp.index,
+            );
+            if let Some((addr, lovelace)) = resolved.get(&key) {
+                inp.address = Some(addr.clone());
+                inp.lovelace = *lovelace;
             }
         }
-        // sender dropped here → receiver stream ends → chains to live
-    });
+    }
+}
 
-    let replay = tokio_stream::wrappers::ReceiverStream::new(receiver);
+// --- Replay: send historical events through mpsc channel ---
 
-    let chain_state = state.chain_state.clone();
-
-    // For pool feeds, track the last-seen pool, live stake, and blocks_minted to detect changes.
-    let (last_pool, last_live_stake) = if let filter::FeedFilter::Pool(ref hash) = filter {
-        let guard = state.chain_state.read().await;
-        let snap = guard.current();
-        let pool = snap.and_then(|s| s.pools.get(&hex::encode(hash)).cloned());
-        let live_stake = snap.and_then(|s| State::pool_live_stake(s, hash));
-        (pool, live_stake)
-    } else {
-        (None, None)
+/// Send pool block history fetched via N2N block-fetch protocol.
+async fn send_pool_history(
+    sender: &Sender<Result<SseEvent, Infallible>>,
+    block_points: &[(u64, String, u64)],
+    pool_id: &Option<String>,
+    pool_ticker: &Option<String>,
+    nftcdn: &NftcdnConfig,
+    genesis: &GenesisConfig,
+    chain_state: &RwLock<State>,
+    n2n_addr: SocketAddr,
+    magic: u64,
+) {
+    if block_points.is_empty() {
+        return;
+    }
+    let mut client = match PeerClient::connect(n2n_addr, magic).await {
+        Ok(c) => c,
+        Err(_) => {
+            warn!("N2N connect to {} failed", n2n_addr);
+            return;
+        }
     };
+    // block_points is newest-first; iterate in reverse for oldest-first
+    for &(slot, ref hash_hex, number) in block_points.iter().rev() {
+        let hash_bytes = match hex::decode(hash_hex) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let point = Point::Specific(slot, hash_bytes);
+        match client.blockfetch().fetch_single(point).await {
+            Ok(cbor) => {
+                let mut txs = decode_block_txs(&cbor, nftcdn);
+                resolve_block_inputs(&mut txs, chain_state).await;
+                let event = crate::event::Event::Block {
+                    slot,
+                    hash: hash_hex.clone(),
+                    number,
+                    timestamp: slot_to_timestamp(slot, genesis),
+                    pool_id: pool_id.clone(),
+                    pool_ticker: pool_ticker.clone(),
+                    txs,
+                };
+                if let Some(sse) = serialize_event(event) {
+                    let _ = sender.send(sse).await;
+                }
+            }
+            Err(e) => {
+                warn!(slot, "block-fetch failed: {}", e);
+            }
+        }
+    }
+    let _ = client.abort().await;
+}
 
-    let live = futures::stream::unfold(
+/// Send filtered snapshot events, optionally deduplicating against known block slots.
+async fn send_filtered_snapshot(
+    sender: &Sender<Result<SseEvent, Infallible>>,
+    snapshot: Vec<crate::event::Event>,
+    filter: &filter::FeedFilter,
+    delegators: &imbl::hashset::HashSet<Vec<u8>>,
+    exclude_slots: &HashSet<u64>,
+) {
+    for event in snapshot {
+        if let Some(filtered) = filter.filter_event(&event, delegators) {
+            if let crate::event::Event::Block { slot, .. } = &filtered {
+                if exclude_slots.contains(slot) {
+                    continue;
+                }
+            }
+            if let Some(sse) = serialize_event(filtered) {
+                let _ = sender.send(sse).await;
+            }
+        }
+    }
+}
+
+// --- Pool metadata helpers ---
+
+/// Extract pool id, ticker, and hash from current state. Fast (in-memory).
+fn extract_pool_meta(
+    snap: Option<&BlockSnapshot>,
+    filter: &filter::FeedFilter,
+) -> (Option<String>, Option<String>, Option<Vec<u8>>) {
+    if let filter::FeedFilter::Pool(ref hash) = filter {
+        let (pool_id, pool_ticker) = snap
+            .and_then(|s| s.pools.get(&hex::encode(hash)))
+            .map(|p| (Some(pool_bech32_id(&p.hash_raw)), p.ticker.clone()))
+            .unwrap_or((None, None));
+        (pool_id, pool_ticker, Some(hash.clone()))
+    } else {
+        (None, None, None)
+    }
+}
+
+/// Send current pool info as an SSE event.
+async fn send_pool_info(
+    sender: &Sender<Result<SseEvent, Infallible>>,
+    chain_state: &RwLock<State>,
+    pool_hash: &[u8],
+) {
+    let guard = chain_state.read().await;
+    if let Some(snap) = guard.current() {
+        if let Some(pool) = snap.pools.get(&hex::encode(pool_hash)) {
+            let _ = sender.send(pool_sse_event(pool, Some(snap))).await;
+        }
+    }
+}
+
+/// Build the live stream that detects pool parameter/stake changes and filters events.
+fn build_live_stream(
+    rx: tokio::sync::broadcast::Receiver<crate::event::Event>,
+    filter: filter::FeedFilter,
+    chain_state: Arc<RwLock<State>>,
+    last_pool: Option<Pool>,
+    last_live_stake: Option<i64>,
+) -> impl Stream<Item = Result<SseEvent, Infallible>> {
+    futures::stream::unfold(
         (
             BroadcastStream::new(rx),
             filter,
@@ -371,14 +331,12 @@ async fn filtered_events(
         ),
         |(mut rx, filter, chain_state, mut last_pool, mut last_live_stake, mut buf)| async move {
             loop {
-                // Drain buffered events first (pool update events).
                 if let Some(sse) = buf.pop_front() {
                     return Some((sse, (rx, filter, chain_state, last_pool, last_live_stake, buf)));
                 }
 
                 let event = rx.next().await?.ok()?;
 
-                // After Block or Rollback, check if pool params or live stake changed.
                 if let filter::FeedFilter::Pool(ref hash) = filter {
                     if matches!(
                         event,
@@ -419,8 +377,98 @@ async fn filtered_events(
                 }
             }
         },
-    );
+    )
+}
 
+// --- SSE endpoints ---
+
+async fn events(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    let (snapshot, rx) = state.bus.subscribe().await;
+
+    let config = Some(config_event(state.nftcdn.subdomain, &state.genesis));
+
+    let init = if snapshot.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&snapshot)
+            .ok()
+            .map(|json| Ok(SseEvent::default().data(json)))
+    };
+    let replay = futures::stream::iter(config.into_iter().chain(init));
+    let live = BroadcastStream::new(rx).filter_map(|result| result.ok().and_then(serialize_event));
+    let stream = replay.chain(live);
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+async fn filtered_events(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(feed_id): axum::extract::Path<String>,
+) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, StatusCode> {
+    info!("/events/{feed_id}");
+    let filter = filter::FeedFilter::from_path(&feed_id).ok_or(StatusCode::BAD_REQUEST)?;
+    let (snapshot, rx) = state.bus.subscribe().await;
+
+    let (delegators, pool_id, pool_ticker, pool_hash) = {
+        let guard = state.chain_state.read().await;
+        let delegators = guard
+            .current()
+            .and_then(|snap| filter.delegators(snap))
+            .cloned()
+            .unwrap_or_default();
+        let (pool_id, pool_ticker, pool_hash) = extract_pool_meta(guard.current(), &filter);
+        (delegators, pool_id, pool_ticker, pool_hash)
+    };
+
+    // Spawn replay task: config → pool info → history blocks → snapshot
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<SseEvent, Infallible>>(32);
+    let replay_filter = filter.clone();
+    let replay_delegators = delegators.clone();
+    let replay_state = state.clone();
+
+    tokio::spawn(async move {
+        let _ = sender
+            .send(config_event(replay_state.nftcdn.subdomain, &replay_state.genesis))
+            .await;
+
+        let exclude_slots = if let Some(ref ph) = pool_hash {
+            let block_points = {
+                let guard = replay_state.chain_state.read().await;
+                guard.pool_recent_blocks(ph, 20).await
+            };
+            send_pool_info(&sender, &replay_state.chain_state, ph).await;
+
+            let slots: HashSet<u64> = block_points.iter().map(|(s, _, _)| *s).collect();
+            send_pool_history(
+                &sender, &block_points, &pool_id, &pool_ticker,
+                &replay_state.nftcdn, &replay_state.genesis, &replay_state.chain_state,
+                replay_state.n2n_addr, replay_state.magic,
+            )
+            .await;
+            slots
+        } else {
+            HashSet::new()
+        };
+
+        send_filtered_snapshot(&sender, snapshot, &replay_filter, &replay_delegators, &exclude_slots).await;
+    });
+
+    // Build live stream with pool change detection
+    let chain_state = state.chain_state.clone();
+    let (last_pool, last_live_stake) = if let filter::FeedFilter::Pool(ref hash) = filter {
+        let guard = state.chain_state.read().await;
+        let snap = guard.current();
+        let pool = snap.and_then(|s| s.pools.get(&hex::encode(hash)).cloned());
+        let live_stake = snap.and_then(|s| State::pool_live_stake(s, hash));
+        (pool, live_stake)
+    } else {
+        (None, None)
+    };
+
+    let replay = tokio_stream::wrappers::ReceiverStream::new(receiver);
+    let live = build_live_stream(rx, filter, chain_state, last_pool, last_live_stake);
     let stream = replay.chain(live);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
