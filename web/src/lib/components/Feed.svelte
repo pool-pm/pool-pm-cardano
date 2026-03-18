@@ -17,8 +17,10 @@
   const BLOCK_INSET = (BLOCK_PADDING + BLOCK_BORDER) * 2;
 
   let feedEl: HTMLDivElement;
+  let poolHeaderEl: HTMLDivElement | undefined;
   let feedWidth = $state(0);
   let feedHeight = $state(0);
+  let poolHeaderHeight = $state(0);
   let landscape = $state(false);
   let actualGridWidths = $state<Record<string, number>>({});
 
@@ -42,7 +44,7 @@
   });
 
   // Available height for tx columns in landscape mode
-  let txAreaHeight = $derived(feedHeight - BLOCK_INSET - 40);
+  let txAreaHeight = $derived(feedHeight - BLOCK_INSET - 40 - poolHeaderHeight);
 
   function colsNeeded(heights: number[], gap: number, maxH: number): number {
     let cols = 1, h = 0;
@@ -137,7 +139,7 @@
       if (i > 0) {
         const prev = sects[i - 1].block?.timestamp ?? now / 1000;
         const delta = section.block ? Math.max(0, prev - section.block.timestamp) : 0;
-        spacing = Math.round(pxPerSecond * delta);
+        spacing = Math.max(2, Math.round(pxPerSecond * delta));
         pos += spacing;
       }
       positions.set(section.id, { pos, spacing });
@@ -174,6 +176,11 @@
       feedHeight = entries[0]?.contentRect.height ?? 0;
     });
     feedObserver.observe(feedEl);
+
+    if (poolHeaderEl) {
+      const style = getComputedStyle(poolHeaderEl);
+      poolHeaderHeight = poolHeaderEl.offsetHeight + parseFloat(style.marginBottom);
+    }
 
     sectionObserver = new ResizeObserver(scheduleMeasure);
     for (const el of sectionRefs.values()) sectionObserver.observe(el);
@@ -285,7 +292,7 @@
   style:--flip-duration="{FLIP_DURATION}ms"
 >
   {#if $pool}
-    <div class="pool-header" style:border-color={poolColor($pool.pool_id)}>
+    <div class="pool-header" bind:this={poolHeaderEl} style:border-color={poolColor($pool.pool_id)}>
       <span class="pool-ticker">{formatTicker($pool.ticker ?? $pool.pool_id.slice(5, 10))}</span>
       {#if $pool.live_stake}
         <span class="pool-stat">{formatAda($pool.live_stake)} stake</span>
@@ -407,6 +414,8 @@
   .landscape .pool-header {
     direction: ltr;
     margin-bottom: 16px;
+    position: sticky;
+    right: 0;
   }
 
   .pool-ticker {

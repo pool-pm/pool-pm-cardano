@@ -256,21 +256,22 @@ impl DbSync {
         };
 
         let rows = sqlx::query!(
-            r#"SELECT slot_no AS "slot!", hash, block_no AS "block_no!"
-            FROM block
-            WHERE slot_leader_id = $1"#,
+            r#"WITH pool_blocks AS MATERIALIZED (
+                SELECT id, slot_no, hash, block_no
+                FROM block WHERE slot_leader_id = $1
+            )
+            SELECT slot_no AS "slot!", hash, block_no AS "block_no!"
+            FROM pool_blocks ORDER BY id DESC LIMIT $2"#,
             leader_id,
+            limit
         )
         .fetch_all(&self.db)
         .await?;
 
-        let mut result: Vec<_> = rows
+        Ok(rows
             .into_iter()
             .map(|r| (r.slot as u64, hex::encode(r.hash), r.block_no as u64))
-            .collect();
-        result.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-        result.truncate(limit as usize);
-        Ok(result)
+            .collect())
     }
 
     pub async fn drep_delegations(
