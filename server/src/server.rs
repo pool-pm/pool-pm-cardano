@@ -34,6 +34,7 @@ struct AppState {
     genesis: GenesisConfig,
     n2n_addr: SocketAddr,
     magic: u64,
+    mainnet: bool,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -86,6 +87,14 @@ fn serialize_event(event: crate::event::Event) -> Option<Result<SseEvent, Infall
     serde_json::to_string(&event)
         .ok()
         .map(|json| Ok(SseEvent::default().data(json)))
+}
+
+fn stake_changes_event(changes: &[(String, i64)]) -> Result<SseEvent, Infallible> {
+    let entries: Vec<String> = changes
+        .iter()
+        .map(|(addr, net)| format!(r#"{{"stake_address":"{}","net_change":"{}"}}"#, addr, net))
+        .collect();
+    Ok(SseEvent::default().data(format!(r#"{{"type":"StakeChanges","changes":[{}]}}"#, entries.join(","))))
 }
 
 // --- Block decoding ---
@@ -447,6 +456,26 @@ async fn filtered_events(
                 replay_state.n2n_addr, replay_state.magic,
             )
             .await;
+
+            // Send top stake changes over the last epoch
+            let boundary_slot = {
+                let guard = replay_state.chain_state.read().await;
+                guard.current().map(|s| s.slot).unwrap_or(0)
+            }
+            .saturating_sub(replay_state.genesis.shelley_epoch_length as u64);
+            let stake_header: u8 = if replay_state.mainnet { 0xe1 } else { 0xe0 };
+            let delegator_hash_raws: Vec<Vec<u8>> = replay_delegators
+                .iter()
+                .map(|cred| [&[stake_header][..], cred].concat())
+                .collect();
+            let changes = {
+                let guard = replay_state.chain_state.read().await;
+                guard.pool_stake_changes(boundary_slot, &delegator_hash_raws, 30).await
+            };
+            if !changes.is_empty() {
+                let _ = sender.send(stake_changes_event(&changes)).await;
+            }
+
             slots
         } else {
             HashSet::new()
@@ -481,6 +510,7 @@ pub async fn serve(
     genesis: GenesisConfig,
     n2n_addr: SocketAddr,
     magic: u64,
+    mainnet: bool,
 ) {
     let state = AppState {
         bus,
@@ -489,6 +519,7 @@ pub async fn serve(
         genesis,
         n2n_addr,
         magic,
+        mainnet,
     };
     let app = Router::new()
         .route("/events", get(events))

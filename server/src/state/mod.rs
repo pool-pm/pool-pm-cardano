@@ -305,6 +305,26 @@ impl State {
         }
     }
 
+    /// Fetch net stake changes per delegator over a recent window.
+    pub async fn pool_stake_changes(
+        &self,
+        boundary_slot: u64,
+        delegator_hash_raws: &[Vec<u8>],
+        limit: i64,
+    ) -> Vec<(String, i64)> {
+        let db = match self.db().await {
+            Some(db) => db,
+            None => return vec![],
+        };
+        let (boundary_tx_id, _) = match db.slot_info(boundary_slot).await {
+            Ok(info) => info,
+            Err(_) => return vec![],
+        };
+        db.pool_stake_changes(boundary_tx_id, delegator_hash_raws, limit)
+            .await
+            .unwrap_or_default()
+    }
+
     /// Rollback to the given slot: drop all snapshots after it.
     /// Returns false if history is empty after truncation (snapshot was too old).
     pub fn rollback(&mut self, slot: u64) -> bool {

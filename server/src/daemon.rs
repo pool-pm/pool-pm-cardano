@@ -179,6 +179,7 @@ pub fn run(args: Args) -> Result<(), Error> {
             genesis_config,
             args.n2n,
             args.network.magic(),
+            mainnet,
         ));
     }
 

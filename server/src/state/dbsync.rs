@@ -329,4 +329,52 @@ impl DbSync {
 
         Ok((delegations, delegators))
     }
+
+    /// Net UTXO stake change per delegator over a recent window.
+    /// Returns (stake_address_view, net_change_lovelace) sorted by |net_change| desc.
+    pub async fn pool_stake_changes(
+        &self,
+        boundary_tx_id: i64,
+        delegator_hash_raws: &[Vec<u8>],
+        limit: i64,
+    ) -> Result<Vec<(String, i64)>, sqlx::Error> {
+        if delegator_hash_raws.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let rows = sqlx::query!(
+            r#"WITH delegators AS (
+                SELECT id FROM stake_address WHERE hash_raw = ANY($1::bytea[])
+            ),
+            created AS (
+                SELECT stake_address_id, SUM(value)::bigint AS total
+                FROM tx_out
+                WHERE tx_id > $2 AND stake_address_id IN (SELECT id FROM delegators)
+                GROUP BY stake_address_id
+            ),
+            consumed AS (
+                SELECT stake_address_id, SUM(value)::bigint AS total
+                FROM tx_out
+                WHERE consumed_by_tx_id > $2
+                  AND stake_address_id IN (SELECT id FROM delegators)
+                GROUP BY stake_address_id
+            )
+            SELECT sa.view AS "stake_address!: String",
+                   (COALESCE(c.total, 0::bigint) - COALESCE(x.total, 0::bigint)) AS "net_change!: i64"
+            FROM (SELECT stake_address_id FROM created UNION SELECT stake_address_id FROM consumed) a
+            JOIN stake_address sa ON sa.id = a.stake_address_id
+            LEFT JOIN created c ON c.stake_address_id = a.stake_address_id
+            LEFT JOIN consumed x ON x.stake_address_id = a.stake_address_id
+            WHERE COALESCE(c.total, 0::bigint) != COALESCE(x.total, 0::bigint)
+            ORDER BY ABS(COALESCE(c.total, 0::bigint) - COALESCE(x.total, 0::bigint)) DESC
+            LIMIT $3"#,
+            delegator_hash_raws as &[Vec<u8>],
+            boundary_tx_id,
+            limit,
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| (r.stake_address, r.net_change)).collect())
+    }
 }
