@@ -330,51 +330,63 @@ impl DbSync {
         Ok((delegations, delegators))
     }
 
-    /// Net UTXO stake change per delegator over a recent window.
-    /// Returns (stake_address_view, net_change_lovelace) sorted by |net_change| desc.
-    pub async fn pool_stake_changes(
+    /// Find blocks containing the largest outputs to pool delegators in a window.
+    /// Returns (slot, block_hash_hex, block_no, pool_hash_raw, pool_ticker) ordered
+    /// by largest output value, deduplicated by block.
+    pub async fn pool_stake_change_blocks(
         &self,
         boundary_tx_id: i64,
         delegator_hash_raws: &[Vec<u8>],
         limit: i64,
-    ) -> Result<Vec<(String, i64)>, sqlx::Error> {
+    ) -> Result<Vec<(u64, String, u64, Option<Vec<u8>>, Option<String>)>, sqlx::Error> {
         if delegator_hash_raws.is_empty() {
             return Ok(vec![]);
         }
 
+        // Find the top outputs to pool delegators, then get their distinct blocks.
+        // Two-step: first find top output tx_ids, then get block info.
         let rows = sqlx::query!(
-            r#"WITH delegators AS (
-                SELECT id FROM stake_address WHERE hash_raw = ANY($1::bytea[])
-            ),
-            created AS (
-                SELECT stake_address_id, SUM(value)::bigint AS total
+            r#"WITH top_txs AS (
+                SELECT DISTINCT ON (tx.block_id)
+                    tx.block_id, tx_out.value
                 FROM tx_out
-                WHERE tx_id > $2 AND stake_address_id IN (SELECT id FROM delegators)
-                GROUP BY stake_address_id
-            ),
-            consumed AS (
-                SELECT stake_address_id, SUM(value)::bigint AS total
-                FROM tx_out
-                WHERE consumed_by_tx_id > $2
-                  AND stake_address_id IN (SELECT id FROM delegators)
-                GROUP BY stake_address_id
+                JOIN tx ON tx.id = tx_out.tx_id
+                WHERE tx_out.tx_id > $1
+                  AND tx_out.stake_address_id IN (
+                      SELECT id FROM stake_address WHERE hash_raw = ANY($2::bytea[])
+                  )
+                ORDER BY tx.block_id, tx_out.value DESC
             )
-            SELECT sa.view AS "stake_address!: String",
-                   (COALESCE(c.total, 0::bigint) - COALESCE(x.total, 0::bigint)) AS "net_change!: i64"
-            FROM (SELECT stake_address_id FROM created UNION SELECT stake_address_id FROM consumed) a
-            JOIN stake_address sa ON sa.id = a.stake_address_id
-            LEFT JOIN created c ON c.stake_address_id = a.stake_address_id
-            LEFT JOIN consumed x ON x.stake_address_id = a.stake_address_id
-            WHERE COALESCE(c.total, 0::bigint) != COALESCE(x.total, 0::bigint)
-            ORDER BY ABS(COALESCE(c.total, 0::bigint) - COALESCE(x.total, 0::bigint)) DESC
+            SELECT b.slot_no AS "slot!",
+                   encode(b.hash, 'hex') AS "hash!",
+                   b.block_no AS "block_no!",
+                   ph.hash_raw AS "pool_hash?",
+                   (SELECT ticker_name FROM off_chain_pool_data opd
+                    WHERE opd.pool_id = ph.id ORDER BY opd.id DESC LIMIT 1) AS pool_ticker
+            FROM top_txs t
+            JOIN block b ON b.id = t.block_id
+            JOIN slot_leader sl ON sl.id = b.slot_leader_id
+            LEFT JOIN pool_hash ph ON ph.id = sl.pool_hash_id
+            ORDER BY t.value DESC
             LIMIT $3"#,
-            delegator_hash_raws as &[Vec<u8>],
             boundary_tx_id,
+            delegator_hash_raws as &[Vec<u8>],
             limit,
         )
         .fetch_all(&self.db)
         .await?;
 
-        Ok(rows.into_iter().map(|r| (r.stake_address, r.net_change)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.slot as u64,
+                    r.hash,
+                    r.block_no as u64,
+                    r.pool_hash,
+                    r.pool_ticker,
+                )
+            })
+            .collect())
     }
 }

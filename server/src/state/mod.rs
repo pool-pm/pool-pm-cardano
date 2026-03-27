@@ -305,13 +305,14 @@ impl State {
         }
     }
 
-    /// Fetch net stake changes per delegator over a recent window.
-    pub async fn pool_stake_changes(
+    /// Find blocks containing the largest outputs to pool delegators in a window.
+    /// Returns (slot, hash_hex, block_no, pool_hash_raw, pool_ticker).
+    pub async fn pool_stake_change_blocks(
         &self,
         boundary_slot: u64,
         delegator_hash_raws: &[Vec<u8>],
         limit: i64,
-    ) -> Vec<(String, i64)> {
+    ) -> Vec<(u64, String, u64, Option<Vec<u8>>, Option<String>)> {
         let db = match self.db().await {
             Some(db) => db,
             None => return vec![],
@@ -320,7 +321,7 @@ impl State {
             Ok(info) => info,
             Err(_) => return vec![],
         };
-        db.pool_stake_changes(boundary_tx_id, delegator_hash_raws, limit)
+        db.pool_stake_change_blocks(boundary_tx_id, delegator_hash_raws, limit)
             .await
             .unwrap_or_default()
     }
