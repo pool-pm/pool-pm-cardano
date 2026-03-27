@@ -60,14 +60,19 @@
       const total = heights.reduce((s, h) => s + h, 0) + Math.max(0, items.length - 1) * gap;
 
       // Number of columns needed, and target height for balanced distribution
+      const sumH = heights.reduce((s, h) => s + h, 0);
       const numCols = total <= availableHeight ? 1 : Math.ceil(total / availableHeight);
-      const targetH = total / numCols;
+      // Account for gaps being split across columns (each column has items-1 gaps)
+      const targetH = (sumH + Math.max(0, items.length - numCols) * gap) / numCols;
 
-      // Assign items to columns, wrapping when reaching the balanced target height
+      // Assign items to columns, wrapping BEFORE an item that would exceed target
       const cols: { idx: number; h: number }[][] = [[]];
       let colH = 0;
       for (let i = 0; i < items.length; i++) {
-        if (colH > 0 && colH >= targetH && cols.length < numCols) {
+        const wouldBe = colH + (colH > 0 ? gap : 0) + heights[i];
+        const remaining = items.length - i;
+        const colsLeft = numCols - cols.length;
+        if (colH > 0 && wouldBe > targetH && remaining >= colsLeft && cols.length < numCols) {
           cols.push([]);
           colH = 0;
         }
