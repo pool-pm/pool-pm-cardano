@@ -4,7 +4,7 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::event::{BlockTx, Event};
 
-const MAX_BLOCKS: usize = 16;
+const MAX_BLOCKS: usize = 30;
 
 struct Inner {
     tx: broadcast::Sender<Event>,
