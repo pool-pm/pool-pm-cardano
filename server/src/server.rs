@@ -532,7 +532,7 @@ async fn filtered_events(
             let stake_blocks: Vec<_> = {
                 let guard = replay_state.chain_state.read().await;
                 guard
-                    .pool_stake_change_blocks(boundary_slot, &delegator_hash_raws, 15)
+                    .pool_stake_change_blocks(boundary_slot, &delegator_hash_raws, 30)
                     .await
             }
             .into_iter()
