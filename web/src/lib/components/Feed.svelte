@@ -45,6 +45,19 @@
   // Available height for tx columns in landscape mode
   let txAreaHeight = $derived(feedHeight - BLOCK_INSET - 40 - poolHeaderHeight);
 
+  function colsForMaxH(heights: number[], gap: number, maxH: number): number {
+    let cols = 1, h = 0;
+    for (const itemH of heights) {
+      if (h > 0 && h + gap + itemH > maxH) {
+        cols++;
+        h = itemH;
+      } else {
+        h += (h > 0 ? gap : 0) + itemH;
+      }
+    }
+    return cols;
+  }
+
   function balanceColumns(node: HTMLElement, availableHeight: number) {
     const gap = TX_GAP;
 
@@ -59,20 +72,23 @@
       const heights = items.map((el) => el.offsetHeight);
       const total = heights.reduce((s, h) => s + h, 0) + Math.max(0, items.length - 1) * gap;
 
-      // Number of columns needed, and target height for balanced distribution
-      const sumH = heights.reduce((s, h) => s + h, 0);
+      // Binary search for the minimum max-column-height that fits within
+      // the target number of columns. This produces optimally balanced columns.
       const numCols = total <= availableHeight ? 1 : Math.ceil(total / availableHeight);
-      // Account for gaps being split across columns (each column has items-1 gaps)
-      const targetH = (sumH + Math.max(0, items.length - numCols) * gap) / numCols;
+      let lo = Math.max(...heights);
+      let hi = total;
+      while (hi - lo > 1) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (colsForMaxH(heights, gap, mid) <= numCols) hi = mid;
+        else lo = mid;
+      }
+      const maxH = hi;
 
-      // Assign items to columns, wrapping BEFORE an item that would exceed target
+      // Greedy column assignment using the balanced maxH
       const cols: { idx: number; h: number }[][] = [[]];
       let colH = 0;
       for (let i = 0; i < items.length; i++) {
-        const wouldBe = colH + (colH > 0 ? gap : 0) + heights[i];
-        const remaining = items.length - i;
-        const colsLeft = numCols - cols.length;
-        if (colH > 0 && wouldBe > targetH && remaining >= colsLeft && cols.length < numCols) {
+        if (colH > 0 && colH + gap + heights[i] > maxH) {
           cols.push([]);
           colH = 0;
         }
