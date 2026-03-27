@@ -3,8 +3,7 @@
   import { slide } from 'svelte/transition';
   import { sections, config, pool } from '../stores';
   import type { GenesisConfig, Section } from '../types';
-  import { TX_WIDTH, TX_GAP, FLIP_DURATION, poolColor, formatTicker } from '../layout';
-  import BinPackGrid from './BinPackGrid.svelte';
+  import { TX_WIDTH, TX_GAP, FLIP_DURATION, poolColor, formatTicker, layoutGrid } from '../layout';
   import Transaction from './Transaction.svelte';
 
   const MAX_BLOCKS = 30;
@@ -48,101 +47,6 @@
 
   // Available height for tx columns in landscape mode
   let txAreaHeight = $derived(feedHeight - BLOCK_INSET - 40 - poolHeaderHeight - LANDSCAPE_MARGIN);
-
-  function colsForMaxH(heights: number[], gap: number, maxH: number): number {
-    let cols = 1, h = 0;
-    for (const itemH of heights) {
-      if (h > 0 && h + gap + itemH > maxH) {
-        cols++;
-        h = itemH;
-      } else {
-        h += (h > 0 ? gap : 0) + itemH;
-      }
-    }
-    return cols;
-  }
-
-  function balanceColumns(node: HTMLElement, availableHeight: number) {
-    const gap = TX_GAP;
-
-    function rebalance() {
-      const items = Array.from(node.children) as HTMLElement[];
-      if (items.length === 0) {
-        node.style.width = '';
-        node.style.height = '';
-        return;
-      }
-
-      const heights = items.map((el) => el.offsetHeight);
-      const total = heights.reduce((s, h) => s + h, 0) + Math.max(0, items.length - 1) * gap;
-
-      // Binary search for the minimum max-column-height that fits within
-      // the target number of columns. This produces optimally balanced columns.
-      const numCols = total <= availableHeight ? 1 : Math.ceil(total / availableHeight);
-      let lo = Math.max(...heights);
-      let hi = total;
-      while (hi - lo > 1) {
-        const mid = Math.floor((lo + hi) / 2);
-        if (colsForMaxH(heights, gap, mid) <= numCols) hi = mid;
-        else lo = mid;
-      }
-      const maxH = hi;
-
-      // Greedy column assignment using the balanced maxH
-      const cols: { idx: number; h: number }[][] = [[]];
-      let colH = 0;
-      for (let i = 0; i < items.length; i++) {
-        if (colH > 0 && colH + gap + heights[i] > maxH) {
-          cols.push([]);
-          colH = 0;
-        }
-        cols[cols.length - 1].push({ idx: i, h: heights[i] });
-        colH += (colH > 0 ? gap : 0) + heights[i];
-      }
-
-      // Compute grid dimensions
-      const gridWidth = cols.length * TX_WIDTH + Math.max(0, cols.length - 1) * gap;
-      let gridHeight = 0;
-      for (const col of cols) {
-        const ch = col.reduce((s, it) => s + it.h, 0) + Math.max(0, col.length - 1) * gap;
-        gridHeight = Math.max(gridHeight, ch);
-      }
-
-      // Position items absolutely, bottom-aligned per column
-      for (let ci = 0; ci < cols.length; ci++) {
-        const col = cols[ci];
-        const colTotal = col.reduce((s, it) => s + it.h, 0) + Math.max(0, col.length - 1) * gap;
-        const x = ci * (TX_WIDTH + gap);
-        let y = gridHeight - colTotal; // bottom-align
-        for (const { idx, h } of col) {
-          items[idx].style.transform = `translate(${x}px, ${y}px)`;
-          y += h + gap;
-        }
-      }
-
-      node.style.width = `${gridWidth}px`;
-      node.style.height = `${gridHeight}px`;
-    }
-
-    const mutObs = new MutationObserver(() => requestAnimationFrame(rebalance));
-    mutObs.observe(node, { childList: true });
-
-    const onRemeasure = () => requestAnimationFrame(rebalance);
-    node.addEventListener('remeasure', onRemeasure);
-
-    requestAnimationFrame(rebalance);
-
-    return {
-      update(newAvailableHeight: number) {
-        availableHeight = newAvailableHeight;
-        rebalance();
-      },
-      destroy() {
-        mutObs.disconnect();
-        node.removeEventListener('remeasure', onRemeasure);
-      },
-    };
-  }
 
   function trackSection(node: HTMLElement, id: string) {
     sectionRefs.set(id, node);
@@ -276,13 +180,11 @@
     untrack(scheduleMeasure);
   });
 
-  // After feed resizes (e.g. orientation change), balanceColumns rewraps columns via its
-  // update() method, which changes section widths. Schedule a deferred re-measure so
-  // positions reflect the new widths after the browser has laid out the rewrapped columns.
+  // After feed resizes (e.g. orientation change), layoutGrid rewraps and changes section
+  // widths. Schedule a deferred re-measure so positions reflect the new widths.
   $effect(() => {
     feedHeight;
     feedWidth;
-    if (!landscape) return;
     untrack(() => {
       requestAnimationFrame(() => scheduleMeasure());
     });
@@ -294,7 +196,6 @@
     if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
     return `${Math.floor(sec / 3600)}h ago`;
   }
-
 
   function formatAda(lovelace: string): string {
     const padded = lovelace.padStart(7, '0');
@@ -310,7 +211,6 @@
     return trimmed ? '0.' + trimmed + ' ADA' : '0 ADA';
   }
 
-
   function formatMargin(m: number): string {
     return (m * 100).toFixed(2).replace(/\.?0+$/, '') + '%';
   }
@@ -323,7 +223,9 @@
     const nowSec = Math.floor(now / 1000);
     const slot =
       genesis.shelley_known_slot + Math.floor((nowSec - genesis.shelley_known_time) / genesis.shelley_slot_length);
-    const shelleyStartEpoch = Math.floor(genesis.shelley_known_slot * genesis.byron_slot_length / genesis.byron_epoch_length);
+    const shelleyStartEpoch = Math.floor(
+      (genesis.shelley_known_slot * genesis.byron_slot_length) / genesis.byron_epoch_length,
+    );
     const epochsSince = Math.floor((slot - genesis.shelley_known_slot) / genesis.shelley_epoch_length);
     const epoch = shelleyStartEpoch + epochsSince;
     const epochEndSlot = genesis.shelley_known_slot + (epochsSince + 1) * genesis.shelley_epoch_length;
@@ -363,10 +265,7 @@
       <span class="pool-stat">{formatAda($pool.fixed_cost)} fixed cost</span>
     </div>
   {/if}
-  <div
-    class="canvas"
-    style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}
-  >
+  <div class="canvas" style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}>
     {#each $sections as section, i (section.id)}
       {@const isMempool = !section.block}
       {@const color = section.block ? poolColor(section.block.pool_id) : '#444'}
@@ -403,27 +302,16 @@
         </div>
 
         {#if section.txs.length > 0}
-          {#if landscape}
-            <div class="column-grid" use:balanceColumns={txAreaHeight}>
-              {#each section.txs as tx (tx.hash)}
-                <div class="column-grid-item">
-                  <Transaction {tx} />
-                </div>
-              {/each}
-            </div>
-          {:else}
-            <BinPackGrid
-              items={section.txs}
-              key={(tx) => tx.hash}
-              itemWidth={TX_WIDTH}
-              gap={TX_GAP}
-              availableWidth={feedWidth - BLOCK_INSET}
-            >
-              {#snippet children(tx)}
+          <div
+            class="tx-grid"
+            use:layoutGrid={{ landscape, availableWidth: feedWidth - BLOCK_INSET, availableHeight: txAreaHeight }}
+          >
+            {#each section.txs as tx (tx.hash)}
+              <div class="tx-grid-item">
                 <Transaction {tx} />
-              {/snippet}
-            </BinPackGrid>
-          {/if}
+              </div>
+            {/each}
+          </div>
         {/if}
 
         {#if isMempool && $config?.genesis}
@@ -586,11 +474,12 @@
     text-decoration: none;
   }
 
-  .column-grid {
+  .tx-grid {
     position: relative;
+    overflow: hidden;
   }
 
-  .column-grid-item {
+  .tx-grid-item {
     position: absolute;
     width: 108px;
     transition: transform var(--flip-duration) ease;
