@@ -114,7 +114,7 @@ impl FeedFilter {
     }
 }
 
-fn stake_credential(addr: &str) -> Option<Vec<u8>> {
+pub fn stake_credential(addr: &str) -> Option<Vec<u8>> {
     let addr = Address::from_bech32(addr).ok()?;
     match addr {
         Address::Shelley(shelley) => match shelley.delegation() {

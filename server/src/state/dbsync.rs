@@ -330,9 +330,9 @@ impl DbSync {
         Ok((delegations, delegators))
     }
 
-    /// Find blocks containing the largest outputs to pool delegators in a window.
-    /// Returns (slot, block_hash_hex, block_no, pool_hash_raw, pool_ticker) ordered
-    /// by largest output value, deduplicated by block.
+    /// Find blocks with the largest net stake changes for pool delegators.
+    /// Computes per-tx net change (outputs to pool minus inputs from pool)
+    /// and returns blocks ordered by the largest absolute change.
     pub async fn pool_stake_change_blocks(
         &self,
         boundary_tx_id: i64,
@@ -343,31 +343,50 @@ impl DbSync {
             return Ok(vec![]);
         }
 
-        // Find the top outputs to pool delegators, then get their distinct blocks.
-        // Two-step: first find top output tx_ids, then get block info.
         let rows = sqlx::query!(
-            r#"WITH top_txs AS (
-                SELECT DISTINCT ON (tx.block_id)
-                    tx.block_id, tx_out.value
+            r#"WITH delegators AS (
+                SELECT id FROM stake_address WHERE hash_raw = ANY($2::bytea[])
+            ),
+            tx_pool_out AS (
+                SELECT tx_out.tx_id, SUM(tx_out.value)::bigint AS total
                 FROM tx_out
-                JOIN tx ON tx.id = tx_out.tx_id
                 WHERE tx_out.tx_id > $1
-                  AND tx_out.stake_address_id IN (
-                      SELECT id FROM stake_address WHERE hash_raw = ANY($2::bytea[])
-                  )
-                ORDER BY tx.block_id, tx_out.value DESC
+                  AND tx_out.stake_address_id IN (SELECT id FROM delegators)
+                GROUP BY tx_out.tx_id
+            ),
+            tx_pool_in AS (
+                SELECT tx_out.consumed_by_tx_id AS tx_id, SUM(tx_out.value)::bigint AS total
+                FROM tx_out
+                WHERE tx_out.consumed_by_tx_id > $1
+                  AND tx_out.consumed_by_tx_id IS NOT NULL
+                  AND tx_out.stake_address_id IN (SELECT id FROM delegators)
+                GROUP BY tx_out.consumed_by_tx_id
+            ),
+            tx_net AS (
+                SELECT COALESCE(o.tx_id, i.tx_id) AS tx_id,
+                       ABS(COALESCE(o.total, 0::bigint) - COALESCE(i.total, 0::bigint)) AS abs_change
+                FROM tx_pool_out o
+                FULL JOIN tx_pool_in i ON o.tx_id = i.tx_id
+                WHERE COALESCE(o.total, 0::bigint) != COALESCE(i.total, 0::bigint)
+            ),
+            top_blocks AS (
+                SELECT DISTINCT ON (b.slot_no)
+                    b.slot_no, b.hash, b.block_no, b.slot_leader_id, tn.abs_change
+                FROM tx_net tn
+                JOIN tx ON tx.id = tn.tx_id
+                JOIN block b ON b.id = tx.block_id
+                ORDER BY b.slot_no, tn.abs_change DESC
             )
-            SELECT b.slot_no AS "slot!",
-                   encode(b.hash, 'hex') AS "hash!",
-                   b.block_no AS "block_no!",
+            SELECT tb.slot_no AS "slot!",
+                   encode(tb.hash, 'hex') AS "hash!",
+                   tb.block_no AS "block_no!",
                    ph.hash_raw AS "pool_hash?",
                    (SELECT ticker_name FROM off_chain_pool_data opd
                     WHERE opd.pool_id = ph.id ORDER BY opd.id DESC LIMIT 1) AS pool_ticker
-            FROM top_txs t
-            JOIN block b ON b.id = t.block_id
-            JOIN slot_leader sl ON sl.id = b.slot_leader_id
+            FROM top_blocks tb
+            JOIN slot_leader sl ON sl.id = tb.slot_leader_id
             LEFT JOIN pool_hash ph ON ph.id = sl.pool_hash_id
-            ORDER BY t.value DESC
+            ORDER BY tb.abs_change DESC
             LIMIT $3"#,
             boundary_tx_id,
             delegator_hash_raws as &[Vec<u8>],

@@ -114,6 +114,7 @@ pub async fn extract_tx(
         outputs,
         expiry,
         delegations,
+        stake_change: None,
         stake_credentials: Vec::new(),
     };
     block_tx.stake_credentials = filter::extract_stake_credentials(&block_tx);

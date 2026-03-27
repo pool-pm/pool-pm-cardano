@@ -166,6 +166,7 @@ fn decode_block_txs(cbor: &[u8], nftcdn: &NftcdnConfig) -> Vec<BlockTx> {
                 outputs,
                 expiry: None,
                 delegations: vec![],
+                stake_change: None,
                 stake_credentials: vec![],
             }
         })
@@ -256,14 +257,23 @@ async fn send_replay_blocks(
                         tx.stake_credentials = filter::extract_stake_credentials(tx);
                     }
                     txs.into_iter()
-                        .filter(|tx| {
-                            // Must involve pool delegators
-                            let has_pool = tx.stake_credentials.iter().any(|c| delegators.contains(c));
-                            // Must also involve external addresses (otherwise it's internal
-                            // movement that doesn't change the pool's total stake)
-                            let has_external = tx.stake_credentials.iter().any(|c| !delegators.contains(c))
-                                || tx.inputs.iter().any(|i| i.address.is_none());
-                            has_pool && has_external
+                        .filter_map(|mut tx| {
+                            // Compute net stake change: outputs to pool minus inputs from pool
+                            let out_to_pool: i64 = tx.outputs.iter()
+                                .filter(|o| filter::stake_credential(&o.address)
+                                    .map(|c| delegators.contains(&c)).unwrap_or(false))
+                                .map(|o| o.lovelace as i64)
+                                .sum();
+                            let in_from_pool: i64 = tx.inputs.iter()
+                                .filter(|i| i.address.as_ref()
+                                    .and_then(|a| filter::stake_credential(a))
+                                    .map(|c| delegators.contains(&c)).unwrap_or(false))
+                                .map(|i| i.lovelace as i64)
+                                .sum();
+                            let net = out_to_pool - in_from_pool;
+                            if net == 0 { return None; }
+                            tx.stake_change = Some(net);
+                            Some(tx)
                         })
                         .collect()
                 } else {

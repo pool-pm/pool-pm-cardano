@@ -16,6 +16,17 @@ mod string_i64 {
     }
 }
 
+mod opt_string_i64 {
+    use serde::Serializer;
+
+    pub fn serialize<S: Serializer>(value: &Option<i64>, serializer: S) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(v) => serializer.serialize_str(&v.to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 pub struct BlockTx {
     pub hash: String,
@@ -28,6 +39,11 @@ pub struct BlockTx {
     pub expiry: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub delegations: Vec<DelegationInfo>,
+    /// Net stake change in lovelace for pool feed stake-change blocks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    #[serde(with = "opt_string_i64")]
+    pub stake_change: Option<i64>,
     /// Pre-extracted stake credentials from input/output addresses.
     #[serde(skip)]
     pub stake_credentials: Vec<Vec<u8>>,
