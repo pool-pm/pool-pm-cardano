@@ -45,19 +45,6 @@
   // Available height for tx columns in landscape mode
   let txAreaHeight = $derived(feedHeight - BLOCK_INSET - 40 - poolHeaderHeight);
 
-  function colsNeeded(heights: number[], gap: number, maxH: number): number {
-    let cols = 1, h = 0;
-    for (const itemH of heights) {
-      if (h > 0 && h + gap + itemH > maxH) {
-        cols++;
-        h = itemH;
-      } else {
-        h += (h > 0 ? gap : 0) + itemH;
-      }
-    }
-    return cols;
-  }
-
   function balanceColumns(node: HTMLElement, availableHeight: number) {
     const gap = TX_GAP;
 
@@ -72,25 +59,15 @@
       const heights = items.map((el) => el.offsetHeight);
       const total = heights.reduce((s, h) => s + h, 0) + Math.max(0, items.length - 1) * gap;
 
-      let maxH: number;
-      if (total <= availableHeight) {
-        maxH = availableHeight;
-      } else {
-        const targetCols = Math.ceil(total / availableHeight);
-        let lo = Math.max(...heights), hi = availableHeight;
-        while (hi - lo > 1) {
-          const mid = Math.floor((lo + hi) / 2);
-          if (colsNeeded(heights, gap, mid) <= targetCols) hi = mid;
-          else lo = mid;
-        }
-        maxH = hi;
-      }
+      // Number of columns needed, and target height for balanced distribution
+      const numCols = total <= availableHeight ? 1 : Math.ceil(total / availableHeight);
+      const targetH = total / numCols;
 
-      // Assign items to columns
+      // Assign items to columns, wrapping when reaching the balanced target height
       const cols: { idx: number; h: number }[][] = [[]];
       let colH = 0;
       for (let i = 0; i < items.length; i++) {
-        if (colH > 0 && colH + gap + heights[i] > maxH) {
+        if (colH > 0 && colH >= targetH && cols.length < numCols) {
           cols.push([]);
           colH = 0;
         }
