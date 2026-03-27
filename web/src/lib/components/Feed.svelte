@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { flip } from 'svelte/animate';
   import { sections, config, pool } from '../stores';
   import type { GenesisConfig, Section } from '../types';
   import { TX_WIDTH, TX_GAP, FLIP_DURATION, poolColor, formatTicker } from '../layout';
@@ -60,14 +59,13 @@
   }
 
   function balanceColumns(node: HTMLElement, availableHeight: number) {
-    let lastMaxH = '';
     const gap = TX_GAP;
 
     function rebalance() {
       const items = Array.from(node.children) as HTMLElement[];
       if (items.length === 0) {
-        node.style.maxHeight = '';
         node.style.width = '';
+        node.style.height = '';
         return;
       }
 
@@ -88,21 +86,40 @@
         maxH = hi;
       }
 
-      const maxHStr = `${maxH}px`;
-      if (lastMaxH !== maxHStr) {
-        lastMaxH = maxHStr;
-        node.style.maxHeight = maxHStr;
+      // Assign items to columns
+      const cols: { idx: number; h: number }[][] = [[]];
+      let colH = 0;
+      for (let i = 0; i < items.length; i++) {
+        if (colH > 0 && colH + gap + heights[i] > maxH) {
+          cols.push([]);
+          colH = 0;
+        }
+        cols[cols.length - 1].push({ idx: i, h: heights[i] });
+        colH += (colH > 0 ? gap : 0) + heights[i];
       }
-      // Browsers don't auto-size the cross axis of a column-wrap flex container.
-      // Clear width, let the browser wrap, then measure actual content extent
-      // from child positions and set width explicitly so the section expands.
-      node.style.width = '';
-      const nodeLeft = node.getBoundingClientRect().left;
-      let contentRight = nodeLeft;
-      for (const item of items) {
-        contentRight = Math.max(contentRight, item.getBoundingClientRect().right);
+
+      // Compute grid dimensions
+      const gridWidth = cols.length * TX_WIDTH + Math.max(0, cols.length - 1) * gap;
+      let gridHeight = 0;
+      for (const col of cols) {
+        const ch = col.reduce((s, it) => s + it.h, 0) + Math.max(0, col.length - 1) * gap;
+        gridHeight = Math.max(gridHeight, ch);
       }
-      node.style.width = `${Math.ceil(contentRight - nodeLeft)}px`;
+
+      // Position items absolutely, bottom-aligned per column
+      for (let ci = 0; ci < cols.length; ci++) {
+        const col = cols[ci];
+        const colTotal = col.reduce((s, it) => s + it.h, 0) + Math.max(0, col.length - 1) * gap;
+        const x = ci * (TX_WIDTH + gap);
+        let y = gridHeight - colTotal; // bottom-align
+        for (const { idx, h } of col) {
+          items[idx].style.transform = `translate(${x}px, ${y}px)`;
+          y += h + gap;
+        }
+      }
+
+      node.style.width = `${gridWidth}px`;
+      node.style.height = `${gridHeight}px`;
     }
 
     const mutObs = new MutationObserver(() => requestAnimationFrame(rebalance));
@@ -371,7 +388,7 @@
           {#if landscape}
             <div class="column-grid" use:balanceColumns={txAreaHeight}>
               {#each section.txs as tx (tx.hash)}
-                <div class="column-grid-item" animate:flip={{ duration: FLIP_DURATION }}>
+                <div class="column-grid-item">
                   <Transaction {tx} />
                 </div>
               {/each}
@@ -552,16 +569,13 @@
   }
 
   .column-grid {
-    display: flex;
-    flex-direction: column;
-    flex-wrap: wrap;
-    gap: 6px;
-    justify-content: flex-end;
-    align-content: flex-start;
+    position: relative;
   }
 
   .column-grid-item {
+    position: absolute;
     width: 108px;
+    transition: transform var(--flip-duration) ease;
     will-change: transform;
   }
 </style>
