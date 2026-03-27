@@ -124,6 +124,12 @@ function handleEvent(event: Event): void {
 export function connectSSE(url: string): void {
   if (source) source.close();
 
+  // Reset stores immediately so stale data from previous pool doesn't linger
+  sections.set([newSection()]);
+  config.set(null);
+  pool.set(null);
+  pendingPrune.clear();
+
   source = new EventSource(url);
 
   source.onmessage = (e: MessageEvent) => {

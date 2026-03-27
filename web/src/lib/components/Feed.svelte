@@ -59,13 +59,20 @@
     return cols;
   }
 
-  function balanceColumns(node: HTMLElement, availableHeight: number) {
+  function balanceColumns(node: HTMLElement) {
     let lastMaxH = '';
     const gap = TX_GAP;
+
+    function getAvailableHeight(): number {
+      return parseFloat(getComputedStyle(node).getPropertyValue('--available-height')) || 0;
+    }
 
     function rebalance() {
       const items = Array.from(node.children) as HTMLElement[];
       if (items.length === 0) return;
+
+      const availableHeight = getAvailableHeight();
+      if (availableHeight <= 0) return;
 
       const heights = items.map((el) => el.offsetHeight);
       const total = heights.reduce((s, h) => s + h, 0) + Math.max(0, items.length - 1) * gap;
@@ -92,15 +99,11 @@
     }
 
     const mutObs = new MutationObserver(() => requestAnimationFrame(rebalance));
-    mutObs.observe(node, { childList: true });
+    mutObs.observe(node, { childList: true, attributes: true, attributeFilter: ['style'] });
 
     requestAnimationFrame(rebalance);
 
     return {
-      update(newAvailableHeight: number) {
-        availableHeight = newAvailableHeight;
-        rebalance();
-      },
       destroy() {
         mutObs.disconnect();
       },
@@ -159,9 +162,6 @@
     landscape = window.innerWidth > window.innerHeight;
     if (was !== landscape) {
       animated = false;
-      tick().then(() => {
-        animated = true;
-      });
     }
   }
 
@@ -346,7 +346,7 @@
 
         {#if section.txs.length > 0}
           {#if landscape}
-            <div class="column-grid" use:balanceColumns={txAreaHeight}>
+            <div class="column-grid" use:balanceColumns style:--available-height="{txAreaHeight}px">
               {#each section.txs as tx (tx.hash)}
                 <div class="column-grid-item" animate:flip={{ duration: FLIP_DURATION }}>
                   <Transaction {tx} />
