@@ -16,7 +16,7 @@
   const BLOCK_INSET = (BLOCK_PADDING + BLOCK_BORDER) * 2;
 
   let feedEl: HTMLDivElement;
-  let poolHeaderEl: HTMLDivElement | undefined;
+  let poolHeaderEl = $state<HTMLDivElement | undefined>();
   let feedWidth = $state(0);
   let feedHeight = $state(0);
   let poolHeaderHeight = $state(0);
