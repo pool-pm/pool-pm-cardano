@@ -20,6 +20,7 @@
   let feedWidth = $state(0);
   let feedHeight = $state(0);
   let poolHeaderHeight = $state(0);
+  const LANDSCAPE_MARGIN = 16; // vertical breathing room in landscape
   let landscape = $state(false);
   let actualGridWidths = $state<Record<string, number>>({});
 
@@ -43,7 +44,7 @@
   });
 
   // Available height for tx columns in landscape mode
-  let txAreaHeight = $derived(feedHeight - BLOCK_INSET - 40 - poolHeaderHeight);
+  let txAreaHeight = $derived(feedHeight - BLOCK_INSET - 40 - poolHeaderHeight - LANDSCAPE_MARGIN);
 
   function colsForMaxH(heights: number[], gap: number, maxH: number): number {
     let cols = 1, h = 0;
@@ -207,11 +208,6 @@
     });
     feedObserver.observe(feedEl);
 
-    if (poolHeaderEl) {
-      const style = getComputedStyle(poolHeaderEl);
-      poolHeaderHeight = poolHeaderEl.offsetHeight + parseFloat(style.marginBottom);
-    }
-
     sectionObserver = new ResizeObserver(scheduleMeasure);
     for (const el of sectionRefs.values()) sectionObserver.observe(el);
 
@@ -231,6 +227,23 @@
   }
 
   let now = $state(Date.now());
+
+  // Measure pool header height reactively (it appears after SSE sends Pool event)
+  $effect(() => {
+    const el = poolHeaderEl;
+    if (!el) {
+      poolHeaderHeight = 0;
+      return;
+    }
+    const style = getComputedStyle(el);
+    poolHeaderHeight = el.offsetHeight + parseFloat(style.marginBottom);
+    const obs = new ResizeObserver(() => {
+      const s = getComputedStyle(el);
+      poolHeaderHeight = el.offsetHeight + parseFloat(s.marginBottom);
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  });
 
   $effect(() => {
     const interval = setInterval(() => {
