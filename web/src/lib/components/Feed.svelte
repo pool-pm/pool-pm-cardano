@@ -125,6 +125,9 @@
     const mutObs = new MutationObserver(() => requestAnimationFrame(rebalance));
     mutObs.observe(node, { childList: true });
 
+    const onRemeasure = () => requestAnimationFrame(rebalance);
+    node.addEventListener('remeasure', onRemeasure);
+
     requestAnimationFrame(rebalance);
 
     return {
@@ -134,6 +137,7 @@
       },
       destroy() {
         mutObs.disconnect();
+        node.removeEventListener('remeasure', onRemeasure);
       },
     };
   }
