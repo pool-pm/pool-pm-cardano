@@ -46,6 +46,7 @@ function layoutPortrait(
   heights: number[],
   gap: number,
   availableWidth: number,
+  containerWidth: number,
 ): { gridWidth: number; gridHeight: number } {
   const colCount = Math.max(1, Math.floor((availableWidth + gap) / (TX_WIDTH + gap)));
   const colHeights = new Array(colCount).fill(0);
@@ -80,7 +81,8 @@ function layoutPortrait(
   const totalHeight = Math.max(0, Math.max(...colHeights) - gap);
   const actualCols = maxColUsed + 1;
   const gridWidth = actualCols * TX_WIDTH + Math.max(0, actualCols - 1) * gap;
-  const offsetX = Math.max(0, (availableWidth - gridWidth) / 2);
+  // Center within the actual container width, not the available layout width
+  const offsetX = Math.max(0, (containerWidth - gridWidth) / 2);
 
   for (const { idx, col, y, height } of itemData) {
     const displayX = offsetX + col * (TX_WIDTH + gap);
@@ -173,7 +175,7 @@ export function layoutGrid(node: HTMLElement, params: LayoutGridParams) {
       node.style.width = `${gridWidth}px`;
     } else {
       const w = availableWidth || node.offsetWidth;
-      ({ gridWidth, gridHeight } = layoutPortrait(items, heights, gap, w));
+      ({ gridWidth, gridHeight } = layoutPortrait(items, heights, gap, w, node.offsetWidth));
       node.style.width = '';
       node.dispatchEvent(new CustomEvent('gridwidth', { detail: gridWidth, bubbles: true }));
     }
