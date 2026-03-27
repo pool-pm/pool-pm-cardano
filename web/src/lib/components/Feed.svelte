@@ -88,16 +88,17 @@
         maxH = hi;
       }
 
-      const cols = colsNeeded(heights, gap, maxH);
-
       const maxHStr = `${maxH}px`;
       if (lastMaxH !== maxHStr) {
         lastMaxH = maxHStr;
         node.style.maxHeight = maxHStr;
       }
-      // Browsers don't auto-size the cross axis of a column-wrap flex container,
-      // so set width explicitly to contain all wrapped columns.
-      node.style.width = `${cols * TX_WIDTH + Math.max(0, cols - 1) * gap}px`;
+      // Browsers don't auto-size the cross axis of a column-wrap flex container.
+      // Clear explicit width so the browser wraps freely, then read the actual
+      // content width and set it explicitly so the parent section expands.
+      node.style.width = '';
+      void node.offsetHeight;
+      node.style.width = `${node.scrollWidth}px`;
     }
 
     const mutObs = new MutationObserver(() => requestAnimationFrame(rebalance));
