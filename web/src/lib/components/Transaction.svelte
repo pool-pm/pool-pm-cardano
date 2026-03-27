@@ -88,7 +88,7 @@
           {@const isDeregistration = !deleg.to_pool_id && !!deleg.from_pool_id}
           <div class="addr-item">
             {#if deleg.to_pool_id}
-              <a class="deleg-pool" href="/{deleg.to_pool_id}" style:color={poolColor(deleg.to_pool_id)}
+              <a class="deleg-pool" href="/{deleg.to_pool_id}"
                 >{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a
               >
             {/if}
@@ -100,7 +100,7 @@
                 class="deleg-pool"
                 class:deregistered={isDeregistration}
                 href="/{deleg.from_pool_id}"
-                style:color={poolColor(deleg.from_pool_id)}>{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
+                >{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
               >
             {/if}
             <span class="ada" style:color={poolColor(deleg.to_pool_id ?? deleg.from_pool_id)}>{@html formatAda(deleg.live_stake)}</span>
@@ -250,6 +250,7 @@
     font-size: 11px;
     font-weight: 700;
     text-decoration: none;
+    color: white;
   }
 
 .deleg-pool.deregistered {
