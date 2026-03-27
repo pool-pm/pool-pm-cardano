@@ -59,20 +59,13 @@
     return cols;
   }
 
-  function balanceColumns(node: HTMLElement) {
+  function balanceColumns(node: HTMLElement, availableHeight: number) {
     let lastMaxH = '';
     const gap = TX_GAP;
-
-    function getAvailableHeight(): number {
-      return parseFloat(getComputedStyle(node).getPropertyValue('--available-height')) || 0;
-    }
 
     function rebalance() {
       const items = Array.from(node.children) as HTMLElement[];
       if (items.length === 0) return;
-
-      const availableHeight = getAvailableHeight();
-      if (availableHeight <= 0) return;
 
       const heights = items.map((el) => el.offsetHeight);
       const total = heights.reduce((s, h) => s + h, 0) + Math.max(0, items.length - 1) * gap;
@@ -99,11 +92,15 @@
     }
 
     const mutObs = new MutationObserver(() => requestAnimationFrame(rebalance));
-    mutObs.observe(node, { childList: true, attributes: true, attributeFilter: ['style'] });
+    mutObs.observe(node, { childList: true });
 
     requestAnimationFrame(rebalance);
 
     return {
+      update(newAvailableHeight: number) {
+        availableHeight = newAvailableHeight;
+        rebalance();
+      },
       destroy() {
         mutObs.disconnect();
       },
@@ -230,6 +227,18 @@
     untrack(scheduleMeasure);
   });
 
+  // After feed resizes (e.g. orientation change), balanceColumns rewraps columns via its
+  // update() method, which changes section widths. Schedule a deferred re-measure so
+  // positions reflect the new widths after the browser has laid out the rewrapped columns.
+  $effect(() => {
+    feedHeight;
+    feedWidth;
+    if (!landscape) return;
+    untrack(() => {
+      requestAnimationFrame(() => scheduleMeasure());
+    });
+  });
+
   function timeAgo(timestamp: number): string {
     const sec = Math.floor((now - timestamp * 1000) / 1000);
     if (sec < 60) return `${sec}s ago`;
@@ -346,7 +355,7 @@
 
         {#if section.txs.length > 0}
           {#if landscape}
-            <div class="column-grid" use:balanceColumns style:--available-height="{txAreaHeight}px">
+            <div class="column-grid" use:balanceColumns={txAreaHeight}>
               {#each section.txs as tx (tx.hash)}
                 <div class="column-grid-item" animate:flip={{ duration: FLIP_DURATION }}>
                   <Transaction {tx} />
