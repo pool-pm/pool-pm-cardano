@@ -65,7 +65,11 @@
 
     function rebalance() {
       const items = Array.from(node.children) as HTMLElement[];
-      if (items.length === 0) return;
+      if (items.length === 0) {
+        node.style.maxHeight = '';
+        node.style.width = '';
+        return;
+      }
 
       const heights = items.map((el) => el.offsetHeight);
       const total = heights.reduce((s, h) => s + h, 0) + Math.max(0, items.length - 1) * gap;
@@ -84,11 +88,16 @@
         maxH = hi;
       }
 
+      const cols = colsNeeded(heights, gap, maxH);
+
       const maxHStr = `${maxH}px`;
       if (lastMaxH !== maxHStr) {
         lastMaxH = maxHStr;
         node.style.maxHeight = maxHStr;
       }
+      // Browsers don't auto-size the cross axis of a column-wrap flex container,
+      // so set width explicitly to contain all wrapped columns.
+      node.style.width = `${cols * TX_WIDTH + Math.max(0, cols - 1) * gap}px`;
     }
 
     const mutObs = new MutationObserver(() => requestAnimationFrame(rebalance));
