@@ -293,11 +293,10 @@ impl State {
         }
     }
 
-    /// Fetch recent blocks minted by a pool from db-sync.
-    /// Returns (slot, block_hash_hex, block_number) tuples, newest first.
-    pub async fn pool_recent_blocks(&self, pool_hash: &[u8], limit: i64) -> Vec<(u64, String, u64)> {
+    /// All blocks minted by a pool since a slot boundary.
+    pub async fn pool_blocks_since(&self, pool_hash: &[u8], boundary_slot: u64) -> Vec<(u64, String, u64)> {
         if let Some(db) = self.db().await {
-            db.pool_recent_blocks(pool_hash, limit)
+            db.pool_blocks_since(pool_hash, boundary_slot as i64)
                 .await
                 .unwrap_or_default()
         } else {
@@ -305,25 +304,19 @@ impl State {
         }
     }
 
-    /// Find blocks containing the largest outputs to pool delegators in a window.
-    /// Returns (slot, hash_hex, block_no, pool_hash_raw, pool_ticker).
-    pub async fn pool_stake_change_blocks(
+    /// Distinct blocks containing delegation changes TO a pool since a slot.
+    pub async fn pool_delegation_blocks_since(
         &self,
+        pool_hash: &[u8],
         boundary_slot: u64,
-        delegator_hash_raws: &[Vec<u8>],
-        limit: i64,
     ) -> Vec<(u64, String, u64, Option<Vec<u8>>, Option<String>)> {
-        let db = match self.db().await {
-            Some(db) => db,
-            None => return vec![],
-        };
-        let (boundary_tx_id, _) = match db.slot_info(boundary_slot).await {
-            Ok(info) => info,
-            Err(_) => return vec![],
-        };
-        db.pool_stake_change_blocks(boundary_tx_id, delegator_hash_raws, limit)
-            .await
-            .unwrap_or_default()
+        if let Some(db) = self.db().await {
+            db.pool_delegation_blocks_since(pool_hash, boundary_slot as i64)
+                .await
+                .unwrap_or_default()
+        } else {
+            vec![]
+        }
     }
 
     /// Rollback to the given slot: drop all snapshots after it.

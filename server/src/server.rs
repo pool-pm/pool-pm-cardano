@@ -92,7 +92,13 @@ fn serialize_event(event: crate::event::Event) -> Option<Result<SseEvent, Infall
 // --- Block decoding ---
 
 /// Decode a block CBOR into a BlockTx list.
-fn decode_block_txs(cbor: &[u8], nftcdn: &NftcdnConfig) -> Vec<BlockTx> {
+/// If `state` and `mainnet` are provided, also extracts delegation certificates.
+fn decode_block_txs(
+    cbor: &[u8],
+    nftcdn: &NftcdnConfig,
+    state: Option<&State>,
+    mainnet: bool,
+) -> Vec<BlockTx> {
     let block = match MultiEraBlock::decode(cbor) {
         Ok(b) => b,
         Err(_) => return vec![],
@@ -158,6 +164,10 @@ fn decode_block_txs(cbor: &[u8], nftcdn: &NftcdnConfig) -> Vec<BlockTx> {
                 })
                 .collect();
 
+            let delegations = state
+                .map(|s| crate::mempool::extract_delegations(tx, s, mainnet))
+                .unwrap_or_default();
+
             BlockTx {
                 hash: tx.hash().to_string(),
                 fee: tx.fee().unwrap_or(0),
@@ -165,7 +175,7 @@ fn decode_block_txs(cbor: &[u8], nftcdn: &NftcdnConfig) -> Vec<BlockTx> {
                 inputs,
                 outputs,
                 expiry: None,
-                delegations: vec![],
+                delegations,
                 stake_change: None,
                 stake_credentials: vec![],
             }
@@ -221,12 +231,13 @@ struct ReplayBlock {
 async fn send_replay_blocks(
     sender: &Sender<Result<SseEvent, Infallible>>,
     blocks: &mut [ReplayBlock],
-    delegators: &imbl::hashset::HashSet<Vec<u8>>,
+    _delegators: &imbl::hashset::HashSet<Vec<u8>>,
     nftcdn: &NftcdnConfig,
     genesis: &GenesisConfig,
     chain_state: &RwLock<State>,
     n2n_addr: SocketAddr,
     magic: u64,
+    mainnet: bool,
 ) {
     if blocks.is_empty() {
         return;
@@ -249,32 +260,15 @@ async fn send_replay_blocks(
         let point = Point::Specific(block.slot, hash_bytes);
         match client.blockfetch().fetch_single(point).await {
             Ok(cbor) => {
-                let mut txs = decode_block_txs(&cbor, nftcdn);
+                let state_guard = chain_state.read().await;
+                let mut txs = decode_block_txs(&cbor, nftcdn, Some(&state_guard), mainnet);
+                drop(state_guard);
                 resolve_block_inputs(&mut txs, chain_state).await;
 
                 let txs = if block.filter_by_delegators {
-                    for tx in &mut txs {
-                        tx.stake_credentials = filter::extract_stake_credentials(tx);
-                    }
+                    // Keep only txs with delegation certificates
                     txs.into_iter()
-                        .filter_map(|mut tx| {
-                            // Compute net stake change: outputs to pool minus inputs from pool
-                            let out_to_pool: i64 = tx.outputs.iter()
-                                .filter(|o| filter::stake_credential(&o.address)
-                                    .map(|c| delegators.contains(&c)).unwrap_or(false))
-                                .map(|o| o.lovelace as i64)
-                                .sum();
-                            let in_from_pool: i64 = tx.inputs.iter()
-                                .filter(|i| i.address.as_ref()
-                                    .and_then(|a| filter::stake_credential(a))
-                                    .map(|c| delegators.contains(&c)).unwrap_or(false))
-                                .map(|i| i.lovelace as i64)
-                                .sum();
-                            let net = out_to_pool - in_from_pool;
-                            if net == 0 { return None; }
-                            tx.stake_change = Some(net);
-                            Some(tx)
-                        })
+                        .filter(|tx| !tx.delegations.is_empty())
                         .collect()
                 } else {
                     txs
@@ -480,15 +474,21 @@ async fn filtered_events(
             .await;
 
         let exclude_slots = if let Some(ref ph) = pool_hash {
-            let block_points = {
-                let guard = replay_state.chain_state.read().await;
-                guard.pool_recent_blocks(ph, 20).await
-            };
             send_pool_info(&sender, &replay_state.chain_state, ph).await;
 
-            // Pool's own blocks (all txs included, no filtering)
-            let mut all_slots: HashSet<u64> = block_points.iter().map(|(s, _, _)| *s).collect();
-            let mut replay_blocks: Vec<ReplayBlock> = block_points
+            let boundary_slot = {
+                let guard = replay_state.chain_state.read().await;
+                guard.current().map(|s| s.slot).unwrap_or(0)
+            }
+            .saturating_sub(replay_state.genesis.shelley_epoch_length as u64);
+
+            // Pool's own blocks from last epoch (all txs)
+            let pool_blocks = {
+                let guard = replay_state.chain_state.read().await;
+                guard.pool_blocks_since(ph, boundary_slot).await
+            };
+            let mut all_slots: HashSet<u64> = pool_blocks.iter().map(|(s, _, _)| *s).collect();
+            let mut replay_blocks: Vec<ReplayBlock> = pool_blocks
                 .iter()
                 .map(|(s, h, n)| ReplayBlock {
                     slot: *s,
@@ -500,31 +500,20 @@ async fn filtered_events(
                 })
                 .collect();
 
-            // Blocks with largest outputs to pool delegators (last epoch, filtered)
-            let boundary_slot = {
+            // Blocks containing delegation changes to the pool (last epoch)
+            // Fetched via N2N, filtered to only include txs with delegation certs
+            let deleg_blocks = {
                 let guard = replay_state.chain_state.read().await;
-                guard.current().map(|s| s.slot).unwrap_or(0)
-            }
-            .saturating_sub(replay_state.genesis.shelley_epoch_length as u64);
-            let stake_header: u8 = if replay_state.mainnet { 0xe1 } else { 0xe0 };
-            let delegator_hash_raws: Vec<Vec<u8>> = replay_delegators
-                .iter()
-                .map(|cred| [&[stake_header][..], cred].concat())
-                .collect();
-            let stake_blocks = {
-                let guard = replay_state.chain_state.read().await;
-                guard
-                    .pool_stake_change_blocks(boundary_slot, &delegator_hash_raws, 30)
-                    .await
+                guard.pool_delegation_blocks_since(ph, boundary_slot).await
             };
-            for (s, h, n, ph_raw, pt) in stake_blocks {
+            for (s, h, n, bp_hash, bp_ticker) in deleg_blocks {
                 if all_slots.insert(s) {
                     replay_blocks.push(ReplayBlock {
                         slot: s,
                         hash: h,
                         number: n,
-                        pool_id: ph_raw.as_ref().map(|h| pool_bech32_id(h)),
-                        pool_ticker: pt,
+                        pool_id: bp_hash.as_ref().map(|h| pool_bech32_id(h)),
+                        pool_ticker: bp_ticker,
                         filter_by_delegators: true,
                     });
                 }
@@ -539,6 +528,7 @@ async fn filtered_events(
                 &replay_state.chain_state,
                 replay_state.n2n_addr,
                 replay_state.magic,
+                replay_state.mainnet,
             )
             .await;
 

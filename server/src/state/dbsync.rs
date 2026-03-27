@@ -330,82 +330,78 @@ impl DbSync {
         Ok((delegations, delegators))
     }
 
-    /// Find blocks with the largest net stake changes for pool delegators.
-    /// Computes per-tx net change (outputs to pool minus inputs from pool)
-    /// and returns blocks ordered by the largest absolute change.
-    pub async fn pool_stake_change_blocks(
+    /// All blocks minted by a pool since a slot boundary.
+    /// Returns (slot, block_hash_hex, block_number), newest first.
+    pub async fn pool_blocks_since(
         &self,
-        boundary_tx_id: i64,
-        delegator_hash_raws: &[Vec<u8>],
-        limit: i64,
-    ) -> Result<Vec<(u64, String, u64, Option<Vec<u8>>, Option<String>)>, sqlx::Error> {
-        if delegator_hash_raws.is_empty() {
-            return Ok(vec![]);
-        }
+        pool_hash: &[u8],
+        boundary_slot: i64,
+    ) -> Result<Vec<(u64, String, u64)>, sqlx::Error> {
+        let leader_id = sqlx::query_scalar!(
+            r#"SELECT sl.id AS "id!"
+            FROM slot_leader sl
+            JOIN pool_hash ph ON ph.id = sl.pool_hash_id
+            WHERE ph.hash_raw = $1
+            LIMIT 1"#,
+            pool_hash
+        )
+        .fetch_optional(&self.db)
+        .await?;
+
+        let leader_id = match leader_id {
+            Some(id) => id,
+            None => return Ok(vec![]),
+        };
 
         let rows = sqlx::query!(
-            r#"WITH delegators AS (
-                SELECT id FROM stake_address WHERE hash_raw = ANY($2::bytea[])
-            ),
-            tx_pool_out AS (
-                SELECT tx_out.tx_id, SUM(tx_out.value)::bigint AS total
-                FROM tx_out
-                WHERE tx_out.tx_id > $1
-                  AND tx_out.stake_address_id IN (SELECT id FROM delegators)
-                GROUP BY tx_out.tx_id
-            ),
-            tx_pool_in AS (
-                SELECT tx_out.consumed_by_tx_id AS tx_id, SUM(tx_out.value)::bigint AS total
-                FROM tx_out
-                WHERE tx_out.consumed_by_tx_id > $1
-                  AND tx_out.consumed_by_tx_id IS NOT NULL
-                  AND tx_out.stake_address_id IN (SELECT id FROM delegators)
-                GROUP BY tx_out.consumed_by_tx_id
-            ),
-            tx_net AS (
-                SELECT COALESCE(o.tx_id, i.tx_id) AS tx_id,
-                       ABS(COALESCE(o.total, 0::bigint) - COALESCE(i.total, 0::bigint)) AS abs_change
-                FROM tx_pool_out o
-                FULL JOIN tx_pool_in i ON o.tx_id = i.tx_id
-                WHERE COALESCE(o.total, 0::bigint) != COALESCE(i.total, 0::bigint)
-            ),
-            top_blocks AS (
-                SELECT DISTINCT ON (b.slot_no)
-                    b.slot_no, b.hash, b.block_no, b.slot_leader_id, tn.abs_change
-                FROM tx_net tn
-                JOIN tx ON tx.id = tn.tx_id
-                JOIN block b ON b.id = tx.block_id
-                ORDER BY b.slot_no, tn.abs_change DESC
-            )
-            SELECT tb.slot_no AS "slot!",
-                   encode(tb.hash, 'hex') AS "hash!",
-                   tb.block_no AS "block_no!",
-                   ph.hash_raw AS "pool_hash?",
-                   (SELECT ticker_name FROM off_chain_pool_data opd
-                    WHERE opd.pool_id = ph.id ORDER BY opd.id DESC LIMIT 1) AS pool_ticker
-            FROM top_blocks tb
-            JOIN slot_leader sl ON sl.id = tb.slot_leader_id
-            LEFT JOIN pool_hash ph ON ph.id = sl.pool_hash_id
-            ORDER BY tb.abs_change DESC
-            LIMIT $3"#,
-            boundary_tx_id,
-            delegator_hash_raws as &[Vec<u8>],
-            limit,
+            r#"SELECT slot_no AS "slot!", encode(hash, 'hex') AS "hash!", block_no AS "block_no!"
+            FROM block
+            WHERE slot_leader_id = $1 AND slot_no > $2
+            ORDER BY id DESC"#,
+            leader_id,
+            boundary_slot,
         )
         .fetch_all(&self.db)
         .await?;
 
         Ok(rows
             .into_iter()
-            .map(|r| {
-                (
-                    r.slot as u64,
-                    r.hash,
-                    r.block_no as u64,
-                    r.pool_hash,
-                    r.pool_ticker,
-                )
-            })
+            .map(|r| (r.slot as u64, r.hash, r.block_no as u64))
+            .collect())
+    }
+
+    /// Distinct blocks containing delegation changes TO a pool since a slot.
+    /// Returns (slot, block_hash_hex, block_no, block_pool_hash, block_pool_ticker).
+    pub async fn pool_delegation_blocks_since(
+        &self,
+        pool_hash: &[u8],
+        boundary_slot: i64,
+    ) -> Result<Vec<(u64, String, u64, Option<Vec<u8>>, Option<String>)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT DISTINCT ON (b.slot_no)
+                      b.slot_no AS "slot!",
+                      encode(b.hash, 'hex') AS "block_hash!",
+                      b.block_no AS "block_no!",
+                      sl_ph.hash_raw AS "pool_hash?",
+                      (SELECT ticker_name FROM off_chain_pool_data
+                       WHERE pool_id = sl_ph.id ORDER BY id DESC LIMIT 1) AS pool_ticker
+            FROM delegation d
+            JOIN pool_hash ph ON ph.id = d.pool_hash_id
+            JOIN tx ON tx.id = d.tx_id
+            JOIN block b ON b.id = tx.block_id
+            JOIN slot_leader sl ON sl.id = b.slot_leader_id
+            LEFT JOIN pool_hash sl_ph ON sl_ph.id = sl.pool_hash_id
+            WHERE ph.hash_raw = $1 AND b.slot_no > $2
+            ORDER BY b.slot_no"#,
+            pool_hash,
+            boundary_slot,
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.slot as u64, r.block_hash, r.block_no as u64, r.pool_hash, r.pool_ticker))
             .collect())
     }
 }
