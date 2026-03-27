@@ -94,11 +94,15 @@
         node.style.maxHeight = maxHStr;
       }
       // Browsers don't auto-size the cross axis of a column-wrap flex container.
-      // Clear explicit width so the browser wraps freely, then read the actual
-      // content width and set it explicitly so the parent section expands.
+      // Clear width, let the browser wrap, then measure actual content extent
+      // from child positions and set width explicitly so the section expands.
       node.style.width = '';
-      void node.offsetHeight;
-      node.style.width = `${node.scrollWidth}px`;
+      const nodeLeft = node.getBoundingClientRect().left;
+      let contentRight = nodeLeft;
+      for (const item of items) {
+        contentRight = Math.max(contentRight, item.getBoundingClientRect().right);
+      }
+      node.style.width = `${Math.ceil(contentRight - nodeLeft)}px`;
     }
 
     const mutObs = new MutationObserver(() => requestAnimationFrame(rebalance));
