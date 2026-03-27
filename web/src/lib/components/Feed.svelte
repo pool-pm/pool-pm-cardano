@@ -32,13 +32,16 @@
   let sectionObserver: ResizeObserver | undefined;
   let measurePending = false;
 
-  // Dynamic spacing: shrink PX_PER_SECOND so total gaps fit on screen
+  // Dynamic spacing: shrink PX_PER_SECOND so total gaps fit on screen.
+  // Use the block timestamp range (not Date.now()) so that pxPerSecond only
+  // changes when blocks are added/removed, not on every mempool tx arrival.
   let pxPerSecond = $derived.by(() => {
     const sects = $sections;
     if (sects.length <= 2) return DEFAULT_PX_PER_SECOND;
+    const newest = sects[1]?.block?.timestamp;
     const oldest = sects[sects.length - 1].block?.timestamp;
-    if (!oldest) return DEFAULT_PX_PER_SECOND;
-    const totalTime = Date.now() / 1000 - oldest;
+    if (!newest || !oldest) return DEFAULT_PX_PER_SECOND;
+    const totalTime = newest - oldest;
     if (totalTime <= 0) return DEFAULT_PX_PER_SECOND;
     return Math.min(DEFAULT_PX_PER_SECOND, MAX_TOTAL_GAP_PX / totalTime);
   });
