@@ -205,66 +205,22 @@ async fn resolve_block_inputs(txs: &mut Vec<BlockTx>, chain_state: &RwLock<State
 
 // --- Replay: send historical events through mpsc channel ---
 
-/// Send pool block history fetched via N2N block-fetch protocol.
-async fn send_pool_history(
-    sender: &Sender<Result<SseEvent, Infallible>>,
-    block_points: &[(u64, String, u64)],
-    pool_id: &Option<String>,
-    pool_ticker: &Option<String>,
-    nftcdn: &NftcdnConfig,
-    genesis: &GenesisConfig,
-    chain_state: &RwLock<State>,
-    n2n_addr: SocketAddr,
-    magic: u64,
-) {
-    if block_points.is_empty() {
-        return;
-    }
-    let mut client = match PeerClient::connect(n2n_addr, magic).await {
-        Ok(c) => c,
-        Err(_) => {
-            warn!("N2N connect to {} failed", n2n_addr);
-            return;
-        }
-    };
-    // block_points is newest-first; iterate in reverse for oldest-first
-    for &(slot, ref hash_hex, number) in block_points.iter().rev() {
-        let hash_bytes = match hex::decode(hash_hex) {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let point = Point::Specific(slot, hash_bytes);
-        match client.blockfetch().fetch_single(point).await {
-            Ok(cbor) => {
-                let mut txs = decode_block_txs(&cbor, nftcdn);
-                resolve_block_inputs(&mut txs, chain_state).await;
-                let event = crate::event::Event::Block {
-                    slot,
-                    hash: hash_hex.clone(),
-                    number,
-                    timestamp: slot_to_timestamp(slot, genesis),
-                    pool_id: pool_id.clone(),
-                    pool_ticker: pool_ticker.clone(),
-                    txs,
-                };
-                if let Some(sse) = serialize_event(event) {
-                    let _ = sender.send(sse).await;
-                }
-            }
-            Err(e) => {
-                warn!(slot, "block-fetch failed: {}", e);
-            }
-        }
-    }
-    let _ = client.abort().await;
+/// A block to replay: pool's own block (all txs) or stake-change block (filtered).
+struct ReplayBlock {
+    slot: u64,
+    hash: String,
+    number: u64,
+    pool_id: Option<String>,
+    pool_ticker: Option<String>,
+    /// If true, filter txs to only those involving pool delegators.
+    filter_by_delegators: bool,
 }
 
-/// Fetch blocks with large outputs to pool delegators, filter txs, and send.
-async fn send_stake_change_blocks(
+/// Fetch replay blocks via N2N, sorted oldest-first, and send as SSE events.
+async fn send_replay_blocks(
     sender: &Sender<Result<SseEvent, Infallible>>,
-    blocks: &[(u64, String, u64, Option<Vec<u8>>, Option<String>)],
+    blocks: &mut [ReplayBlock],
     delegators: &imbl::hashset::HashSet<Vec<u8>>,
-    _filter: &filter::FeedFilter,
     nftcdn: &NftcdnConfig,
     genesis: &GenesisConfig,
     chain_state: &RwLock<State>,
@@ -274,54 +230,60 @@ async fn send_stake_change_blocks(
     if blocks.is_empty() {
         return;
     }
+    // Sort oldest-first for chronological replay
+    blocks.sort_by_key(|b| b.slot);
+
     let mut client = match PeerClient::connect(n2n_addr, magic).await {
         Ok(c) => c,
         Err(_) => {
-            warn!("N2N connect for stake blocks failed");
+            warn!("N2N connect to {} failed", n2n_addr);
             return;
         }
     };
-    // Iterate oldest-first
-    for (slot, hash_hex, number, pool_hash, pool_ticker) in blocks.iter().rev() {
-        let hash_bytes = match hex::decode(hash_hex) {
+    for block in blocks.iter() {
+        let hash_bytes = match hex::decode(&block.hash) {
             Ok(b) => b,
             Err(_) => continue,
         };
-        let point = Point::Specific(*slot, hash_bytes);
+        let point = Point::Specific(block.slot, hash_bytes);
         match client.blockfetch().fetch_single(point).await {
             Ok(cbor) => {
                 let mut txs = decode_block_txs(&cbor, nftcdn);
                 resolve_block_inputs(&mut txs, chain_state).await;
-                for tx in &mut txs {
-                    tx.stake_credentials = filter::extract_stake_credentials(tx);
-                }
-                let filtered: Vec<BlockTx> = txs
-                    .into_iter()
-                    .filter(|tx| {
-                        tx.stake_credentials
-                            .iter()
-                            .any(|c| delegators.contains(c))
-                    })
-                    .collect();
-                if filtered.is_empty() {
+
+                let txs = if block.filter_by_delegators {
+                    for tx in &mut txs {
+                        tx.stake_credentials = filter::extract_stake_credentials(tx);
+                    }
+                    txs.into_iter()
+                        .filter(|tx| {
+                            tx.stake_credentials
+                                .iter()
+                                .any(|c| delegators.contains(c))
+                        })
+                        .collect()
+                } else {
+                    txs
+                };
+                if txs.is_empty() {
                     continue;
                 }
-                let pool_id = pool_hash.as_ref().map(|h| pool_bech32_id(h));
+
                 let event = crate::event::Event::Block {
-                    slot: *slot,
-                    hash: hash_hex.clone(),
-                    number: *number,
-                    timestamp: slot_to_timestamp(*slot, genesis),
-                    pool_id,
-                    pool_ticker: pool_ticker.clone(),
-                    txs: filtered,
+                    slot: block.slot,
+                    hash: block.hash.clone(),
+                    number: block.number,
+                    timestamp: slot_to_timestamp(block.slot, genesis),
+                    pool_id: block.pool_id.clone(),
+                    pool_ticker: block.pool_ticker.clone(),
+                    txs,
                 };
                 if let Some(sse) = serialize_event(event) {
                     let _ = sender.send(sse).await;
                 }
             }
             Err(e) => {
-                warn!(slot, "stake block-fetch failed: {}", e);
+                warn!(block.slot, "block-fetch failed: {}", e);
             }
         }
     }
@@ -510,15 +472,21 @@ async fn filtered_events(
             };
             send_pool_info(&sender, &replay_state.chain_state, ph).await;
 
-            let slots: HashSet<u64> = block_points.iter().map(|(s, _, _)| *s).collect();
-            send_pool_history(
-                &sender, &block_points, &pool_id, &pool_ticker,
-                &replay_state.nftcdn, &replay_state.genesis, &replay_state.chain_state,
-                replay_state.n2n_addr, replay_state.magic,
-            )
-            .await;
+            // Pool's own blocks (all txs included, no filtering)
+            let mut all_slots: HashSet<u64> = block_points.iter().map(|(s, _, _)| *s).collect();
+            let mut replay_blocks: Vec<ReplayBlock> = block_points
+                .iter()
+                .map(|(s, h, n)| ReplayBlock {
+                    slot: *s,
+                    hash: h.clone(),
+                    number: *n,
+                    pool_id: pool_id.clone(),
+                    pool_ticker: pool_ticker.clone(),
+                    filter_by_delegators: false,
+                })
+                .collect();
 
-            // Fetch blocks containing the largest outputs to pool delegators (last epoch)
+            // Blocks with largest outputs to pool delegators (last epoch, filtered)
             let boundary_slot = {
                 let guard = replay_state.chain_state.read().await;
                 guard.current().map(|s| s.slot).unwrap_or(0)
@@ -529,22 +497,29 @@ async fn filtered_events(
                 .iter()
                 .map(|cred| [&[stake_header][..], cred].concat())
                 .collect();
-            let stake_blocks: Vec<_> = {
+            let stake_blocks = {
                 let guard = replay_state.chain_state.read().await;
                 guard
                     .pool_stake_change_blocks(boundary_slot, &delegator_hash_raws, 30)
                     .await
+            };
+            for (s, h, n, ph_raw, pt) in stake_blocks {
+                if all_slots.insert(s) {
+                    replay_blocks.push(ReplayBlock {
+                        slot: s,
+                        hash: h,
+                        number: n,
+                        pool_id: ph_raw.as_ref().map(|h| pool_bech32_id(h)),
+                        pool_ticker: pt,
+                        filter_by_delegators: true,
+                    });
+                }
             }
-            .into_iter()
-            .filter(|(s, _, _, _, _)| !slots.contains(s))
-            .collect();
-            let mut all_slots = slots;
-            all_slots.extend(stake_blocks.iter().map(|(s, _, _, _, _)| *s));
-            send_stake_change_blocks(
+
+            send_replay_blocks(
                 &sender,
-                &stake_blocks,
+                &mut replay_blocks,
                 &replay_delegators,
-                &replay_filter,
                 &replay_state.nftcdn,
                 &replay_state.genesis,
                 &replay_state.chain_state,
