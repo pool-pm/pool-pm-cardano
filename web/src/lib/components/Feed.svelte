@@ -479,6 +479,10 @@
     overflow: hidden;
   }
 
+  .feed:not(.landscape) .tx-grid {
+    width: 100%;
+  }
+
   .tx-grid-item {
     position: absolute;
     width: 108px;
