@@ -103,7 +103,7 @@
                 >{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
               >
             {/if}
-            <span class="ada" style:color={poolColor(deleg.to_pool_id ?? deleg.from_pool_id)}>{@html formatAda(deleg.live_stake)}</span>
+            <span class="ada">{@html formatAda(deleg.live_stake)}</span>
             <span class="addr mono">{deleg.stake_address}</span>
           </div>
         {/each}
