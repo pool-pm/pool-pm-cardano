@@ -281,6 +281,13 @@ impl State {
         Some(utxo_total + reward_total)
     }
 
+    /// Find the most recent block at or before the given slot.
+    /// Creates a temporary db connection (for use at startup before State is fully initialized).
+    pub async fn boundary_block(db_url: &Url, boundary_slot: u64) -> Option<(u64, String)> {
+        let db = DbSync::new(db_url).await.ok()?;
+        db.boundary_block(boundary_slot).await
+    }
+
     /// Fetch epoch reward deltas from db-sync for a new epoch.
     pub async fn epoch_reward_delta(&self, epoch: u64) -> Option<HashMap<Vec<u8>, i64>> {
         let db = self.db().await?;
@@ -319,7 +326,7 @@ impl State {
         self.history.push(snapshot);
     }
 
-    /// Save a snapshot to disk. Picks the snapshot `depth` blocks back from tip.
+    /// Save snapshot + feed_index to disk. Picks the snapshot `depth` blocks back from tip.
     /// Writes atomically via tmp file + rename.
     pub fn save_snapshot(
         &self,
@@ -328,15 +335,15 @@ impl State {
     ) -> Result<u64, Box<dyn std::error::Error>> {
         let idx = self.history.len().saturating_sub(depth);
         let snap = &self.history[idx];
-        let data = rmp_serde::to_vec(snap)?;
+        let data = rmp_serde::to_vec(&(snap, &self.feed_index))?;
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, &data)?;
         std::fs::rename(&tmp, path)?;
         Ok(snap.slot)
     }
 
-    /// Load a snapshot from disk. Returns None on any error.
-    pub fn load_snapshot(path: &Path) -> Option<BlockSnapshot> {
+    /// Load snapshot + feed_index from disk.
+    pub fn load_snapshot(path: &Path) -> Option<(BlockSnapshot, FeedIndex)> {
         let data = match std::fs::read(path) {
             Ok(data) => data,
             Err(e) => {
@@ -346,7 +353,7 @@ impl State {
         };
         tracing::info!("loading snapshot from {}...", path.display());
         match rmp_serde::from_slice(&data) {
-            Ok(snap) => Some(snap),
+            Ok(combined) => Some(combined),
             Err(e) => {
                 tracing::warn!("failed to deserialize snapshot: {}", e);
                 None

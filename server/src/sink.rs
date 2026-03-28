@@ -4,6 +4,7 @@ use pallas::ledger::traverse::MultiEraBlock;
 use pallas::network::miniprotocols::Point;
 use sqlx::types::Decimal;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -348,18 +349,23 @@ impl Worker {
             })
             .await;
 
-        info!(slot, height, tx_count, "apply block");
+        let catchup = stage.catchup_target.load(Ordering::Relaxed);
+        if catchup > 0 {
+            if slot >= catchup {
+                stage.catchup_target.store(0, Ordering::Relaxed);
+                info!(slot, height, "catch-up complete");
+            } else if height % 1000 == 0 {
+                let remaining = (catchup - slot) / 20;
+                info!(slot, height, remaining, "catching up");
+            }
+        } else {
+            info!(slot, height, tx_count, "apply block");
+        }
 
         if height % 50 == 0 {
             let state = stage.state.read().await;
             match state.save_snapshot(&stage.snapshot_path, stage.snapshot_depth) {
-                Ok(saved_slot) => {
-                    let fi_path = stage.snapshot_path.with_file_name("feed_index.bin");
-                    if let Err(e) = state.feed_index.save(&fi_path) {
-                        warn!("failed to save feed index: {}", e);
-                    }
-                    info!(saved_slot, "snapshot saved");
-                }
+                Ok(saved_slot) => info!(saved_slot, "snapshot saved"),
                 Err(e) => warn!("failed to save snapshot: {}", e),
             }
         }
@@ -416,6 +422,7 @@ pub struct Stage {
     nftcdn: NftcdnConfig,
     snapshot_path: PathBuf,
     snapshot_depth: usize,
+    catchup_target: AtomicU64,
 
     pub input: MapperInputPort,
     pub cursor: SinkCursorPort,
@@ -434,6 +441,7 @@ pub fn bootstrapper(
     nftcdn: NftcdnConfig,
     snapshot_path: PathBuf,
     snapshot_depth: usize,
+    catchup_target: Option<u64>,
 ) -> Result<Stage, Error> {
     let genesis = GenesisValues::from(context.chain.clone());
     let mainnet = genesis.magic == 764824073;
@@ -445,6 +453,7 @@ pub fn bootstrapper(
         nftcdn,
         snapshot_path,
         snapshot_depth,
+        catchup_target: AtomicU64::new(catchup_target.unwrap_or(0)),
         ops_count: Default::default(),
         latest_block: Default::default(),
         input: Default::default(),

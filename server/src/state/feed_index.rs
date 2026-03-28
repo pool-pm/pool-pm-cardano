@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct BlockRef {
@@ -161,32 +160,6 @@ impl FeedIndex {
                     .entry(to.raw.clone())
                     .or_default()
                     .push(idx);
-            }
-        }
-    }
-
-    pub fn save(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        let data = rmp_serde::to_vec(self)?;
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, &data)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
-    }
-
-    pub fn load(path: &Path) -> Option<Self> {
-        let data = match std::fs::read(path) {
-            Ok(data) => data,
-            Err(e) => {
-                tracing::warn!("failed to read feed index from {}: {}", path.display(), e);
-                return None;
-            }
-        };
-        tracing::info!("loading feed index from {}...", path.display());
-        match rmp_serde::from_slice(&data) {
-            Ok(fi) => Some(fi),
-            Err(e) => {
-                tracing::warn!("failed to deserialize feed index: {}", e);
-                None
             }
         }
     }

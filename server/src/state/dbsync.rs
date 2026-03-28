@@ -286,4 +286,18 @@ impl DbSync {
 
         Ok((delegations, delegators))
     }
+
+    /// Find the most recent block at or before the given slot.
+    /// Used at startup to find a valid intersection point for backfill.
+    pub async fn boundary_block(&self, boundary_slot: u64) -> Option<(u64, String)> {
+        let row = sqlx::query!(
+            r#"SELECT slot_no AS "slot!", encode(hash, 'hex') AS "hash!"
+            FROM block WHERE slot_no <= $1 ORDER BY slot_no DESC LIMIT 1"#,
+            boundary_slot as i64
+        )
+        .fetch_optional(&self.db)
+        .await
+        .ok()??;
+        Some((row.slot as u64, row.hash))
+    }
 }

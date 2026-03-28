@@ -2,7 +2,7 @@ use gasket::daemon::Daemon;
 use oura::{cursor, framework::*, sources};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 use url::Url;
 
 use crate::args::{Args, Metrics};
@@ -11,7 +11,7 @@ use crate::mempool;
 use crate::nftcdn::NftcdnConfig;
 use crate::server;
 use crate::sink;
-use crate::state::{FeedIndex, State};
+use crate::state::State;
 
 fn define_gasket_policy() -> gasket::runtime::Policy {
     let policy = gasket::retries::Policy {
@@ -78,6 +78,34 @@ async fn serve_prometheus(daemon: Arc<Daemon>, metrics: Option<Metrics>) -> Resu
     Ok(())
 }
 
+fn start_from_boundary(
+    db_url: &Url,
+    tip_slot: u64,
+    epoch_length: u64,
+) -> (IntersectConfig, Option<u64>) {
+    let boundary_slot = tip_slot.saturating_sub(epoch_length);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    match rt.block_on(State::boundary_block(db_url, boundary_slot)) {
+        Some((b_slot, b_hash)) => {
+            let blocks_estimate = (tip_slot - b_slot) / 20;
+            info!(
+                slot = b_slot,
+                hash = b_hash.as_str(),
+                blocks_estimate,
+                "starting from boundary block"
+            );
+            (IntersectConfig::Point(b_slot, b_hash), Some(tip_slot))
+        }
+        None => {
+            warn!("boundary block not found, starting from tip");
+            (IntersectConfig::Tip, None)
+        }
+    }
+}
+
 pub fn run(args: Args) -> Result<(), Error> {
     setup_tracing(args.verbose);
 
@@ -85,7 +113,7 @@ pub fn run(args: Args) -> Result<(), Error> {
     let event_bus = Arc::new(EventBus::new(4096));
     let db_url = Url::parse(&args.db.replace("NETWORK", &args.network.to_string()))
         .expect("invalid database URL");
-    let mut state = State::new(db_url);
+    let mut state = State::new(db_url.clone());
 
     let listen = args.listen;
 
@@ -94,6 +122,7 @@ pub fn run(args: Args) -> Result<(), Error> {
     });
     let mainnet = args.network.magic() == 764824073;
     let genesis = GenesisValues::from(args.network.config().clone());
+    let epoch_length = genesis.shelley_epoch_length as u64;
     let genesis_config = server::GenesisConfig {
         shelley_known_slot: genesis.shelley_known_slot,
         shelley_known_time: genesis.shelley_known_time,
@@ -112,24 +141,36 @@ pub fn run(args: Args) -> Result<(), Error> {
     let snapshot_path: PathBuf = [&args.output, &"snapshot.bin".to_string()].iter().collect();
     let snapshot_depth = args.snapshot_depth;
 
-    // Try loading snapshot for fast resume
-    let intersect = if let Some(snapshot) = State::load_snapshot(&snapshot_path) {
-        let slot = snapshot.slot;
-        let hash = snapshot.block_hash.clone().unwrap_or_default();
-        info!(slot, hash = hash.as_str(), "loaded snapshot, resuming");
-        state.restore_from_snapshot(snapshot);
-        IntersectConfig::Point(slot, hash)
-    } else {
-        info!("no snapshot found, starting from tip");
-        IntersectConfig::Tip
-    };
-
-    // Load feed index (ok if missing — populates within one epoch)
-    let feed_index_path = snapshot_path.with_file_name("feed_index.bin");
-    if let Some(fi) = FeedIndex::load(&feed_index_path) {
-        state.feed_index = fi;
-        info!("loaded feed index");
-    };
+    let (intersect, catchup_target) =
+        if let Some((snapshot, fi)) = State::load_snapshot(&snapshot_path) {
+            let snap_slot = snapshot.slot;
+            let snap_hash = snapshot.block_hash.clone().unwrap_or_default();
+            info!(
+                snap_slot,
+                hash = snap_hash.as_str(),
+                "loaded snapshot, resuming"
+            );
+            state.restore_from_snapshot(snapshot);
+            state.feed_index = fi;
+            (IntersectConfig::Point(snap_slot, snap_hash), None)
+        } else {
+            // No snapshot — query tip from db-sync and start from 5 days ago
+            info!("no snapshot, starting from 5 days ago");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let tip_slot = rt
+                .block_on(State::boundary_block(&db_url, i64::MAX as u64))
+                .map(|(s, _)| s)
+                .unwrap_or(0);
+            if tip_slot == 0 {
+                warn!("no blocks in db-sync, starting from tip");
+                (IntersectConfig::Tip, None)
+            } else {
+                start_from_boundary(&db_url, tip_slot, epoch_length)
+            }
+        };
 
     let state = Arc::new(RwLock::new(state));
 
@@ -154,6 +195,7 @@ pub fn run(args: Args) -> Result<(), Error> {
         nftcdn.clone(),
         snapshot_path,
         snapshot_depth,
+        catchup_target,
     )?;
     let cursor = cursor::Bootstrapper::File(cursor_config.bootstrapper(&ctx)?);
     let mempool = mempool::bootstrapper(
