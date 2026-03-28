@@ -501,25 +501,6 @@ async fn filtered_events(
                 })
                 .collect();
 
-            // Blocks containing delegation changes to the pool (last epoch)
-            // Fetched via N2N, filtered to only include txs with delegation certs
-            let deleg_blocks = {
-                let guard = replay_state.chain_state.read().await;
-                guard.pool_delegation_blocks_since(ph, boundary_slot).await
-            };
-            for (s, h, n, bp_hash, bp_ticker) in deleg_blocks {
-                if all_slots.insert(s) {
-                    replay_blocks.push(ReplayBlock {
-                        slot: s,
-                        hash: h,
-                        number: n,
-                        pool_id: bp_hash.as_ref().map(|h| pool_bech32_id(h)),
-                        pool_ticker: bp_ticker,
-                        filter_by_delegators: true,
-                    });
-                }
-            }
-
             send_replay_blocks(
                 &sender,
                 &mut replay_blocks,
@@ -533,6 +514,58 @@ async fn filtered_events(
             )
             .await;
 
+            // Delegation changes to the pool (last epoch) — built from DB data
+            let deleg_rows = {
+                let guard = replay_state.chain_state.read().await;
+                guard.pool_delegations_since(ph, boundary_slot).await
+            };
+            let snap = {
+                let guard = replay_state.chain_state.read().await;
+                guard.current().cloned()
+            };
+            for row in &deleg_rows {
+                if all_slots.contains(&row.slot) {
+                    continue; // block already sent with full txs
+                }
+                let live_stake = snap.as_ref().map(|s| {
+                    s.stakes.get(&row.stake_cred).copied().unwrap_or(0)
+                        + s.rewards.get(&row.stake_cred).copied().unwrap_or(0)
+                }).unwrap_or(0);
+                let deleg_info = crate::event::DelegationInfo {
+                    stake_address: row.stake_address.clone(),
+                    from_pool_id: row.from_pool_hash.as_ref().map(|h| pool_bech32_id(h)),
+                    from_ticker: row.from_ticker.clone(),
+                    to_pool_id: row.to_pool_hash.as_ref().map(|h| pool_bech32_id(h)),
+                    to_ticker: row.to_ticker.clone(),
+                    live_stake,
+                };
+                let tx = BlockTx {
+                    hash: String::new(),
+                    fee: 0,
+                    size: 0,
+                    inputs: vec![],
+                    outputs: vec![],
+                    expiry: None,
+                    delegations: vec![deleg_info],
+                    stake_change: None,
+                    stake_credentials: vec![],
+                };
+                let event = crate::event::Event::Block {
+                    slot: row.slot,
+                    hash: row.block_hash.clone(),
+                    number: row.block_no,
+                    timestamp: slot_to_timestamp(row.slot, &replay_state.genesis),
+                    pool_id: row.block_pool_hash.as_ref().map(|h| pool_bech32_id(h)),
+                    pool_ticker: row.block_pool_ticker.clone(),
+                    txs: vec![tx],
+                };
+                if let Some(sse) = serialize_event(event) {
+                    let _ = sender.send(sse).await;
+                }
+            }
+
+            // Include delegation block slots in exclude set
+            all_slots.extend(deleg_rows.iter().map(|r| r.slot));
             all_slots
         } else {
             HashSet::new()

@@ -9,6 +9,20 @@ use url::Url;
 
 use crate::model::Pool;
 
+pub struct DelegationRow {
+    pub slot: u64,
+    pub block_hash: String,
+    pub block_no: u64,
+    pub block_pool_hash: Option<Vec<u8>>,
+    pub block_pool_ticker: Option<String>,
+    pub stake_address: String,
+    pub stake_cred: Vec<u8>,
+    pub from_pool_hash: Option<Vec<u8>>,
+    pub from_ticker: Option<String>,
+    pub to_pool_hash: Option<Vec<u8>>,
+    pub to_ticker: Option<String>,
+}
+
 pub struct DbSync {
     db: sqlx::Pool<sqlx::Postgres>,
 }
@@ -330,34 +344,70 @@ impl DbSync {
             .collect())
     }
 
-    /// Distinct blocks containing delegation changes TO a pool since a slot.
-    /// Returns (slot, block_hash_hex, block_no, block_pool_hash, block_pool_ticker).
-    pub async fn pool_delegation_blocks_since(
+    /// Delegation changes TO or FROM a pool since a slot.
+    /// Returns per-delegation rows with block info, stake address, from/to pool.
+    pub async fn pool_delegations_since(
         &self,
         pool_hash: &[u8],
         boundary_slot: i64,
-    ) -> Result<Vec<(u64, String, u64, Option<Vec<u8>>, Option<String>)>, sqlx::Error> {
+    ) -> Result<Vec<DelegationRow>, sqlx::Error> {
         let rows = sqlx::query!(
-            r#"SELECT DISTINCT ON (b.slot_no)
-                      b.slot_no AS "slot!",
-                      encode(b.hash, 'hex') AS "block_hash!",
-                      b.block_no AS "block_no!",
-                      sl_ph.hash_raw AS "pool_hash?",
-                      (SELECT ticker_name FROM off_chain_pool_data
-                       WHERE pool_id = sl_ph.id ORDER BY id DESC LIMIT 1) AS pool_ticker
-            FROM delegation d
-            JOIN pool_hash ph ON ph.id = d.pool_hash_id
-            JOIN tx ON tx.id = d.tx_id
+            r#"WITH changes AS (
+                -- Delegations TO the pool
+                SELECT d.addr_id, d.pool_hash_id AS to_pool_id, d.tx_id,
+                       prev_d.pool_hash_id AS from_pool_id
+                FROM delegation d
+                JOIN pool_hash ph ON ph.id = d.pool_hash_id
+                LEFT JOIN LATERAL (
+                    SELECT pool_hash_id FROM delegation d_prev
+                    WHERE d_prev.addr_id = d.addr_id AND d_prev.id < d.id
+                    ORDER BY d_prev.id DESC LIMIT 1
+                ) prev_d ON TRUE
+                JOIN tx ON tx.id = d.tx_id
+                JOIN block b ON b.id = tx.block_id
+                WHERE ph.hash_raw = $1 AND b.slot_no > $2
+                  AND (prev_d.pool_hash_id IS NULL OR prev_d.pool_hash_id != d.pool_hash_id)
+
+                UNION ALL
+
+                -- Delegations FROM the pool (to a different pool)
+                SELECT d.addr_id, d.pool_hash_id AS to_pool_id, d.tx_id,
+                       prev_d.pool_hash_id AS from_pool_id
+                FROM delegation d
+                JOIN pool_hash ph_new ON ph_new.id = d.pool_hash_id
+                LEFT JOIN LATERAL (
+                    SELECT pool_hash_id FROM delegation d_prev
+                    WHERE d_prev.addr_id = d.addr_id AND d_prev.id < d.id
+                    ORDER BY d_prev.id DESC LIMIT 1
+                ) prev_d ON TRUE
+                JOIN pool_hash ph_prev ON ph_prev.id = prev_d.pool_hash_id
+                JOIN tx ON tx.id = d.tx_id
+                JOIN block b ON b.id = tx.block_id
+                WHERE ph_prev.hash_raw = $1 AND b.slot_no > $2
+                  AND ph_new.hash_raw != $1
+            )
+            SELECT b.slot_no AS "slot!",
+                   encode(b.hash, 'hex') AS "block_hash!",
+                   b.block_no AS "block_no!",
+                   sl_ph.hash_raw AS "block_pool_hash?",
+                   (SELECT ticker_name FROM off_chain_pool_data
+                    WHERE pool_id = sl_ph.id ORDER BY id DESC LIMIT 1) AS block_pool_ticker,
+                   sa.view AS "stake_address!",
+                   sa.hash_raw AS "stake_hash_raw!",
+                   from_ph.hash_raw AS "from_pool_hash?",
+                   (SELECT ticker_name FROM off_chain_pool_data
+                    WHERE pool_id = from_ph.id ORDER BY id DESC LIMIT 1) AS from_ticker,
+                   to_ph.hash_raw AS "to_pool_hash?",
+                   (SELECT ticker_name FROM off_chain_pool_data
+                    WHERE pool_id = to_ph.id ORDER BY id DESC LIMIT 1) AS to_ticker
+            FROM changes c
+            JOIN stake_address sa ON sa.id = c.addr_id
+            JOIN tx ON tx.id = c.tx_id
             JOIN block b ON b.id = tx.block_id
             JOIN slot_leader sl ON sl.id = b.slot_leader_id
             LEFT JOIN pool_hash sl_ph ON sl_ph.id = sl.pool_hash_id
-            LEFT JOIN LATERAL (
-                SELECT pool_hash_id FROM delegation d_prev
-                WHERE d_prev.addr_id = d.addr_id AND d_prev.id < d.id
-                ORDER BY d_prev.id DESC LIMIT 1
-            ) prev_d ON TRUE
-            WHERE ph.hash_raw = $1 AND b.slot_no > $2
-              AND (prev_d.pool_hash_id IS NULL OR prev_d.pool_hash_id != d.pool_hash_id)
+            LEFT JOIN pool_hash from_ph ON from_ph.id = c.from_pool_id
+            LEFT JOIN pool_hash to_ph ON to_ph.id = c.to_pool_id
             ORDER BY b.slot_no"#,
             pool_hash,
             boundary_slot,
@@ -367,7 +417,19 @@ impl DbSync {
 
         Ok(rows
             .into_iter()
-            .map(|r| (r.slot as u64, r.block_hash, r.block_no as u64, r.pool_hash, r.pool_ticker))
+            .map(|r| DelegationRow {
+                slot: r.slot as u64,
+                block_hash: r.block_hash,
+                block_no: r.block_no as u64,
+                block_pool_hash: r.block_pool_hash,
+                block_pool_ticker: r.block_pool_ticker,
+                stake_address: r.stake_address,
+                stake_cred: r.stake_hash_raw[1..].to_vec(),
+                from_pool_hash: r.from_pool_hash,
+                from_ticker: r.from_ticker,
+                to_pool_hash: r.to_pool_hash,
+                to_ticker: r.to_ticker,
+            })
             .collect())
     }
 }

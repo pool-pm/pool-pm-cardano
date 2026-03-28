@@ -8,7 +8,7 @@ use crate::model::{Pool, TxOutput};
 use crate::pallas::PoolUpdate;
 use dbsync::DbSync;
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct BlockSnapshot {
     pub slot: u64,
     pub block_hash: Option<String>,
@@ -304,14 +304,14 @@ impl State {
         }
     }
 
-    /// Distinct blocks containing delegation changes TO a pool since a slot.
-    pub async fn pool_delegation_blocks_since(
+    /// Delegation changes TO a pool since a slot, with full details.
+    pub async fn pool_delegations_since(
         &self,
         pool_hash: &[u8],
         boundary_slot: u64,
-    ) -> Vec<(u64, String, u64, Option<Vec<u8>>, Option<String>)> {
+    ) -> Vec<dbsync::DelegationRow> {
         if let Some(db) = self.db().await {
-            db.pool_delegation_blocks_since(pool_hash, boundary_slot as i64)
+            db.pool_delegations_since(pool_hash, boundary_slot as i64)
                 .await
                 .unwrap_or_default()
         } else {
