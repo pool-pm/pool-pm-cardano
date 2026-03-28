@@ -475,7 +475,7 @@
   .block-hash {
     overflow: hidden;
     text-overflow: ellipsis;
-    min-width: 0;
+    max-width: 6ch;
   }
 
   .block-ticker {

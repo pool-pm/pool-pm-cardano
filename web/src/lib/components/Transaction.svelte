@@ -197,7 +197,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 100%;
+    max-width: 6ch;
   }
 
   .addr-list {
