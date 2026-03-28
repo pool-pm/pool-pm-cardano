@@ -540,7 +540,7 @@ async fn filtered_events(
                     live_stake,
                 };
                 let tx = BlockTx {
-                    hash: String::new(),
+                    hash: row.tx_hash.clone(),
                     fee: 0,
                     size: 0,
                     inputs: vec![],

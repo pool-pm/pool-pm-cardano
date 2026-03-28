@@ -15,6 +15,7 @@ pub struct DelegationRow {
     pub block_no: u64,
     pub block_pool_hash: Option<Vec<u8>>,
     pub block_pool_ticker: Option<String>,
+    pub tx_hash: String,
     pub stake_address: String,
     pub stake_cred: Vec<u8>,
     pub from_pool_hash: Option<Vec<u8>>,
@@ -392,6 +393,7 @@ impl DbSync {
                    sl_ph.hash_raw AS "block_pool_hash?",
                    (SELECT ticker_name FROM off_chain_pool_data
                     WHERE pool_id = sl_ph.id ORDER BY id DESC LIMIT 1) AS block_pool_ticker,
+                   encode(tx.hash, 'hex') AS "tx_hash!",
                    sa.view AS "stake_address!",
                    sa.hash_raw AS "stake_hash_raw!",
                    from_ph.hash_raw AS "from_pool_hash?",
@@ -423,6 +425,7 @@ impl DbSync {
                 block_no: r.block_no as u64,
                 block_pool_hash: r.block_pool_hash,
                 block_pool_ticker: r.block_pool_ticker,
+                tx_hash: r.tx_hash,
                 stake_address: r.stake_address,
                 stake_cred: r.stake_hash_raw[1..].to_vec(),
                 from_pool_hash: r.from_pool_hash,

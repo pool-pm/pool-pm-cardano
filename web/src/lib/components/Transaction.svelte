@@ -111,62 +111,66 @@
     </div>
   {/if}
 
-  <div class="tx-body">
-    <div class="addr-list">
-      {#if hiddenOutputCount > 0}
-        <span class="more-outputs">+{hiddenOutputCount} more</span>
+  {#if tx.inputs.length > 0 || tx.outputs.length > 0}
+    <div class="tx-body">
+      <div class="addr-list">
+        {#if hiddenOutputCount > 0}
+          <span class="more-outputs">+{hiddenOutputCount} more</span>
+        {/if}
+        {#each visibleOutputs as output}
+          <div class="addr-item">
+            <span class="ada">{@html formatAda(output.lovelace)}</span>
+            {#if output.assets.length > 0 && $config}
+              <div class="assets">
+                {#each output.assets as asset}
+                  <div class="asset">
+                    <img
+                      class="asset-thumb"
+                      src={nftcdnUrl(asset)}
+                      alt={asset.fingerprint}
+                      loading="lazy"
+                      onload={(e: Event) => {
+                        (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
+                      }}
+                      onerror={(e: Event) => {
+                        const el = (e.target as HTMLElement).parentElement!;
+                        el.style.display = 'none';
+                        el.dispatchEvent(new Event('remeasure', { bubbles: true }));
+                      }}
+                    />
+                    {#if thumbSize >= 32 && asset.quantity !== '1'}
+                      <span class="asset-label">{BigInt(asset.quantity).toLocaleString()}</span>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
+            <span class="addr mono">{output.address}</span>
+          </div>
+        {/each}
+      </div>
+
+      {#if filteredOutputs.length === 0}
+        <span class="ada">{@html formatAda(tx.outputs.reduce((s, o) => s + BigInt(o.lovelace), 0n).toString())}</span>
       {/if}
-      {#each visibleOutputs as output}
-        <div class="addr-item">
-          <span class="ada">{@html formatAda(output.lovelace)}</span>
-          {#if output.assets.length > 0 && $config}
-            <div class="assets">
-              {#each output.assets as asset}
-                <div class="asset">
-                  <img
-                    class="asset-thumb"
-                    src={nftcdnUrl(asset)}
-                    alt={asset.fingerprint}
-                    loading="lazy"
-                    onload={(e: Event) => {
-                      (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
-                    }}
-                    onerror={(e: Event) => {
-                      const el = (e.target as HTMLElement).parentElement!;
-                      el.style.display = 'none';
-                      el.dispatchEvent(new Event('remeasure', { bubbles: true }));
-                    }}
-                  />
-                  {#if thumbSize >= 32 && asset.quantity !== '1'}
-                    <span class="asset-label">{BigInt(asset.quantity).toLocaleString()}</span>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-          {/if}
-          <span class="addr mono">{output.address}</span>
-        </div>
-      {/each}
+      <div class="arrow" class:flip={filteredOutputs.length === 0}>{filteredOutputs.length === 0 ? '↻' : '↑'}</div>
+
+      <div class="addr-list">
+        {#each visibleInputs as input}
+          <div class="addr-item">
+            <span class="addr mono">{input.address ?? '???'}</span>
+          </div>
+        {/each}
+        {#if hiddenInputCount > 0}
+          <span class="more-outputs">+{hiddenInputCount} more</span>
+        {/if}
+      </div>
     </div>
+  {/if}
 
-    {#if filteredOutputs.length === 0}
-      <span class="ada">{@html formatAda(tx.outputs.reduce((s, o) => s + BigInt(o.lovelace), 0n).toString())}</span>
-    {/if}
-    <div class="arrow" class:flip={filteredOutputs.length === 0}>{filteredOutputs.length === 0 ? '↻' : '↑'}</div>
-
-    <div class="addr-list">
-      {#each visibleInputs as input}
-        <div class="addr-item">
-          <span class="addr mono">{input.address ?? '???'}</span>
-        </div>
-      {/each}
-      {#if hiddenInputCount > 0}
-        <span class="more-outputs">+{hiddenInputCount} more</span>
-      {/if}
-    </div>
-
+  {#if tx.hash}
     <div class="tx-hash mono">{tx.hash}</div>
-  </div>
+  {/if}
 </div>
 
 <style>
