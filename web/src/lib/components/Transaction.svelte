@@ -197,7 +197,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 6ch;
+    max-width: 8ch;
     margin-left: auto;
     margin-right: auto;
   }
