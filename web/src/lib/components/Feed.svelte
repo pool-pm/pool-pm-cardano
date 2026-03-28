@@ -328,7 +328,7 @@
           </div>
         {:else if section.block}
           <div class="block-footer">
-            <span class="block-meta block-hash">{section.block.hash}</span>
+            <span class="block-meta block-hash mono">{section.block.hash}</span>
             <span class="block-meta">
               {#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
             </span>
