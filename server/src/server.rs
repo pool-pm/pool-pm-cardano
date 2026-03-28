@@ -266,9 +266,11 @@ async fn send_replay_blocks(
                 resolve_block_inputs(&mut txs, chain_state).await;
 
                 let txs = if block.filter_by_delegators {
-                    // Keep only txs with delegation certificates
+                    // Keep only txs with delegation changes (excluding same-pool re-delegations)
                     txs.into_iter()
-                        .filter(|tx| !tx.delegations.is_empty())
+                        .filter(|tx| {
+                            tx.delegations.iter().any(|d| d.from_pool_id != d.to_pool_id)
+                        })
                         .collect()
                 } else {
                     txs

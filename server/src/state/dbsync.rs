@@ -391,7 +391,13 @@ impl DbSync {
             JOIN block b ON b.id = tx.block_id
             JOIN slot_leader sl ON sl.id = b.slot_leader_id
             LEFT JOIN pool_hash sl_ph ON sl_ph.id = sl.pool_hash_id
+            LEFT JOIN LATERAL (
+                SELECT pool_hash_id FROM delegation d_prev
+                WHERE d_prev.addr_id = d.addr_id AND d_prev.id < d.id
+                ORDER BY d_prev.id DESC LIMIT 1
+            ) prev_d ON TRUE
             WHERE ph.hash_raw = $1 AND b.slot_no > $2
+              AND (prev_d.pool_hash_id IS NULL OR prev_d.pool_hash_id != d.pool_hash_id)
             ORDER BY b.slot_no"#,
             pool_hash,
             boundary_slot,
