@@ -39,10 +39,10 @@ pub fn stake_credential_from_address_bytes(addr: &[u8]) -> Option<Vec<u8>> {
 pub fn stake_address_bech32(cred: &StakeCredential, mainnet: bool) -> String {
     use bech32::{Bech32, Hrp};
     let (header, hrp) = match (cred, mainnet) {
-        (StakeCredential::AddrKeyhash(_), true) => (0xe0u8, "stake"),
-        (StakeCredential::AddrKeyhash(_), false) => (0xe1u8, "stake_test"),
-        (StakeCredential::ScriptHash(_), true) => (0xf0u8, "stake"),
-        (StakeCredential::ScriptHash(_), false) => (0xf1u8, "stake_test"),
+        (StakeCredential::AddrKeyhash(_), true) => (0xe1u8, "stake"),
+        (StakeCredential::AddrKeyhash(_), false) => (0xe0u8, "stake_test"),
+        (StakeCredential::ScriptHash(_), true) => (0xf1u8, "stake"),
+        (StakeCredential::ScriptHash(_), false) => (0xf0u8, "stake_test"),
     };
     let hash = stake_credential_bytes(cred);
     let mut payload = Vec::with_capacity(29);
