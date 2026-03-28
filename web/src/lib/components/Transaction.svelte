@@ -198,6 +198,8 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 6ch;
+    margin-left: auto;
+    margin-right: auto;
   }
 
   .addr-list {
