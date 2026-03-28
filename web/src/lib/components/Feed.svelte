@@ -135,6 +135,12 @@
 
   let now = $state(Date.now());
 
+  // Set page title from pool ticker
+  $effect(() => {
+    const p = $pool;
+    document.title = p ? `${formatTicker(p.ticker ?? p.pool_id.slice(5, 10))} - pool.pm` : 'pool.pm';
+  });
+
   // Measure pool header height reactively (it appears after SSE sends Pool event)
   $effect(() => {
     const el = poolHeaderEl;
