@@ -163,6 +163,7 @@ pub fn extract_delegations(tx: &MultiEraTx<'_>, state: &State, mainnet: bool) ->
                 live_stake,
             }
         })
+        .filter(|d| d.from_pool_id != d.to_pool_id)
         .collect()
 }
 
