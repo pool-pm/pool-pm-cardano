@@ -234,46 +234,6 @@ impl DbSync {
         Ok(deltas)
     }
 
-    pub async fn pool_recent_blocks(
-        &self,
-        pool_hash: &[u8],
-        limit: i64,
-    ) -> Result<Vec<(u64, String, u64)>, sqlx::Error> {
-        let leader_id = sqlx::query_scalar!(
-            r#"SELECT sl.id AS "id!"
-            FROM slot_leader sl
-            JOIN pool_hash ph ON ph.id = sl.pool_hash_id
-            WHERE ph.hash_raw = $1
-            LIMIT 1"#,
-            pool_hash
-        )
-        .fetch_optional(&self.db)
-        .await?;
-
-        let leader_id = match leader_id {
-            Some(id) => id,
-            None => return Ok(vec![]),
-        };
-
-        let rows = sqlx::query!(
-            r#"WITH pool_blocks AS MATERIALIZED (
-                SELECT id, slot_no, hash, block_no
-                FROM block WHERE slot_leader_id = $1
-            )
-            SELECT slot_no AS "slot!", hash, block_no AS "block_no!"
-            FROM pool_blocks ORDER BY id DESC LIMIT $2"#,
-            leader_id,
-            limit
-        )
-        .fetch_all(&self.db)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|r| (r.slot as u64, hex::encode(r.hash), r.block_no as u64))
-            .collect())
-    }
-
     pub async fn drep_delegations(
         &self,
         last_tx_id: i64,
