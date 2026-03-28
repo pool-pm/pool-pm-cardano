@@ -121,7 +121,11 @@ pub async fn extract_tx(
     block_tx
 }
 
-pub fn extract_delegations(tx: &MultiEraTx<'_>, state: &State, mainnet: bool) -> Vec<DelegationInfo> {
+pub fn extract_delegations(
+    tx: &MultiEraTx<'_>,
+    state: &State,
+    mainnet: bool,
+) -> Vec<DelegationInfo> {
     let snap = match state.current() {
         Some(s) => s,
         None => return Vec::new(),

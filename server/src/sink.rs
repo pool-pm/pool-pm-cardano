@@ -15,7 +15,11 @@ use crate::event_bus::EventBus;
 use crate::mempool::extract_tx;
 use crate::model::{pool_bech32_id, TxOutput};
 use crate::nftcdn::NftcdnConfig;
-use crate::pallas::{stake_credential_from_address_bytes, MultiEraTxExt, PoolUpdate};
+use crate::pallas::{
+    stake_address_bech32, stake_credential_bytes, stake_credential_from_address_bytes,
+    MultiEraTxExt, PoolUpdate,
+};
+use crate::state::feed_index::{BlockRef, DelegationEntry, DelegationTarget};
 use crate::state::State;
 
 pub struct Worker;
@@ -50,9 +54,23 @@ impl Worker {
 
         // Single pass: txs are ordered in a block, so chained tx outputs
         // are available for resolving later txs' inputs.
-        let (txs, produced, consumed, pool_deleg, drep_deleg, pool_updates,
-             stake_changes, withdrawal_changes, pool_id, pool_ticker) = {
+        let (
+            txs,
+            produced,
+            consumed,
+            pool_deleg,
+            drep_deleg,
+            pool_updates,
+            stake_changes,
+            withdrawal_changes,
+            pool_id,
+            pool_ticker,
+            issuer_pool_hash,
+            stake_change_pools,
+            feed_delegations,
+        ) = {
             let state = stage.state.read().await;
+            let snap = state.current();
             let mut txs = Vec::new();
             let mut consumed = Vec::new();
             let mut produced: std::collections::HashMap<(Vec<u8>, i16), TxOutput> =
@@ -62,6 +80,19 @@ impl Worker {
             let mut pool_updates: Vec<PoolUpdate> = Vec::new();
             let mut stake_changes: Vec<(Vec<u8>, i64)> = Vec::new();
             let mut withdrawal_changes: Vec<(Vec<u8>, i64)> = Vec::new();
+
+            // Feed index: track pools with stake changes in this block
+            let mut stake_change_pools: std::collections::HashSet<Vec<u8>> =
+                std::collections::HashSet::new();
+
+            // Feed index: collect raw delegation certs for building DelegationEntry
+            struct RawDelegCert {
+                tx_hash: String,
+                cred: pallas::ledger::primitives::StakeCredential,
+                cred_bytes: Vec<u8>,
+                target_pool: Option<Vec<u8>>,
+            }
+            let mut raw_deleg_certs: Vec<RawDelegCert> = Vec::new();
 
             for tx in block.txs() {
                 let hash = tx.hash();
@@ -73,7 +104,7 @@ impl Worker {
                     // then fall back to db-sync for pre-reset UTXOs
                     let resolved = if let Some(utxo) = produced.get(&key) {
                         Some((utxo.address.clone(), utxo.lovelaces))
-                    } else if let Some(utxo) = state.current().and_then(|s| s.utxos.get(&key)) {
+                    } else if let Some(utxo) = snap.and_then(|s| s.utxos.get(&key)) {
                         Some((utxo.address.clone(), utxo.lovelaces))
                     } else {
                         let (addr_str, lovelace) = state
@@ -89,10 +120,14 @@ impl Worker {
                     };
                     if let Some((addr, lovelaces)) = resolved {
                         if let Some(cred) = stake_credential_from_address_bytes(&addr) {
-                            let amount: i64 = lovelaces
-                                .try_into()
-                                .expect("lovelace value must fit i64");
-                            stake_changes.push((cred, -amount));
+                            let amount: i64 =
+                                lovelaces.try_into().expect("lovelace value must fit i64");
+                            stake_changes.push((cred.clone(), -amount));
+
+                            // Feed index: track pool for any consumed input
+                            if let Some(pool) = snap.and_then(|s| s.pool_delegations.get(&cred)) {
+                                stake_change_pools.insert(pool.clone());
+                            }
                         }
                     }
                     consumed.push(key);
@@ -117,12 +152,19 @@ impl Worker {
                         .ok()
                         .map(|a| a.to_vec())
                         .unwrap_or_default();
-                    let lovelaces = Decimal::from(output.value().coin());
+                    let coin = output.value().coin();
+                    let lovelaces = Decimal::from(coin);
                     if let Some(cred) = stake_credential_from_address_bytes(&addr) {
-                        let amount: i64 = lovelaces
-                            .try_into()
-                            .expect("lovelace value must fit i64");
-                        stake_changes.push((cred, amount));
+                        let amount: i64 =
+                            lovelaces.try_into().expect("lovelace value must fit i64");
+                        stake_changes.push((cred.clone(), amount));
+
+                        // Feed index: track pool for outputs > 1000 ADA
+                        if coin > 1_000_000_000 {
+                            if let Some(pool) = snap.and_then(|s| s.pool_delegations.get(&cred)) {
+                                stake_change_pools.insert(pool.clone());
+                            }
+                        }
                     }
                     produced.insert(
                         (hash.as_ref().to_vec(), idx as i16),
@@ -141,22 +183,79 @@ impl Worker {
                     }
                 }
 
-                pool_deleg.extend(tx.pool_delegation_changes());
+                // Collect delegation certs (both raw bytes for state and full for feed index)
+                let certs = tx.pool_delegation_certs();
+                for (cred, target_pool) in &certs {
+                    let cred_bytes = stake_credential_bytes(cred);
+                    pool_deleg.push((cred_bytes.clone(), target_pool.clone()));
+                    raw_deleg_certs.push(RawDelegCert {
+                        tx_hash: hash.to_string(),
+                        cred: cred.clone(),
+                        cred_bytes,
+                        target_pool: target_pool.clone(),
+                    });
+                }
+
                 drep_deleg.extend(tx.drep_delegation_changes());
                 pool_updates.extend(tx.pool_updates());
             }
 
             let produced: Vec<_> = produced.into_iter().collect();
 
-            let (pool_id, pool_ticker) = block
+            // Extract block issuer pool hash
+            let issuer_pool_hash: Option<Vec<u8>> = block
                 .header()
                 .issuer_vkey()
-                .and_then(|vkey| {
-                    let pool_hash = Hasher::<224>::hash(vkey);
-                    state.current()?.pools.get(&hex::encode(pool_hash.as_ref()))
-                })
+                .map(|vkey| Hasher::<224>::hash(vkey).as_ref().to_vec());
+
+            let (pool_id, pool_ticker) = issuer_pool_hash
+                .as_ref()
+                .and_then(|hash| snap?.pools.get(&hex::encode(hash)))
                 .map(|pool| (Some(pool_bech32_id(&pool.hash_raw)), pool.ticker.clone()))
                 .unwrap_or((None, None));
+
+            // Build feed delegation entries from pre-block state
+            let mut feed_delegations: Vec<DelegationEntry> = Vec::new();
+            if let Some(s) = snap {
+                let resolve_pool_target = |pool_hash: &[u8]| -> DelegationTarget {
+                    DelegationTarget {
+                        raw: pool_hash.to_vec(),
+                        id: pool_bech32_id(pool_hash),
+                        label: s
+                            .pools
+                            .get(&hex::encode(pool_hash))
+                            .and_then(|p| p.ticker.clone()),
+                    }
+                };
+
+                for cert in &raw_deleg_certs {
+                    let from_pool = s.pool_delegations.get(&cert.cred_bytes);
+
+                    // Skip same-pool re-delegation
+                    if let (Some(from), Some(to)) = (from_pool, &cert.target_pool) {
+                        if from == to {
+                            continue;
+                        }
+                    }
+
+                    let live_stake = s.stakes.get(&cert.cred_bytes).copied().unwrap_or(0)
+                        + s.rewards.get(&cert.cred_bytes).copied().unwrap_or(0);
+
+                    feed_delegations.push(DelegationEntry {
+                        slot,
+                        block_hash: block_hash.clone(),
+                        block_no: height,
+                        block_pool_hash: issuer_pool_hash.clone().unwrap_or_default(),
+                        block_pool_ticker: pool_ticker.clone(),
+                        tx_hash: cert.tx_hash.clone(),
+                        stake_address: stake_address_bech32(&cert.cred, stage.mainnet),
+                        stake_cred: cert.cred_bytes.clone(),
+                        live_stake,
+                        from: from_pool.map(|h| resolve_pool_target(h)),
+                        to: cert.target_pool.as_ref().map(|h| resolve_pool_target(h)),
+                    });
+                }
+            }
 
             (
                 txs,
@@ -169,6 +268,9 @@ impl Worker {
                 withdrawal_changes,
                 pool_id,
                 pool_ticker,
+                issuer_pool_hash,
+                stake_change_pools,
+                feed_delegations,
             )
         };
 
@@ -189,6 +291,34 @@ impl Worker {
 
         {
             let mut state = stage.state.write().await;
+
+            // Update feed index BEFORE apply_block (pre-block state for delegation from_pool)
+            let block_ref = BlockRef {
+                slot,
+                hash: block_hash.clone(),
+                number: height,
+            };
+
+            if let Some(pool_hash) = &issuer_pool_hash {
+                state
+                    .feed_index
+                    .add_pool_minted(pool_hash.clone(), block_ref.clone());
+            }
+
+            if !stake_change_pools.is_empty() {
+                state
+                    .feed_index
+                    .add_pool_stake_changes(stake_change_pools, block_ref);
+            }
+
+            for entry in feed_delegations {
+                state.feed_index.add_delegation_event(entry);
+            }
+
+            // Prune entries older than one epoch
+            let prune_boundary = slot.saturating_sub(stage.genesis.shelley_epoch_length as u64);
+            state.feed_index.prune(prune_boundary);
+
             state.apply_block(
                 slot,
                 block_hash.clone(),
@@ -223,7 +353,13 @@ impl Worker {
         if height % 50 == 0 {
             let state = stage.state.read().await;
             match state.save_snapshot(&stage.snapshot_path, stage.snapshot_depth) {
-                Ok(saved_slot) => info!(saved_slot, "snapshot saved"),
+                Ok(saved_slot) => {
+                    let fi_path = stage.snapshot_path.with_file_name("feed_index.bin");
+                    if let Err(e) = state.feed_index.save(&fi_path) {
+                        warn!("failed to save feed index: {}", e);
+                    }
+                    info!(saved_slot, "snapshot saved");
+                }
                 Err(e) => warn!("failed to save snapshot: {}", e),
             }
         }

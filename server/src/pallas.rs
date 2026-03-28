@@ -1,9 +1,6 @@
 use pallas::ledger::primitives::{alonzo, conway, StakeCredential};
 use pallas::ledger::traverse::{MultiEraCert, MultiEraTx};
 
-/// (stake_credential_bytes, Some(target_bytes)) for delegation,
-/// (stake_credential_bytes, None) for deregistration.
-pub type PoolDelegationChange = (Vec<u8>, Option<Vec<u8>>);
 pub type DrepDelegationChange = (Vec<u8>, Option<Vec<u8>>);
 
 /// (operator_hash, pledge, cost, margin_numerator, margin_denominator)
@@ -63,14 +60,6 @@ pub fn drep_to_bytes(drep: &conway::DRep) -> Vec<u8> {
 pub trait MultiEraTxExt {
     /// Pool delegation certificates with full StakeCredential preserved.
     fn pool_delegation_certs(&self) -> Vec<PoolDelegationCert>;
-
-    /// Pool delegation changes as raw bytes (for state updates).
-    fn pool_delegation_changes(&self) -> Vec<PoolDelegationChange> {
-        self.pool_delegation_certs()
-            .iter()
-            .map(|(cred, pool)| (stake_credential_bytes(cred), pool.clone()))
-            .collect()
-    }
 
     fn drep_delegation_changes(&self) -> Vec<DrepDelegationChange>;
 

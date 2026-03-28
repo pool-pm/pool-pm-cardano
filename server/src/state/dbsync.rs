@@ -9,21 +9,6 @@ use url::Url;
 
 use crate::model::Pool;
 
-pub struct DelegationRow {
-    pub slot: u64,
-    pub block_hash: String,
-    pub block_no: u64,
-    pub block_pool_hash: Option<Vec<u8>>,
-    pub block_pool_ticker: Option<String>,
-    pub tx_hash: String,
-    pub stake_address: String,
-    pub stake_cred: Vec<u8>,
-    pub from_pool_hash: Option<Vec<u8>>,
-    pub from_ticker: Option<String>,
-    pub to_pool_hash: Option<Vec<u8>>,
-    pub to_ticker: Option<String>,
-}
-
 pub struct DbSync {
     db: sqlx::Pool<sqlx::Postgres>,
 }
@@ -166,10 +151,7 @@ impl DbSync {
         Ok((delegations, delegators))
     }
 
-    pub async fn utxo_stakes(
-        &self,
-        last_tx_id: i64,
-    ) -> Result<HashMap<Vec<u8>, i64>, sqlx::Error> {
+    pub async fn utxo_stakes(&self, last_tx_id: i64) -> Result<HashMap<Vec<u8>, i64>, sqlx::Error> {
         let mut rows = sqlx::query!(
             r#"SELECT stake_address.hash_raw AS stake_address,
                       SUM(tx_out.value)::bigint AS "stake!"
@@ -303,136 +285,5 @@ impl DbSync {
         }
 
         Ok((delegations, delegators))
-    }
-
-    /// All blocks minted by a pool since a slot boundary.
-    /// Returns (slot, block_hash_hex, block_number), newest first.
-    pub async fn pool_blocks_since(
-        &self,
-        pool_hash: &[u8],
-        boundary_slot: i64,
-    ) -> Result<Vec<(u64, String, u64)>, sqlx::Error> {
-        let leader_id = sqlx::query_scalar!(
-            r#"SELECT sl.id AS "id!"
-            FROM slot_leader sl
-            JOIN pool_hash ph ON ph.id = sl.pool_hash_id
-            WHERE ph.hash_raw = $1
-            LIMIT 1"#,
-            pool_hash
-        )
-        .fetch_optional(&self.db)
-        .await?;
-
-        let leader_id = match leader_id {
-            Some(id) => id,
-            None => return Ok(vec![]),
-        };
-
-        let rows = sqlx::query!(
-            r#"SELECT slot_no AS "slot!", encode(hash, 'hex') AS "hash!", block_no AS "block_no!"
-            FROM block
-            WHERE slot_leader_id = $1 AND slot_no > $2
-            ORDER BY id DESC"#,
-            leader_id,
-            boundary_slot,
-        )
-        .fetch_all(&self.db)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|r| (r.slot as u64, r.hash, r.block_no as u64))
-            .collect())
-    }
-
-    /// Delegation changes TO or FROM a pool since a slot.
-    /// Returns per-delegation rows with block info, stake address, from/to pool.
-    pub async fn pool_delegations_since(
-        &self,
-        pool_hash: &[u8],
-        boundary_slot: i64,
-    ) -> Result<Vec<DelegationRow>, sqlx::Error> {
-        let rows = sqlx::query!(
-            r#"WITH changes AS (
-                -- Delegations TO the pool
-                SELECT d.addr_id, d.pool_hash_id AS to_pool_id, d.tx_id,
-                       prev_d.pool_hash_id AS from_pool_id
-                FROM delegation d
-                JOIN pool_hash ph ON ph.id = d.pool_hash_id
-                LEFT JOIN LATERAL (
-                    SELECT pool_hash_id FROM delegation d_prev
-                    WHERE d_prev.addr_id = d.addr_id AND d_prev.id < d.id
-                    ORDER BY d_prev.id DESC LIMIT 1
-                ) prev_d ON TRUE
-                JOIN tx ON tx.id = d.tx_id
-                JOIN block b ON b.id = tx.block_id
-                WHERE ph.hash_raw = $1 AND b.slot_no > $2
-                  AND (prev_d.pool_hash_id IS NULL OR prev_d.pool_hash_id != d.pool_hash_id)
-
-                UNION ALL
-
-                -- Delegations FROM the pool (to a different pool)
-                SELECT d.addr_id, d.pool_hash_id AS to_pool_id, d.tx_id,
-                       prev_d.pool_hash_id AS from_pool_id
-                FROM delegation d
-                JOIN pool_hash ph_new ON ph_new.id = d.pool_hash_id
-                LEFT JOIN LATERAL (
-                    SELECT pool_hash_id FROM delegation d_prev
-                    WHERE d_prev.addr_id = d.addr_id AND d_prev.id < d.id
-                    ORDER BY d_prev.id DESC LIMIT 1
-                ) prev_d ON TRUE
-                JOIN pool_hash ph_prev ON ph_prev.id = prev_d.pool_hash_id
-                JOIN tx ON tx.id = d.tx_id
-                JOIN block b ON b.id = tx.block_id
-                WHERE ph_prev.hash_raw = $1 AND b.slot_no > $2
-                  AND ph_new.hash_raw != $1
-            )
-            SELECT b.slot_no AS "slot!",
-                   encode(b.hash, 'hex') AS "block_hash!",
-                   b.block_no AS "block_no!",
-                   sl_ph.hash_raw AS "block_pool_hash?",
-                   (SELECT ticker_name FROM off_chain_pool_data
-                    WHERE pool_id = sl_ph.id ORDER BY id DESC LIMIT 1) AS block_pool_ticker,
-                   encode(tx.hash, 'hex') AS "tx_hash!",
-                   sa.view AS "stake_address!",
-                   sa.hash_raw AS "stake_hash_raw!",
-                   from_ph.hash_raw AS "from_pool_hash?",
-                   (SELECT ticker_name FROM off_chain_pool_data
-                    WHERE pool_id = from_ph.id ORDER BY id DESC LIMIT 1) AS from_ticker,
-                   to_ph.hash_raw AS "to_pool_hash?",
-                   (SELECT ticker_name FROM off_chain_pool_data
-                    WHERE pool_id = to_ph.id ORDER BY id DESC LIMIT 1) AS to_ticker
-            FROM changes c
-            JOIN stake_address sa ON sa.id = c.addr_id
-            JOIN tx ON tx.id = c.tx_id
-            JOIN block b ON b.id = tx.block_id
-            JOIN slot_leader sl ON sl.id = b.slot_leader_id
-            LEFT JOIN pool_hash sl_ph ON sl_ph.id = sl.pool_hash_id
-            LEFT JOIN pool_hash from_ph ON from_ph.id = c.from_pool_id
-            LEFT JOIN pool_hash to_ph ON to_ph.id = c.to_pool_id
-            ORDER BY b.slot_no"#,
-            pool_hash,
-            boundary_slot,
-        )
-        .fetch_all(&self.db)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|r| DelegationRow {
-                slot: r.slot as u64,
-                block_hash: r.block_hash,
-                block_no: r.block_no as u64,
-                block_pool_hash: r.block_pool_hash,
-                block_pool_ticker: r.block_pool_ticker,
-                tx_hash: r.tx_hash,
-                stake_address: r.stake_address,
-                stake_cred: r.stake_hash_raw[1..].to_vec(),
-                from_pool_hash: r.from_pool_hash,
-                from_ticker: r.from_ticker,
-                to_pool_hash: r.to_pool_hash,
-                to_ticker: r.to_ticker,
-            })
-            .collect())
     }
 }

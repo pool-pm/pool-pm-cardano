@@ -11,7 +11,7 @@ use crate::mempool;
 use crate::nftcdn::NftcdnConfig;
 use crate::server;
 use crate::sink;
-use crate::state::State;
+use crate::state::{FeedIndex, State};
 
 fn define_gasket_policy() -> gasket::runtime::Policy {
     let policy = gasket::retries::Policy {
@@ -122,6 +122,13 @@ pub fn run(args: Args) -> Result<(), Error> {
     } else {
         info!("no snapshot found, starting from tip");
         IntersectConfig::Tip
+    };
+
+    // Load feed index (ok if missing — populates within one epoch)
+    let feed_index_path = snapshot_path.with_file_name("feed_index.bin");
+    if let Some(fi) = FeedIndex::load(&feed_index_path) {
+        state.feed_index = fi;
+        info!("loaded feed index");
     };
 
     let state = Arc::new(RwLock::new(state));

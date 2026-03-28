@@ -1,4 +1,5 @@
 mod dbsync;
+pub mod feed_index;
 
 use imbl::{hashmap::HashMap, hashset::HashSet};
 use std::path::Path;
@@ -7,6 +8,7 @@ use url::Url;
 use crate::model::{Pool, TxOutput};
 use crate::pallas::PoolUpdate;
 use dbsync::DbSync;
+pub use feed_index::FeedIndex;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct BlockSnapshot {
@@ -27,6 +29,7 @@ pub struct State {
     history: Vec<BlockSnapshot>,
     db_url: Url,
     db: tokio::sync::OnceCell<DbSync>,
+    pub feed_index: FeedIndex,
 }
 
 impl State {
@@ -35,6 +38,7 @@ impl State {
             history: Vec::new(),
             db_url,
             db: tokio::sync::OnceCell::new(),
+            feed_index: FeedIndex::new(),
         }
     }
 
@@ -52,7 +56,11 @@ impl State {
     /// Initialize state from db-sync data at a given reset point.
     /// Fetches pools, delegations, stakes, and rewards from db-sync,
     /// replaces all history with a single snapshot.
-    pub async fn reset(&mut self, slot: u64, genesis: &oura::framework::GenesisValues) -> Result<(), sqlx::Error> {
+    pub async fn reset(
+        &mut self,
+        slot: u64,
+        genesis: &oura::framework::GenesisValues,
+    ) -> Result<(), sqlx::Error> {
         let db = self
             .db
             .get_or_try_init(|| async { DbSync::new(&self.db_url).await })
@@ -103,14 +111,14 @@ impl State {
             stakes,
             rewards,
         });
+        self.feed_index = FeedIndex::new();
 
         Ok(())
     }
 
     pub fn epoch_for_slot(slot: u64, genesis: &oura::framework::GenesisValues) -> u64 {
         // shelley_known_slot is in Byron slot numbering; byron_epoch_length is in seconds
-        let shelley_start_epoch = genesis.shelley_known_slot
-            * genesis.byron_slot_length as u64
+        let shelley_start_epoch = genesis.shelley_known_slot * genesis.byron_slot_length as u64
             / genesis.byron_epoch_length as u64;
         shelley_start_epoch
             + (slot - genesis.shelley_known_slot) / genesis.shelley_epoch_length as u64
@@ -285,37 +293,9 @@ impl State {
         inputs: &[(Vec<u8>, i16)],
     ) -> std::collections::HashMap<(Vec<u8>, i16), (String, u64)> {
         if let Some(db) = self.db().await {
-            db.resolve_utxos_batch(inputs)
-                .await
-                .unwrap_or_default()
+            db.resolve_utxos_batch(inputs).await.unwrap_or_default()
         } else {
             std::collections::HashMap::new()
-        }
-    }
-
-    /// All blocks minted by a pool since a slot boundary.
-    pub async fn pool_blocks_since(&self, pool_hash: &[u8], boundary_slot: u64) -> Vec<(u64, String, u64)> {
-        if let Some(db) = self.db().await {
-            db.pool_blocks_since(pool_hash, boundary_slot as i64)
-                .await
-                .unwrap_or_default()
-        } else {
-            vec![]
-        }
-    }
-
-    /// Delegation changes TO a pool since a slot, with full details.
-    pub async fn pool_delegations_since(
-        &self,
-        pool_hash: &[u8],
-        boundary_slot: u64,
-    ) -> Vec<dbsync::DelegationRow> {
-        if let Some(db) = self.db().await {
-            db.pool_delegations_since(pool_hash, boundary_slot as i64)
-                .await
-                .unwrap_or_default()
-        } else {
-            vec![]
         }
     }
 
@@ -329,6 +309,7 @@ impl State {
             .map(|i| i + 1)
             .unwrap_or(0);
         self.history.truncate(keep);
+        self.feed_index.rollback(slot);
         !self.history.is_empty()
     }
 
@@ -340,7 +321,11 @@ impl State {
 
     /// Save a snapshot to disk. Picks the snapshot `depth` blocks back from tip.
     /// Writes atomically via tmp file + rename.
-    pub fn save_snapshot(&self, path: &Path, depth: usize) -> Result<u64, Box<dyn std::error::Error>> {
+    pub fn save_snapshot(
+        &self,
+        path: &Path,
+        depth: usize,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
         let idx = self.history.len().saturating_sub(depth);
         let snap = &self.history[idx];
         let data = rmp_serde::to_vec(snap)?;

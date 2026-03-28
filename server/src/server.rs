@@ -5,10 +5,11 @@ use axum::{
     Router,
 };
 use futures::stream::Stream;
+use pallas::crypto::hash::Hasher;
 use pallas::ledger::traverse::MultiEraBlock;
 use pallas::network::facades::PeerClient;
 use pallas::network::miniprotocols::Point;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -19,11 +20,12 @@ use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
-use crate::event::{AssetInfo, BlockTx, TxInput, TxOutputInfo};
+use crate::event::{AssetInfo, BlockTx, DelegationInfo, TxInput, TxOutputInfo};
 use crate::event_bus::EventBus;
 use crate::filter;
 use crate::model::{asset_fingerprint, pool_bech32_id, Pool};
 use crate::nftcdn::NftcdnConfig;
+use crate::state::feed_index::{BlockRef, DelegationEntry};
 use crate::state::{BlockSnapshot, State};
 
 #[derive(Clone)]
@@ -91,20 +93,34 @@ fn serialize_event(event: crate::event::Event) -> Option<Result<SseEvent, Infall
 
 // --- Block decoding ---
 
-/// Decode a block CBOR into a BlockTx list.
-/// If `state` and `mainnet` are provided, also extracts delegation certificates.
+/// Decode a block CBOR into a BlockTx list and extract the minting pool info.
 fn decode_block_txs(
     cbor: &[u8],
     nftcdn: &NftcdnConfig,
     state: Option<&State>,
     mainnet: bool,
-) -> Vec<BlockTx> {
+) -> (Vec<BlockTx>, Option<String>, Option<String>) {
     let block = match MultiEraBlock::decode(cbor) {
         Ok(b) => b,
-        Err(_) => return vec![],
+        Err(_) => return (vec![], None, None),
     };
 
-    block
+    // Extract minting pool from block header
+    let (block_pool_id, block_pool_ticker) = block
+        .header()
+        .issuer_vkey()
+        .and_then(|vkey| {
+            let hash = Hasher::<224>::hash(vkey);
+            state?
+                .current()?
+                .pools
+                .get(&hex::encode(hash.as_ref()))
+                .cloned()
+        })
+        .map(|pool| (Some(pool_bech32_id(&pool.hash_raw)), pool.ticker))
+        .unwrap_or((None, None));
+
+    let txs = block
         .txs()
         .iter()
         .map(|tx| {
@@ -180,7 +196,9 @@ fn decode_block_txs(
                 stake_credentials: vec![],
             }
         })
-        .collect()
+        .collect();
+
+    (txs, block_pool_id, block_pool_ticker)
 }
 
 /// Resolve input addresses for a list of transactions via batch db-sync query.
@@ -202,10 +220,7 @@ async fn resolve_block_inputs(txs: &mut Vec<BlockTx>, chain_state: &RwLock<State
     };
     for tx in txs {
         for inp in &mut tx.inputs {
-            let key = (
-                hex::decode(&inp.tx_hash).unwrap_or_default(),
-                inp.index,
-            );
+            let key = (hex::decode(&inp.tx_hash).unwrap_or_default(), inp.index);
             if let Some((addr, lovelace)) = resolved.get(&key) {
                 inp.address = Some(addr.clone());
                 inp.lovelace = *lovelace;
@@ -227,11 +242,11 @@ struct ReplayBlock {
     filter_by_delegators: bool,
 }
 
-/// Fetch replay blocks via N2N, sorted oldest-first, and send as SSE events.
+/// Fetch replay blocks via N2N and send as SSE events. Newest-first order.
 async fn send_replay_blocks(
     sender: &Sender<Result<SseEvent, Infallible>>,
     blocks: &mut [ReplayBlock],
-    _delegators: &imbl::hashset::HashSet<Vec<u8>>,
+    delegators: &imbl::hashset::HashSet<Vec<u8>>,
     nftcdn: &NftcdnConfig,
     genesis: &GenesisConfig,
     chain_state: &RwLock<State>,
@@ -242,8 +257,8 @@ async fn send_replay_blocks(
     if blocks.is_empty() {
         return;
     }
-    // Sort oldest-first for chronological replay
-    blocks.sort_by_key(|b| b.slot);
+    // Sort newest-first so the feed builds immediately with recent activity
+    blocks.sort_by(|a, b| b.slot.cmp(&a.slot));
 
     let mut client = match PeerClient::connect(n2n_addr, magic).await {
         Ok(c) => c,
@@ -261,15 +276,18 @@ async fn send_replay_blocks(
         match client.blockfetch().fetch_single(point).await {
             Ok(cbor) => {
                 let state_guard = chain_state.read().await;
-                let mut txs = decode_block_txs(&cbor, nftcdn, Some(&state_guard), mainnet);
+                let (mut txs, cbor_pool_id, cbor_pool_ticker) =
+                    decode_block_txs(&cbor, nftcdn, Some(&state_guard), mainnet);
                 drop(state_guard);
                 resolve_block_inputs(&mut txs, chain_state).await;
 
                 let txs = if block.filter_by_delegators {
-                    // Keep only txs with delegation certificates
-                    // (same-pool re-delegations already excluded by the DB query)
                     txs.into_iter()
-                        .filter(|tx| !tx.delegations.is_empty())
+                        .filter(|tx| {
+                            tx.stake_credentials
+                                .iter()
+                                .any(|cred| delegators.contains(cred))
+                        })
                         .collect()
                 } else {
                     txs
@@ -278,13 +296,17 @@ async fn send_replay_blocks(
                     continue;
                 }
 
+                // Use provided pool_id or fall back to what we extracted from CBOR
+                let pool_id = block.pool_id.clone().or(cbor_pool_id);
+                let pool_ticker = block.pool_ticker.clone().or(cbor_pool_ticker);
+
                 let event = crate::event::Event::Block {
                     slot: block.slot,
                     hash: block.hash.clone(),
                     number: block.number,
                     timestamp: slot_to_timestamp(block.slot, genesis),
-                    pool_id: block.pool_id.clone(),
-                    pool_ticker: block.pool_ticker.clone(),
+                    pool_id,
+                    pool_ticker,
                     txs,
                 };
                 if let Some(sse) = serialize_event(event) {
@@ -353,6 +375,53 @@ async fn send_pool_info(
     }
 }
 
+/// Construct a delegation-only SSE event from a DelegationEntry.
+fn delegation_entry_to_event(
+    entry: &DelegationEntry,
+    genesis: &GenesisConfig,
+) -> crate::event::Event {
+    let deleg_info = DelegationInfo {
+        stake_address: entry.stake_address.clone(),
+        from_pool_id: entry.from.as_ref().map(|t| t.id.clone()),
+        from_ticker: entry.from.as_ref().and_then(|t| t.label.clone()),
+        to_pool_id: entry.to.as_ref().map(|t| t.id.clone()),
+        to_ticker: entry.to.as_ref().and_then(|t| t.label.clone()),
+        live_stake: entry.live_stake,
+    };
+    let tx = BlockTx {
+        hash: entry.tx_hash.clone(),
+        fee: 0,
+        size: 0,
+        inputs: vec![],
+        outputs: vec![],
+        expiry: None,
+        delegations: vec![deleg_info],
+        stake_change: None,
+        stake_credentials: vec![],
+    };
+    let block_pool_id = if entry.block_pool_hash.is_empty() {
+        None
+    } else {
+        Some(pool_bech32_id(&entry.block_pool_hash))
+    };
+    crate::event::Event::Block {
+        slot: entry.slot,
+        hash: entry.block_hash.clone(),
+        number: entry.block_no,
+        timestamp: slot_to_timestamp(entry.slot, genesis),
+        pool_id: block_pool_id,
+        pool_ticker: entry.block_pool_ticker.clone(),
+        txs: vec![tx],
+    }
+}
+
+/// Categories for feed index replay actions, by priority.
+enum SlotAction {
+    PoolMinted(BlockRef),
+    StakeChange(BlockRef),
+    DelegationOnly(Vec<DelegationEntry>),
+}
+
 /// Build the live stream that detects pool parameter/stake changes and filters events.
 fn build_live_stream(
     rx: tokio::sync::broadcast::Receiver<crate::event::Event>,
@@ -373,7 +442,10 @@ fn build_live_stream(
         |(mut rx, filter, chain_state, mut last_pool, mut last_live_stake, mut buf)| async move {
             loop {
                 if let Some(sse) = buf.pop_front() {
-                    return Some((sse, (rx, filter, chain_state, last_pool, last_live_stake, buf)));
+                    return Some((
+                        sse,
+                        (rx, filter, chain_state, last_pool, last_live_stake, buf),
+                    ));
                 }
 
                 let event = rx.next().await?.ok()?;
@@ -386,8 +458,7 @@ fn build_live_stream(
                         let (current_pool, current_live_stake, pool_event) = {
                             let guard = chain_state.read().await;
                             let snap = guard.current();
-                            let pool = snap
-                                .and_then(|s| s.pools.get(&hex::encode(hash)).cloned());
+                            let pool = snap.and_then(|s| s.pools.get(&hex::encode(hash)).cloned());
                             let live_stake = snap.and_then(|s| State::pool_live_stake(s, hash));
                             let event = pool.as_ref().map(|p| pool_sse_event(p, snap));
                             (pool, live_stake, event)
@@ -414,7 +485,10 @@ fn build_live_stream(
                     .filter_event(&event, &delegators)
                     .and_then(serialize_event)
                 {
-                    return Some((sse, (rx, filter, chain_state, last_pool, last_live_stake, buf)));
+                    return Some((
+                        sse,
+                        (rx, filter, chain_state, last_pool, last_live_stake, buf),
+                    ));
                 }
             }
         },
@@ -463,7 +537,7 @@ async fn filtered_events(
         (delegators, pool_id, pool_ticker, pool_hash)
     };
 
-    // Spawn replay task: config → pool info → history blocks → snapshot
+    // Spawn replay task: config → pool info → feed index replay → snapshot
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<SseEvent, Infallible>>(32);
     let replay_filter = filter.clone();
     let replay_delegators = delegators.clone();
@@ -471,36 +545,86 @@ async fn filtered_events(
 
     tokio::spawn(async move {
         let _ = sender
-            .send(config_event(replay_state.nftcdn.subdomain, &replay_state.genesis))
+            .send(config_event(
+                replay_state.nftcdn.subdomain,
+                &replay_state.genesis,
+            ))
             .await;
 
         let exclude_slots = if let Some(ref ph) = pool_hash {
             send_pool_info(&sender, &replay_state.chain_state, ph).await;
 
-            let boundary_slot = {
+            // Read feed index data
+            let (minted, stake_changes, delegations) = {
                 let guard = replay_state.chain_state.read().await;
-                guard.current().map(|s| s.slot).unwrap_or(0)
-            }
-            .saturating_sub(replay_state.genesis.shelley_epoch_length as u64);
-
-            // Pool's own blocks from last epoch (all txs)
-            let pool_blocks = {
-                let guard = replay_state.chain_state.read().await;
-                guard.pool_blocks_since(ph, boundary_slot).await
+                (
+                    guard.feed_index.pool_minted_blocks(ph).to_vec(),
+                    guard.feed_index.pool_stake_change_blocks(ph).to_vec(),
+                    guard
+                        .feed_index
+                        .pool_delegation_entries(ph)
+                        .into_iter()
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
             };
-            let mut all_slots: HashSet<u64> = pool_blocks.iter().map(|(s, _, _)| *s).collect();
-            let mut replay_blocks: Vec<ReplayBlock> = pool_blocks
-                .iter()
-                .map(|(s, h, n)| ReplayBlock {
-                    slot: *s,
-                    hash: h.clone(),
-                    number: *n,
-                    pool_id: pool_id.clone(),
-                    pool_ticker: pool_ticker.clone(),
-                    filter_by_delegators: false,
-                })
-                .collect();
 
+            // Build slot actions with priority: PoolMinted > StakeChange > DelegationOnly
+            let mut slot_map: HashMap<u64, SlotAction> = HashMap::new();
+
+            for r in &minted {
+                slot_map.insert(r.slot, SlotAction::PoolMinted(r.clone()));
+            }
+            for r in &stake_changes {
+                slot_map
+                    .entry(r.slot)
+                    .or_insert(SlotAction::StakeChange(r.clone()));
+            }
+            let mut deleg_by_slot: HashMap<u64, Vec<DelegationEntry>> = HashMap::new();
+            for d in delegations {
+                deleg_by_slot.entry(d.slot).or_default().push(d);
+            }
+            for (slot, entries) in deleg_by_slot {
+                slot_map
+                    .entry(slot)
+                    .or_insert(SlotAction::DelegationOnly(entries));
+            }
+
+            let exclude_slots: HashSet<u64> = slot_map.keys().copied().collect();
+
+            // Separate block fetches from delegation-only events
+            let mut replay_blocks: Vec<ReplayBlock> = Vec::new();
+            let mut deleg_only: Vec<(u64, Vec<DelegationEntry>)> = Vec::new();
+
+            // Sort newest-first
+            let mut actions: Vec<(u64, SlotAction)> = slot_map.into_iter().collect();
+            actions.sort_by(|a, b| b.0.cmp(&a.0));
+
+            for (_slot, action) in actions {
+                match action {
+                    SlotAction::PoolMinted(r) => replay_blocks.push(ReplayBlock {
+                        slot: r.slot,
+                        hash: r.hash,
+                        number: r.number,
+                        pool_id: pool_id.clone(),
+                        pool_ticker: pool_ticker.clone(),
+                        filter_by_delegators: false,
+                    }),
+                    SlotAction::StakeChange(r) => replay_blocks.push(ReplayBlock {
+                        slot: r.slot,
+                        hash: r.hash,
+                        number: r.number,
+                        pool_id: None, // extracted from CBOR during fetch
+                        pool_ticker: None,
+                        filter_by_delegators: true,
+                    }),
+                    SlotAction::DelegationOnly(entries) => {
+                        deleg_only.push((_slot, entries));
+                    }
+                }
+            }
+
+            // Send blocks via N2N (newest-first)
             send_replay_blocks(
                 &sender,
                 &mut replay_blocks,
@@ -514,64 +638,29 @@ async fn filtered_events(
             )
             .await;
 
-            // Delegation changes to the pool (last epoch) — built from DB data
-            let deleg_rows = {
-                let guard = replay_state.chain_state.read().await;
-                guard.pool_delegations_since(ph, boundary_slot).await
-            };
-            let snap = {
-                let guard = replay_state.chain_state.read().await;
-                guard.current().cloned()
-            };
-            for row in &deleg_rows {
-                if all_slots.contains(&row.slot) {
-                    continue; // block already sent with full txs
-                }
-                let live_stake = snap.as_ref().map(|s| {
-                    s.stakes.get(&row.stake_cred).copied().unwrap_or(0)
-                        + s.rewards.get(&row.stake_cred).copied().unwrap_or(0)
-                }).unwrap_or(0);
-                let deleg_info = crate::event::DelegationInfo {
-                    stake_address: row.stake_address.clone(),
-                    from_pool_id: row.from_pool_hash.as_ref().map(|h| pool_bech32_id(h)),
-                    from_ticker: row.from_ticker.clone(),
-                    to_pool_id: row.to_pool_hash.as_ref().map(|h| pool_bech32_id(h)),
-                    to_ticker: row.to_ticker.clone(),
-                    live_stake,
-                };
-                let tx = BlockTx {
-                    hash: row.tx_hash.clone(),
-                    fee: 0,
-                    size: 0,
-                    inputs: vec![],
-                    outputs: vec![],
-                    expiry: None,
-                    delegations: vec![deleg_info],
-                    stake_change: None,
-                    stake_credentials: vec![],
-                };
-                let event = crate::event::Event::Block {
-                    slot: row.slot,
-                    hash: row.block_hash.clone(),
-                    number: row.block_no,
-                    timestamp: slot_to_timestamp(row.slot, &replay_state.genesis),
-                    pool_id: row.block_pool_hash.as_ref().map(|h| pool_bech32_id(h)),
-                    pool_ticker: row.block_pool_ticker.clone(),
-                    txs: vec![tx],
-                };
-                if let Some(sse) = serialize_event(event) {
-                    let _ = sender.send(sse).await;
+            // Send delegation-only events (already newest-first from sorted actions)
+            for (_, entries) in deleg_only {
+                for entry in entries {
+                    let event = delegation_entry_to_event(&entry, &replay_state.genesis);
+                    if let Some(sse) = serialize_event(event) {
+                        let _ = sender.send(sse).await;
+                    }
                 }
             }
 
-            // Include delegation block slots in exclude set
-            all_slots.extend(deleg_rows.iter().map(|r| r.slot));
-            all_slots
+            exclude_slots
         } else {
             HashSet::new()
         };
 
-        send_filtered_snapshot(&sender, snapshot, &replay_filter, &replay_delegators, &exclude_slots).await;
+        send_filtered_snapshot(
+            &sender,
+            snapshot,
+            &replay_filter,
+            &replay_delegators,
+            &exclude_slots,
+        )
+        .await;
     });
 
     // Build live stream with pool change detection
