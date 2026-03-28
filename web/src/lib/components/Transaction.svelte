@@ -25,8 +25,12 @@
     const wholeNum = Number(whole);
     const dec = (d: string) => `<span class="ada-dec">.${d}</span>`;
     if (wholeNum >= 1000) return wholeNum.toLocaleString() + ' ADA';
-    if (wholeNum >= 1) return whole + dec(frac.slice(0, 2)) + ' ADA';
-    return '0' + dec(frac) + ' ADA';
+    if (wholeNum >= 1) {
+      const trimmed = frac.slice(0, 2).replace(/0+$/, '');
+      return trimmed ? whole + dec(trimmed) + ' ADA' : whole + ' ADA';
+    }
+    const trimmed = frac.replace(/0+$/, '');
+    return trimmed ? '0' + dec(trimmed) + ' ADA' : '0 ADA';
   }
 
   function nftcdnUrl(asset: AssetInfo): string {
