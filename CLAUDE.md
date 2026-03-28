@@ -105,6 +105,10 @@ The frontend uses a unified `sections` store (`Section[]`) instead of separate m
 
 Values that can exceed `Number.MAX_SAFE_INTEGER` (`lovelace`, `fee`, `quantity`) are serialized as JSON strings from Rust (`#[serde(with = "string")]` in `event.rs`) and typed as `string` on the frontend. For display, use string slicing to insert the decimal point rather than float arithmetic. Convert to `BigInt` only when arithmetic is needed. New fields with potentially large values should follow this pattern.
 
+### Event Ordering
+
+SSE events from the server may arrive in any order (pool blocks, delegation changes, snapshot events). The **frontend is responsible for ordering** sections by slot. The server should send events as soon as they are available — never buffer or sort server-side. The frontend must insert blocks at the correct position by slot, not just prepend.
+
 ### Coding Guidelines
 
 - **Formatting**: Never use tabs in source files. Always format before committing: `cargo fmt` for Rust, `pnpm prettier --write` for frontend (configured in `web/.prettierrc`).

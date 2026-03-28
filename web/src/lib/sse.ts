@@ -72,38 +72,59 @@ function handleEvent(event: Event): void {
     case 'Block': {
       const now = Date.now();
       sections.update((s) => {
-        // Deduplicate: skip if this block is already in sections (from history replay)
+        // Deduplicate: skip if this block is already in sections
         if (s.some((sec, i) => i > 0 && sec.block?.slot === event.slot)) return s;
-        const mempool = s[0];
-        const mempoolByHash = new Map(mempool.txs.map((tx) => [tx.hash, tx]));
-        const blockByHash = new Map(event.txs.map((tx) => [tx.hash, tx]));
 
-        const excluded = mempool.txs.filter((tx) => !blockByHash.has(tx.hash));
+        const newestBlockSlot = s[1]?.block?.slot ?? 0;
 
-        // Mempool-order first (keep mempool version for visual continuity),
-        // then block-only txs appended
-        const inBlock = [
-          ...mempool.txs.filter((tx) => blockByHash.has(tx.hash)),
-          ...event.txs.filter((tx) => !mempoolByHash.has(tx.hash)).map((tx) => ({ ...tx, receivedAt: now })),
-        ];
+        if (event.slot >= newestBlockSlot) {
+          // Live/newest block: finalize mempool
+          const mempool = s[0];
+          const mempoolByHash = new Map(mempool.txs.map((tx) => [tx.hash, tx]));
+          const blockByHash = new Map(event.txs.map((tx) => [tx.hash, tx]));
 
-        // Finalize current mempool as a block
-        mempool.block = {
-          slot: event.slot,
-          hash: event.hash,
-          number: event.number,
-          timestamp: event.timestamp,
-          pool_id: event.pool_id,
-          pool_ticker: event.pool_ticker,
-        };
-        mempool.txs = inBlock;
+          const excluded = mempool.txs.filter((tx) => !blockByHash.has(tx.hash));
+          const inBlock = [
+            ...mempool.txs.filter((tx) => blockByHash.has(tx.hash)),
+            ...event.txs.filter((tx) => !mempoolByHash.has(tx.hash)).map((tx) => ({ ...tx, receivedAt: now })),
+          ];
 
-        // New mempool with excluded txs, minus any pruned
-        const next = newSection();
-        next.txs = excluded.filter((tx) => !pendingPrune.has(tx.hash));
-        pendingPrune.clear();
+          mempool.block = {
+            slot: event.slot,
+            hash: event.hash,
+            number: event.number,
+            timestamp: event.timestamp,
+            pool_id: event.pool_id,
+            pool_ticker: event.pool_ticker,
+          };
+          mempool.txs = inBlock;
 
-        return [next, ...s];
+          const next = newSection();
+          next.txs = excluded.filter((tx) => !pendingPrune.has(tx.hash));
+          pendingPrune.clear();
+
+          return [next, ...s];
+        } else {
+          // Historical block: insert at correct slot position (descending)
+          const section = newSection();
+          section.block = {
+            slot: event.slot,
+            hash: event.hash,
+            number: event.number,
+            timestamp: event.timestamp,
+            pool_id: event.pool_id,
+            pool_ticker: event.pool_ticker,
+          };
+          section.txs = event.txs.map((tx) => ({ ...tx, receivedAt: now }));
+
+          let idx = 1;
+          while (idx < s.length && (s[idx].block?.slot ?? 0) > event.slot) {
+            idx++;
+          }
+          const result = [...s];
+          result.splice(idx, 0, section);
+          return result;
+        }
       });
       break;
     }
