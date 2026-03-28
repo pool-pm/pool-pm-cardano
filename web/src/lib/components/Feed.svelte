@@ -328,7 +328,7 @@
           </div>
         {:else if section.block}
           <div class="block-footer">
-            <span class="block-meta">{section.block.hash.slice(0, 4)}…{section.block.hash.slice(-4)}</span>
+            <span class="block-meta block-hash">{section.block.hash}</span>
             <span class="block-meta">
               {#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
             </span>
@@ -470,6 +470,12 @@
   .block-meta {
     color: rgb(0 0 0 / 0.5);
     font-size: 10px;
+  }
+
+  .block-hash {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
   }
 
   .block-ticker {

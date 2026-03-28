@@ -6,10 +6,6 @@
 
   let { tx }: { tx: FeedTx } = $props();
 
-  function truncateHash(h: string): string {
-    return h.slice(0, 4) + '\u2026' + h.slice(-4);
-  }
-
   function poolLabel(ticker?: string, poolId?: string): string {
     return formatTicker(ticker ?? poolId?.slice(5, 10) ?? '');
   }
@@ -169,7 +165,7 @@
       {/if}
     </div>
 
-    <div class="tx-hash mono">{truncateHash(tx.hash)}</div>
+    <div class="tx-hash mono">{tx.hash}</div>
   </div>
 </div>
 
@@ -198,6 +194,10 @@
     color: var(--section-color, var(--accent));
     font-size: 10px;
     margin-top: 6px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
   }
 
   .addr-list {
