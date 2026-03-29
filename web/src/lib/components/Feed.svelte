@@ -222,7 +222,12 @@
   }
 
   function formatTime(timestamp: number): string {
-    return new Date(timestamp * 1000).toLocaleTimeString();
+    const date = new Date(timestamp * 1000);
+    const today = new Date(now);
+    if (date.toDateString() === today.toDateString()) {
+      return date.toLocaleTimeString();
+    }
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + date.toLocaleTimeString();
   }
 
   function epochInfo(genesis: GenesisConfig): { epoch: number; epochEnd: number } {

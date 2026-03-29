@@ -65,12 +65,14 @@
   let thumbSize = $derived(totalAssets <= 1 ? 64 : Math.max(16, Math.floor(64 / Math.sqrt(totalAssets))));
 
   const MAX_OUTPUTS = 8;
-  let sortedOutputs = $derived([...filteredOutputs].sort((a, b) => {
-    const aHas = a.assets.length > 0 ? 0 : 1;
-    const bHas = b.assets.length > 0 ? 0 : 1;
-    if (aHas !== bHas) return aHas - bHas;
-    return Number(BigInt(a.lovelace) - BigInt(b.lovelace));
-  }));
+  let sortedOutputs = $derived(
+    [...filteredOutputs].sort((a, b) => {
+      const aHas = a.assets.length > 0 ? 0 : 1;
+      const bHas = b.assets.length > 0 ? 0 : 1;
+      if (aHas !== bHas) return aHas - bHas;
+      return Number(BigInt(a.lovelace) - BigInt(b.lovelace));
+    }),
+  );
   let visibleOutputs = $derived(sortedOutputs.slice(-MAX_OUTPUTS));
   let hiddenOutputCount = $derived(filteredOutputs.length - visibleOutputs.length);
 
@@ -88,18 +90,13 @@
           {@const isDeregistration = !deleg.to_pool_id && !!deleg.from_pool_id}
           <div class="addr-item">
             {#if deleg.to_pool_id}
-              <a class="deleg-pool" href="/{deleg.to_pool_id}"
-                >{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a
-              >
+              <a class="deleg-pool" href="/{deleg.to_pool_id}">{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a>
             {/if}
             {#if deleg.to_pool_id}
               <span class="deleg-arrow">{@html '&#x2191;'}</span>
             {/if}
             {#if deleg.from_pool_id}
-              <a
-                class="deleg-pool"
-                class:deregistered={isDeregistration}
-                href="/{deleg.from_pool_id}"
+              <a class="deleg-pool" class:deregistered={isDeregistration} href="/{deleg.from_pool_id}"
                 >{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
               >
             {/if}
@@ -165,11 +162,10 @@
           <span class="more-outputs">+{hiddenInputCount} more</span>
         {/if}
       </div>
+      {#if tx.hash}
+        <div class="tx-hash mono">{tx.hash}</div>
+      {/if}
     </div>
-  {/if}
-
-  {#if tx.hash}
-    <div class="tx-hash mono">{tx.hash}</div>
   {/if}
 </div>
 
@@ -197,13 +193,12 @@
   .tx-hash {
     color: var(--section-color, var(--accent));
     font-size: 10px;
-    margin-top: 6px;
+    margin-top: 4px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 8ch;
-    margin-left: auto;
-    margin-right: auto;
+    margin-inline: auto;
   }
 
   .addr-list {
@@ -263,7 +258,7 @@
     color: white;
   }
 
-.deleg-pool.deregistered {
+  .deleg-pool.deregistered {
     text-decoration: line-through;
   }
 
