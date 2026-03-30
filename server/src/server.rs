@@ -125,7 +125,7 @@ fn decode_block_txs(
         .txs()
         .iter()
         .map(|tx| {
-            let inputs = tx
+            let mut inputs: Vec<TxInput> = tx
                 .inputs()
                 .iter()
                 .map(|input| TxInput {
@@ -189,6 +189,22 @@ fn decode_block_txs(
                 vec![]
             };
 
+            let mut withdrawals = Vec::new();
+            for (addr, amount) in tx.withdrawals_sorted_set() {
+                if addr.len() >= 29 {
+                    withdrawals.push((addr[1..29].to_vec(), amount));
+                    let stake_addr = pallas::ledger::addresses::Address::from_bytes(addr)
+                        .ok()
+                        .map(|a| a.to_string());
+                    inputs.push(TxInput {
+                        tx_hash: String::new(),
+                        index: -1,
+                        address: stake_addr,
+                        lovelace: amount,
+                    });
+                }
+            }
+
             BlockTx {
                 hash: tx.hash().to_string(),
                 fee: tx.fee().unwrap_or(0),
@@ -199,6 +215,7 @@ fn decode_block_txs(
                 delegations,
                 stake_change: None,
                 stake_credentials: vec![],
+                withdrawals,
             }
         })
         .collect();
@@ -252,6 +269,7 @@ async fn send_replay_blocks(
     sender: &Sender<Result<SseEvent, Infallible>>,
     blocks: &mut [ReplayBlock],
     delegators: &imbl::hashset::HashSet<Vec<u8>>,
+    stake_threshold: u64,
     nftcdn: &NftcdnConfig,
     genesis: &GenesisConfig,
     chain_state: &RwLock<State>,
@@ -300,7 +318,7 @@ async fn send_replay_blocks(
                         !tx.delegations.is_empty()
                             || tx
                                 .stake_change
-                                .map_or(false, |sc| sc.unsigned_abs() > 1_000_000_000)
+                                .map_or(false, |sc| sc.unsigned_abs() > stake_threshold)
                     });
                 }
                 if txs.is_empty() {
@@ -419,6 +437,7 @@ fn delegation_entry_to_event(
         delegations: vec![deleg_info],
         stake_change,
         stake_credentials: vec![],
+        withdrawals: vec![],
     };
     let block_pool_id = if entry.block_pool_hash.is_empty() {
         None
@@ -574,9 +593,15 @@ async fn filtered_events(
         let exclude_slots = if let Some(ref ph) = pool_hash {
             send_pool_info(&sender, &replay_state.chain_state, ph).await;
 
-            // Read feed index data
-            let (minted, stake_changes, delegations) = {
+            // Read feed index data and pool live stake
+            let (minted, stake_changes, delegations, stake_threshold) = {
                 let guard = replay_state.chain_state.read().await;
+                let live_stake = guard
+                    .current()
+                    .and_then(|s| State::pool_live_stake(s, ph))
+                    .unwrap_or(0);
+                // 0.1% of pool live stake as minimum threshold for stake change txs
+                let threshold = (live_stake as u64) / 1000;
                 (
                     guard.feed_index.pool_minted_blocks(ph).to_vec(),
                     guard.feed_index.pool_stake_change_blocks(ph).to_vec(),
@@ -586,6 +611,7 @@ async fn filtered_events(
                         .into_iter()
                         .cloned()
                         .collect::<Vec<_>>(),
+                    threshold,
                 )
             };
 
@@ -636,6 +662,7 @@ async fn filtered_events(
                 &sender,
                 &mut replay_blocks,
                 &replay_delegators,
+                stake_threshold,
                 &replay_state.nftcdn,
                 &replay_state.genesis,
                 &replay_state.chain_state,

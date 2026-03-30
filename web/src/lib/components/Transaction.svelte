@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { AssetInfo, DelegationInfo, FeedTx, TxOutputInfo } from '../types';
-  import { bech32Decode, paymentCredential, stakeCredential } from '../bech32';
   import { config } from '../stores';
   import { poolColor, formatTicker } from '../layout';
 
@@ -19,14 +18,15 @@
     const whole = padded.slice(0, -6) || '0';
     const frac = padded.slice(-6);
     const wholeNum = Number(whole);
+    const sym = '<span class="ada-sym">₳\u2009</span>';
     const dec = (d: string) => `<span class="ada-dec">.${d}</span>`;
-    if (wholeNum >= 1000) return wholeNum.toLocaleString() + ' ADA';
+    if (wholeNum >= 1000) return sym + wholeNum.toLocaleString();
     if (wholeNum >= 1) {
       const trimmed = frac.slice(0, 2).replace(/0+$/, '');
-      return trimmed ? whole + dec(trimmed) + ' ADA' : whole + ' ADA';
+      return trimmed ? sym + whole + dec(trimmed) : sym + whole;
     }
     const trimmed = frac.replace(/0+$/, '');
-    return trimmed ? '0' + dec(trimmed) + ' ADA' : '0 ADA';
+    return trimmed ? sym + '0' + dec(trimmed) : sym + '0';
   }
 
   function nftcdnUrl(asset: AssetInfo): string {
@@ -34,47 +34,14 @@
     return asset.tk ? `${base}?tk=${asset.tk}&size=128` : `${base}?size=128`;
   }
 
-  // Filter outputs: exclude those going back to a source address (change)
-  let filteredOutputs: TxOutputInfo[] = $derived.by(() => {
-    const inputPayments = new Set(
-      tx.inputs.map((i) => (i.address ? paymentCredential(i.address) : null)).filter((x): x is string => x !== null),
-    );
-    const inputStakes = new Set(
-      tx.inputs.map((i) => (i.address ? stakeCredential(i.address) : null)).filter((x): x is string => x !== null),
-    );
-    // First pass: filter by exact payment credential match
-    const afterPayment = tx.outputs.filter((o) => {
-      const cred = paymentCredential(o.address);
-      return cred === null || !inputPayments.has(cred);
-    });
-    // Second pass: heuristic change detection for non-script addresses
-    return afterPayment.filter((o) => {
-      if (o.assets.length <= 1) return true;
-      // Byron address with many assets, only if non-change outputs remain
-      if (!o.address.startsWith('addr')) return afterPayment.length <= 1;
-      // Same stake credential with many assets, but not a script address
-      const bytes = bech32Decode(o.address);
-      if (bytes && (bytes[0] & 0x10) !== 0) return true;
-      const stake = stakeCredential(o.address);
-      return stake === null || !inputStakes.has(stake);
-    });
-  });
-
-  // Total asset count across visible outputs → scale thumbnails
-  let totalAssets = $derived(filteredOutputs.reduce((sum, o) => sum + o.assets.length, 0));
+  // Total asset count across outputs → scale thumbnails
+  let totalAssets = $derived(tx.outputs.reduce((sum, o) => sum + o.assets.length, 0));
   let thumbSize = $derived(totalAssets <= 1 ? 64 : Math.max(16, Math.floor(64 / Math.sqrt(totalAssets))));
 
   const MAX_OUTPUTS = 8;
-  let sortedOutputs = $derived(
-    [...filteredOutputs].sort((a, b) => {
-      const aHas = a.assets.length > 0 ? 0 : 1;
-      const bHas = b.assets.length > 0 ? 0 : 1;
-      if (aHas !== bHas) return aHas - bHas;
-      return Number(BigInt(a.lovelace) - BigInt(b.lovelace));
-    }),
-  );
-  let visibleOutputs = $derived(sortedOutputs.slice(-MAX_OUTPUTS));
-  let hiddenOutputCount = $derived(filteredOutputs.length - visibleOutputs.length);
+  let sortedOutputs = $derived([...tx.outputs].sort((a, b) => Number(BigInt(b.lovelace) - BigInt(a.lovelace))));
+  let visibleOutputs = $derived(sortedOutputs.slice(0, MAX_OUTPUTS));
+  let hiddenOutputCount = $derived(tx.outputs.length - visibleOutputs.length);
 
   // Deduplicate inputs by address
   let uniqueInputs = $derived([...new Map(tx.inputs.map((i) => [i.address, i])).values()]);
@@ -117,9 +84,6 @@
   {#if tx.inputs.length > 0 || tx.outputs.length > 0}
     <div class="tx-body">
       <div class="addr-list">
-        {#if hiddenOutputCount > 0}
-          <span class="more-outputs">+{hiddenOutputCount} more</span>
-        {/if}
         {#each visibleOutputs as output}
           <div class="addr-item">
             <span class="ada">{@html formatAda(output.lovelace)}</span>
@@ -151,16 +115,23 @@
             <span class="addr mono">{output.address}</span>
           </div>
         {/each}
+        {#if tx.outputs.length === 0}
+          <span class="ada">{@html formatAda(tx.outputs.reduce((s, o) => s + BigInt(o.lovelace), 0n).toString())}</span>
+        {/if}
+        <div class="addr-item">
+          <span class="ada">{@html formatAda(tx.fee)}</span>
+          <span class="addr">fee</span>
+        </div>
+        {#if hiddenOutputCount > 0}
+          <span class="more-outputs">+{hiddenOutputCount} more</span>
+        {/if}
       </div>
-
-      {#if filteredOutputs.length === 0}
-        <span class="ada">{@html formatAda(tx.outputs.reduce((s, o) => s + BigInt(o.lovelace), 0n).toString())}</span>
-      {/if}
-      <div class="arrow" class:flip={filteredOutputs.length === 0}>{filteredOutputs.length === 0 ? '↻' : '↑'}</div>
+      <div class="arrow" class:flip={tx.outputs.length === 0}>{tx.outputs.length === 0 ? '↻' : '↑'}</div>
 
       <div class="addr-list">
         {#each visibleInputs as input}
           <div class="addr-item">
+            <span class="ada">{@html formatAda(input.lovelace)}</span>
             <span class="addr mono">{input.address ?? '???'}</span>
           </div>
         {/each}

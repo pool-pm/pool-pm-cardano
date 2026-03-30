@@ -118,6 +118,9 @@ impl FeedFilter {
 }
 
 /// Compute net stake change for a single tx relative to pool delegators.
+/// Withdrawals from delegator stake addresses are subtracted because
+/// rewards are already counted as pool stake — converting them to UTXOs
+/// doesn't add new stake.
 pub fn apply_stake_change(tx: &mut BlockTx, delegators: &HashSet<Vec<u8>>) {
     let mut net: i64 = 0;
     for output in &tx.outputs {
@@ -134,6 +137,11 @@ pub fn apply_stake_change(tx: &mut BlockTx, delegators: &HashSet<Vec<u8>>) {
                     net -= input.lovelace as i64;
                 }
             }
+        }
+    }
+    for (cred, amount) in &tx.withdrawals {
+        if delegators.contains(cred) {
+            net -= *amount as i64;
         }
     }
     if net != 0 {

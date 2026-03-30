@@ -106,6 +106,22 @@ pub async fn extract_tx(
 
     let expiry = tx.ttl().map(|slot| slot_to_timestamp(slot, genesis));
 
+    let mut withdrawals = Vec::new();
+    for (addr, amount) in tx.withdrawals_sorted_set() {
+        if addr.len() >= 29 {
+            withdrawals.push((addr[1..29].to_vec(), amount));
+            let stake_addr = pallas::ledger::addresses::Address::from_bytes(addr)
+                .ok()
+                .map(|a| a.to_string());
+            inputs.push(TxInput {
+                tx_hash: String::new(),
+                index: -1,
+                address: stake_addr,
+                lovelace: amount,
+            });
+        }
+    }
+
     let mut block_tx = BlockTx {
         hash,
         fee,
@@ -116,6 +132,7 @@ pub async fn extract_tx(
         delegations,
         stake_change: None,
         stake_credentials: Vec::new(),
+        withdrawals,
     };
     block_tx.stake_credentials = filter::extract_stake_credentials(&block_tx);
     block_tx

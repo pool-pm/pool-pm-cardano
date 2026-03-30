@@ -47,6 +47,9 @@ pub struct BlockTx {
     /// Pre-extracted stake credentials from input/output addresses.
     #[serde(skip)]
     pub stake_credentials: Vec<Vec<u8>>,
+    /// Withdrawals: (stake_credential, lovelace). Used for stake_change computation.
+    #[serde(skip)]
+    pub withdrawals: Vec<(Vec<u8>, u64)>,
 }
 
 #[derive(Clone, Serialize)]
