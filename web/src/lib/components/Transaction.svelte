@@ -4,6 +4,29 @@
   import { poolColor, formatTicker } from '../layout';
 
   let { tx, compact = false }: { tx: FeedTx; compact?: boolean } = $props();
+  let failedAssets = $state<Record<number, number>>({});
+
+  function showPreview(e: MouseEvent) {
+    const thumb = e.target as HTMLImageElement;
+    let preview = document.getElementById('asset-preview') as HTMLImageElement;
+    if (!preview) {
+      preview = document.createElement('img');
+      preview.id = 'asset-preview';
+      preview.style.cssText =
+        'position:fixed;width:128px;height:128px;object-fit:contain;border-radius:6px;z-index:1000;pointer-events:none;display:none';
+      document.body.appendChild(preview);
+    }
+    preview.src = thumb.src;
+    const rect = thumb.getBoundingClientRect();
+    preview.style.left = `${rect.left + rect.width / 2 - 64}px`;
+    preview.style.top = `${rect.top - 132}px`;
+    preview.style.display = 'block';
+  }
+
+  function hidePreview() {
+    const preview = document.getElementById('asset-preview');
+    if (preview) preview.style.display = 'none';
+  }
 
   function poolLabel(ticker?: string, poolId?: string): string {
     return formatTicker(ticker ?? poolId?.slice(5, 10) ?? '');
@@ -98,7 +121,7 @@
   {#if tx.inputs.length > 0 || tx.outputs.length > 0}
     <div class="tx-body">
       <div class="addr-list">
-        {#each visibleOutputs as output}
+        {#each visibleOutputs as output, oi}
           <div class="addr-item">
             <span class="ada">{@html formatAda(output.lovelace)}</span>
             {#if output.assets.length > 0 && $config}
@@ -119,7 +142,10 @@
                         const el = (e.target as HTMLElement).parentElement!;
                         el.style.display = 'none';
                         el.dispatchEvent(new Event('remeasure', { bubbles: true }));
+                        failedAssets = { ...failedAssets, [oi]: (failedAssets[oi] ?? 0) + 1 };
                       }}
+                      onmouseenter={showPreview}
+                      onmouseleave={hidePreview}
                     />
                     {#if thumbSize >= 32 && asset.quantity !== '1'}
                       <span class="asset-label">{BigInt(asset.quantity).toLocaleString()}</span>
@@ -127,8 +153,9 @@
                   </div>
                 {/each}
               </div>
-              {#if hiddenAssets > 0}
-                <span class="more-outputs">+{hiddenAssets} asset{hiddenAssets > 1 ? 's' : ''}</span>
+              {@const totalHidden = hiddenAssets + (failedAssets[oi] ?? 0)}
+              {#if totalHidden > 0}
+                <span class="more-outputs">+{totalHidden} asset{totalHidden > 1 ? 's' : ''}</span>
               {/if}
             {/if}
             <span class="addr mono">{output.address}</span>
@@ -171,7 +198,6 @@
     font-size: 11px;
     text-align: center;
     transition: filter var(--flip-duration) ease;
-    overflow: hidden;
   }
 
   .stake-change {
@@ -275,7 +301,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: 2px;
-    margin-top: 2px;
     justify-content: center;
   }
 
