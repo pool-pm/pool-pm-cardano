@@ -196,6 +196,24 @@
     });
   });
 
+  const STAKE_POSITIVE = 'oklch(0.55 0.13 155)';
+  const STAKE_NEGATIVE = 'oklch(0.55 0.13 25)';
+
+  function sectionColor(section: Section): string {
+    if (!section.block) return '#444';
+    if (!$pool) return poolColor(section.block.pool_id);
+    // Pool's own block: use pool color
+    if (section.block.pool_id === $pool.pool_id) return poolColor($pool.pool_id);
+    // Compute net stake change from txs
+    let net = 0n;
+    for (const tx of section.txs) {
+      if (tx.stake_change) net += BigInt(tx.stake_change);
+    }
+    if (net > 0n) return STAKE_POSITIVE;
+    if (net < 0n) return STAKE_NEGATIVE;
+    return '#555';
+  }
+
   function introScale(node: HTMLElement) {
     node.style.animation = `section-intro ${FLIP_DURATION}ms ease`;
     node.style.transition = 'none';
@@ -293,7 +311,7 @@
   <div class="canvas" style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}>
     {#each $sections as section, i (section.id)}
       {@const isMempool = !section.block}
-      {@const color = section.block ? poolColor(section.block.pool_id) : '#444'}
+      {@const color = sectionColor(section)}
       {@const layout = sectionPositions.get(section.id)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div

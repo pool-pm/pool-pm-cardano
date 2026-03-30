@@ -71,7 +71,9 @@ impl FeedFilter {
         match event {
             Event::MempoolTx(tx) => {
                 if self.matches_tx(tx, delegators) {
-                    Some(event.clone())
+                    let mut tx = tx.clone();
+                    apply_stake_change(&mut tx, delegators);
+                    Some(Event::MempoolTx(tx))
                 } else {
                     None
                 }
@@ -90,7 +92,7 @@ impl FeedFilter {
                     return Some(event.clone());
                 }
 
-                let filtered: Vec<BlockTx> = txs
+                let mut filtered: Vec<BlockTx> = txs
                     .iter()
                     .filter(|tx| self.matches_tx(tx, delegators))
                     .cloned()
@@ -98,6 +100,7 @@ impl FeedFilter {
                 if filtered.is_empty() {
                     None
                 } else {
+                    apply_stake_changes(&mut filtered, delegators);
                     Some(Event::Block {
                         slot: *slot,
                         hash: hash.clone(),
@@ -111,6 +114,37 @@ impl FeedFilter {
             }
             Event::Rollback { .. } | Event::MempoolPrune { .. } => Some(event.clone()),
         }
+    }
+}
+
+/// Compute net stake change for a single tx relative to pool delegators.
+pub fn apply_stake_change(tx: &mut BlockTx, delegators: &HashSet<Vec<u8>>) {
+    let mut net: i64 = 0;
+    for output in &tx.outputs {
+        if let Some(cred) = stake_credential(&output.address) {
+            if delegators.contains(&cred) {
+                net += output.lovelace as i64;
+            }
+        }
+    }
+    for input in &tx.inputs {
+        if let Some(ref addr) = input.address {
+            if let Some(cred) = stake_credential(addr) {
+                if delegators.contains(&cred) {
+                    net -= input.lovelace as i64;
+                }
+            }
+        }
+    }
+    if net != 0 {
+        tx.stake_change = Some(net);
+    }
+}
+
+/// Compute net stake change per tx for pool delegators (outputs - inputs).
+pub fn apply_stake_changes(txs: &mut [BlockTx], delegators: &HashSet<Vec<u8>>) {
+    for tx in txs {
+        apply_stake_change(tx, delegators);
     }
 }
 

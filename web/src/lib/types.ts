@@ -49,6 +49,7 @@ export interface BlockTx {
   outputs: TxOutputInfo[];
   expiry?: number;
   delegations?: DelegationInfo[];
+  stake_change?: string;
 }
 
 export interface MempoolTxEvent extends BlockTx {

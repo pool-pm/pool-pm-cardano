@@ -280,18 +280,19 @@ async fn send_replay_blocks(
                     decode_block_txs(&cbor, nftcdn, Some(&state_guard), mainnet);
                 drop(state_guard);
                 resolve_block_inputs(&mut txs, chain_state).await;
+                for tx in &mut txs {
+                    tx.stake_credentials = filter::extract_stake_credentials(tx);
+                }
 
-                let txs = if block.filter_by_delegators {
-                    txs.into_iter()
-                        .filter(|tx| {
-                            tx.stake_credentials
-                                .iter()
-                                .any(|cred| delegators.contains(cred))
-                        })
-                        .collect()
-                } else {
-                    txs
-                };
+                if block.filter_by_delegators {
+                    filter::apply_stake_changes(&mut txs, delegators);
+                    txs.retain(|tx| {
+                        !tx.delegations.is_empty()
+                            || tx
+                                .stake_change
+                                .map_or(false, |sc| sc.unsigned_abs() > 1_000_000_000)
+                    });
+                }
                 if txs.is_empty() {
                     continue;
                 }
@@ -378,6 +379,7 @@ async fn send_pool_info(
 fn delegation_entry_to_event(
     entry: &DelegationEntry,
     genesis: &GenesisConfig,
+    feed_pool_hash: &[u8],
 ) -> crate::event::Event {
     let deleg_info = DelegationInfo {
         stake_address: entry.stake_address.clone(),
@@ -387,6 +389,16 @@ fn delegation_entry_to_event(
         to_ticker: entry.to.as_ref().and_then(|t| t.label.clone()),
         live_stake: entry.live_stake,
     };
+    let is_to = entry.to.as_ref().map_or(false, |t| t.raw == feed_pool_hash);
+    let is_from = entry
+        .from
+        .as_ref()
+        .map_or(false, |t| t.raw == feed_pool_hash);
+    let stake_change = match (is_to, is_from) {
+        (true, false) => Some(entry.live_stake),
+        (false, true) => Some(-entry.live_stake),
+        _ => None,
+    };
     let tx = BlockTx {
         hash: entry.tx_hash.clone(),
         fee: 0,
@@ -395,7 +407,7 @@ fn delegation_entry_to_event(
         outputs: vec![],
         expiry: None,
         delegations: vec![deleg_info],
-        stake_change: None,
+        stake_change,
         stake_credentials: vec![],
     };
     let block_pool_id = if entry.block_pool_hash.is_empty() {
@@ -625,7 +637,7 @@ async fn filtered_events(
 
             // Always send delegation entries separately (correct from/to from feed index)
             for entry in &delegations {
-                let event = delegation_entry_to_event(entry, &replay_state.genesis);
+                let event = delegation_entry_to_event(entry, &replay_state.genesis, ph);
                 if let Some(sse) = serialize_event(event) {
                     let _ = sender.send(sse).await;
                 }
