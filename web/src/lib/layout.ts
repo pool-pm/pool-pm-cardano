@@ -101,17 +101,25 @@ function layoutLandscape(
   availableHeight: number,
 ): { gridWidth: number; gridHeight: number } {
   const total = heights.reduce((s, h) => s + h, 0) + Math.max(0, items.length - 1) * gap;
-  const numCols = total <= availableHeight ? 1 : Math.ceil(total / availableHeight);
+  const maxItem = Math.max(...heights);
 
-  // Binary search for the minimum max-column-height
-  let lo = Math.max(...heights);
-  let hi = total;
-  while (hi - lo > 1) {
-    const mid = Math.floor((lo + hi) / 2);
-    if (colsForMaxH(heights, gap, mid) <= numCols) hi = mid;
-    else lo = mid;
+  // Find minimum columns where the max column height fits availableHeight.
+  // Start with the theoretical minimum, then increase if greedy packing overshoots.
+  let numCols = total <= availableHeight ? 1 : Math.ceil(total / availableHeight);
+  let maxH: number;
+  while (numCols <= items.length) {
+    let lo = maxItem;
+    let hi = total;
+    while (hi - lo > 1) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (colsForMaxH(heights, gap, mid) <= numCols) hi = mid;
+      else lo = mid;
+    }
+    maxH = hi;
+    if (maxH <= availableHeight || numCols >= items.length) break;
+    numCols++;
   }
-  const maxH = hi;
+  maxH = maxH!;
 
   // Greedy column assignment
   const cols: { idx: number; h: number }[][] = [[]];

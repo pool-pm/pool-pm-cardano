@@ -99,8 +99,10 @@
           <div class="addr-item">
             <span class="ada">{@html formatAda(output.lovelace)}</span>
             {#if output.assets.length > 0 && $config}
+              {@const maxAssets = 25}
+              {@const hiddenAssets = output.assets.length - maxAssets}
               <div class="assets">
-                {#each output.assets as asset}
+                {#each output.assets.slice(0, maxAssets) as asset}
                   <div class="asset">
                     <img
                       class="asset-thumb"
@@ -122,6 +124,9 @@
                   </div>
                 {/each}
               </div>
+              {#if hiddenAssets > 0}
+                <span class="more-outputs">+{hiddenAssets} asset{hiddenAssets > 1 ? 's' : ''}</span>
+              {/if}
             {/if}
             <span class="addr mono">{output.address}</span>
           </div>

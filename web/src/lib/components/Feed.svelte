@@ -30,8 +30,10 @@
 
   let pxPerSecond = $derived($pool ? 1 / 60 : PX_PER_SECOND);
 
-  // Available height for tx columns in landscape mode
-  let txAreaHeight = $derived(feedHeight - BLOCK_INSET - 40 - LANDSCAPE_MARGIN);
+  // Available height for tx columns in landscape mode.
+  // Overhead = section padding + border + 3 flex gaps + header + ticker + footer
+  const SECTION_OVERHEAD = BLOCK_PADDING * 5 + BLOCK_BORDER * 2 + 37; // = 91
+  let txAreaHeight = $derived(feedHeight - SECTION_OVERHEAD - LANDSCAPE_MARGIN);
 
   function trackSection(node: HTMLElement, id: string) {
     sectionRefs.set(id, node);
@@ -92,8 +94,10 @@
     updateLandscape();
     window.addEventListener('resize', updateLandscape);
 
-    feedWidth = feedEl.offsetWidth;
-    feedHeight = feedEl.offsetHeight;
+    // Use content box (matching ResizeObserver's contentRect) — exclude padding
+    const cs = getComputedStyle(feedEl);
+    feedWidth = feedEl.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    feedHeight = feedEl.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
     const feedObserver = new ResizeObserver((entries) => {
       feedWidth = entries[0]?.contentRect.width ?? 0;
       feedHeight = entries[0]?.contentRect.height ?? 0;
