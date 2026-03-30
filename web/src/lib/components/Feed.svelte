@@ -7,7 +7,7 @@
   import Transaction from './Transaction.svelte';
 
   const MAX_BLOCKS = 30;
-  const MAX_MEMPOOL_AGE_MS = 600_000;
+  const CLEANUP_INTERVAL_MS = 300_000;
   const PX_PER_SECOND = 2;
   const BLOCK_PADDING = 10;
   const BLOCK_BORDER = 2;
@@ -144,9 +144,8 @@
     const p = $pool;
     const interval = setInterval(() => {
       const nowSec = Math.floor(Date.now() / 1000);
-      const cutoff = Date.now() - MAX_MEMPOOL_AGE_MS;
       sections.update((s) => {
-        s[0].txs = s[0].txs.filter((tx) => (tx.expiry ? tx.expiry > nowSec : tx.receivedAt >= cutoff));
+        s[0].txs = s[0].txs.filter((tx) => !tx.expiry || tx.expiry > nowSec);
         let result = s.slice(0, MAX_BLOCKS + 1);
         // In pool feeds, prune old small stake/delegation changes
         if (p?.live_stake) {
@@ -172,7 +171,7 @@
         }
         return result;
       });
-    }, 10_000);
+    }, CLEANUP_INTERVAL_MS);
     return () => clearInterval(interval);
   });
 
