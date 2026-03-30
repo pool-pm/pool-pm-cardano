@@ -328,7 +328,7 @@
         {:else if section.block}
           <div class="block-footer">
             <span class="block-meta block-hash mono">{section.block.hash}</span>
-            <span class="block-meta">#{section.block.number}</span>
+            <span class="block-meta mono">#{section.block.number}</span>
           </div>
         {/if}
       </div>
