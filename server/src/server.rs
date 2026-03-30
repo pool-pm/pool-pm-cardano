@@ -296,7 +296,6 @@ async fn send_replay_blocks(
                     continue;
                 }
 
-                // Use provided pool_id or fall back to what we extracted from CBOR
                 let pool_id = block.pool_id.clone().or(cbor_pool_id);
                 let pool_ticker = block.pool_ticker.clone().or(cbor_pool_ticker);
 
@@ -614,7 +613,7 @@ async fn filtered_events(
                         slot: r.slot,
                         hash: r.hash,
                         number: r.number,
-                        pool_id: None, // extracted from CBOR during fetch
+                        pool_id: None,
                         pool_ticker: None,
                         filter_by_delegators: true,
                     }),
@@ -638,7 +637,7 @@ async fn filtered_events(
             )
             .await;
 
-            // Send delegation-only events (already newest-first from sorted actions)
+            // Send delegation-only events
             for (_, entries) in deleg_only {
                 for entry in entries {
                     let event = delegation_entry_to_event(&entry, &replay_state.genesis);

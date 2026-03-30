@@ -196,6 +196,20 @@
     });
   });
 
+  function introScale(node: HTMLElement) {
+    node.style.animation = `section-intro ${FLIP_DURATION}ms ease`;
+    node.style.transition = 'none';
+    const timer = setTimeout(() => {
+      node.style.animation = '';
+      node.style.transition = '';
+    }, FLIP_DURATION);
+    return {
+      destroy() {
+        clearTimeout(timer);
+      },
+    };
+  }
+
   function timeAgo(timestamp: number): string {
     const sec = Math.floor((now - timestamp * 1000) / 1000);
     if (sec < 60) return `${sec}s ago`;
@@ -299,6 +313,7 @@
           actualGridWidths[section.id] = e.detail;
         }}
         use:trackSection={section.id}
+        use:introScale
         out:slide={{ duration: FLIP_DURATION, axis: landscape ? 'x' : 'y' }}
       >
         <div class="block-header">
@@ -419,6 +434,15 @@
   .section.animated {
     transition: transform var(--flip-duration) ease;
     will-change: transform;
+  }
+
+  @keyframes section-intro {
+    from {
+      scale: 0;
+    }
+    to {
+      scale: 1;
+    }
   }
 
   /* Portrait: vertical connecting line above the block */
