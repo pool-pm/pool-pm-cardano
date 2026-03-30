@@ -168,22 +168,26 @@
     });
   });
 
-  const STAKE_POSITIVE = '#0ecb81';
-  const STAKE_NEGATIVE = '#ef5350';
+  const STAKE_POSITIVE = 'oklch(0.7 0.25 145)';
+  const STAKE_NEGATIVE = 'oklch(0.7 0.25 25)';
 
-  function sectionColor(section: Section): string {
-    if (!section.block) return '#444';
-    if (!$pool) return poolColor(section.block.pool_id);
-    // Pool's own block: use pool color
-    if (section.block.pool_id === $pool.pool_id) return poolColor($pool.pool_id);
-    // Compute net stake change from txs
+  function sectionColors(section: Section): { bg: string; border: string; accent: string } {
+    if (!section.block) return { bg: '#222', border: '#222', accent: '#222' };
+    if (!$pool) {
+      const c = poolColor(section.block.pool_id);
+      return { bg: c, border: c, accent: c };
+    }
+    if (section.block.pool_id === $pool.pool_id) {
+      const c = poolColor($pool.pool_id);
+      return { bg: c, border: c, accent: c };
+    }
     let net = 0n;
     for (const tx of section.txs) {
       if (tx.stake_change) net += BigInt(tx.stake_change);
     }
-    if (net > 0n) return STAKE_POSITIVE;
-    if (net < 0n) return STAKE_NEGATIVE;
-    return '#555';
+    if (net > 0n) return { bg: '#222', border: '#222', accent: STAKE_POSITIVE };
+    if (net < 0n) return { bg: '#222', border: '#222', accent: STAKE_NEGATIVE };
+    return { bg: '#555', border: '#555', accent: '#555' };
   }
 
   function introScale(node: HTMLElement) {
@@ -267,7 +271,7 @@
   <div class="canvas" style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}>
     {#each $sections as section, i (section.id)}
       {@const isMempool = !section.block}
-      {@const color = sectionColor(section)}
+      {@const colors = sectionColors(section)}
       {@const layout = sectionPositions.get(section.id)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
@@ -275,9 +279,10 @@
         class:mempool={isMempool}
         class:animated
         class:has-line={i > 0 && (layout?.spacing ?? 0) > 0}
-        style:border-color={color}
-        style:background-color={color}
-        style:--section-color={color}
+        style:border-color={colors.border}
+        style:background-color={colors.bg}
+        style:--section-color={colors.accent}
+        style:--meta-color={colors.bg.startsWith('#') ? 'rgb(255 255 255 / 0.4)' : ''}
         style:--section-width={sectionMaxWidth(section)}
         style:--spacing="{layout?.spacing ?? 0}px"
         style:transform={landscape
@@ -441,7 +446,7 @@
   }
 
   .block-meta {
-    color: rgb(0 0 0 / 0.5);
+    color: var(--meta-color, rgb(0 0 0 / 0.5));
     font-size: 10px;
   }
 

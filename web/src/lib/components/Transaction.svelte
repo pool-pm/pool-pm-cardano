@@ -89,7 +89,7 @@
 <div class="tx-card" style:--thumb-size="{thumbSize}px">
   {#if tx.stake_change}
     {@const negative = tx.stake_change.startsWith('-')}
-    <div class="stake-change">
+    <div class="stake-change" style:color={negative ? 'oklch(0.7 0.25 25)' : 'oklch(0.7 0.25 145)'}>
       {negative ? '−' : '+'}{@html formatAda(negative ? tx.stake_change.slice(1) : tx.stake_change)}
     </div>
   {/if}
@@ -203,7 +203,6 @@
   .stake-change {
     font-size: 13px;
     font-weight: 700;
-    color: white;
     margin-bottom: 8px;
   }
 
