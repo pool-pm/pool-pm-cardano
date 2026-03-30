@@ -12,7 +12,9 @@ use crate::event_bus::EventBus;
 use crate::filter;
 use crate::model::{asset_fingerprint, pool_bech32_id, TxOutput};
 use crate::nftcdn::NftcdnConfig;
-use crate::pallas::{stake_address_bech32, stake_credential_bytes, MultiEraTxExt};
+use crate::pallas::{
+    extract_cip20_message, stake_address_bech32, stake_credential_bytes, MultiEraTxExt,
+};
 use crate::state::State;
 
 pub fn slot_to_timestamp(slot: u64, genesis: &oura::framework::GenesisValues) -> u64 {
@@ -122,6 +124,8 @@ pub async fn extract_tx(
         }
     }
 
+    let message = extract_cip20_message(tx);
+
     let mut block_tx = BlockTx {
         hash,
         fee,
@@ -130,6 +134,7 @@ pub async fn extract_tx(
         outputs,
         expiry,
         delegations,
+        message,
         stake_change: None,
         stake_credentials: Vec::new(),
         withdrawals,

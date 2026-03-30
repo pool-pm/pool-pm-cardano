@@ -39,6 +39,8 @@ pub struct BlockTx {
     pub expiry: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub delegations: Vec<DelegationInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<Vec<String>>,
     /// Net stake change in lovelace for pool feed stake-change blocks.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]

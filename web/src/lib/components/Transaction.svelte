@@ -93,6 +93,13 @@
       {negative ? '−' : '+'}{@html formatAda(negative ? tx.stake_change.slice(1) : tx.stake_change)}
     </div>
   {/if}
+  {#if tx.message?.length}
+    <div class="msg-section">
+      {#each tx.message as line}
+        <span class="msg-line">{line}</span>
+      {/each}
+    </div>
+  {/if}
   {#if visibleDelegations.length > 0}
     <div class="deleg-section">
       <div class="addr-list">
@@ -209,6 +216,19 @@
     font-size: 13px;
     font-weight: 700;
     margin-bottom: 8px;
+  }
+
+  .msg-section {
+    background: rgb(0 0 0 / 0.6);
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+
+  .msg-line {
+    display: block;
+    font-size: 10px;
+    color: rgb(255 255 255 / 0.8);
+    word-break: break-word;
   }
 
   .deleg-section {

@@ -49,6 +49,7 @@ export interface BlockTx {
   outputs: TxOutputInfo[];
   expiry?: number;
   delegations?: DelegationInfo[];
+  message?: string[];
   stake_change?: string;
 }
 

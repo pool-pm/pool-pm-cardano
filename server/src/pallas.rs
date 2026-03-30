@@ -1,5 +1,35 @@
-use pallas::ledger::primitives::{alonzo, conway, StakeCredential};
+use pallas::ledger::primitives::{alonzo, conway, Metadatum, StakeCredential};
 use pallas::ledger::traverse::{MultiEraCert, MultiEraTx};
+
+/// Extract CIP-20 message from transaction metadata (label 674 → msg).
+pub fn extract_cip20_message(tx: &MultiEraTx<'_>) -> Option<Vec<String>> {
+    let metadata = tx.metadata();
+    let meta = metadata.find(674)?;
+    if let Metadatum::Map(entries) = meta {
+        for (key, value) in entries.iter() {
+            if let Metadatum::Text(k) = key {
+                if k == "msg" {
+                    if let Metadatum::Array(items) = value {
+                        let lines: Vec<String> = items
+                            .iter()
+                            .filter_map(|item| {
+                                if let Metadatum::Text(s) = item {
+                                    Some(s.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        if !lines.is_empty() {
+                            return Some(lines);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
 
 pub type DrepDelegationChange = (Vec<u8>, Option<Vec<u8>>);
 
