@@ -270,7 +270,8 @@ async fn send_replay_blocks(
     sender: &Sender<Result<SseEvent, Infallible>>,
     blocks: &mut [ReplayBlock],
     delegators: &imbl::hashset::HashSet<Vec<u8>>,
-    deleg_info: &HashMap<String, (Vec<DelegationInfo>, Option<i64>)>,
+    feed_pool_id: &str,
+    deleg_info: &HashMap<String, Vec<DelegationInfo>>,
     stake_threshold: u64,
     nftcdn: &NftcdnConfig,
     genesis: &GenesisConfig,
@@ -314,23 +315,16 @@ async fn send_replay_blocks(
                     tx.stake_credentials = filter::extract_stake_credentials(tx);
                 }
 
-                if block.filter_by_delegators {
-                    filter::apply_stake_changes(&mut txs, delegators);
-                }
-
-                // Inject delegation info from feed index AFTER stake changes,
-                // so delegation-based stake_change (live_stake) takes precedence
-                // over UTXO-based calculation (which is just the fee for delegation txs)
+                // Inject delegation info from feed index (correct from/to)
                 for tx in &mut txs {
-                    if let Some((delegations, stake_change)) = deleg_info.get(&tx.hash) {
+                    if let Some(delegations) = deleg_info.get(&tx.hash) {
                         tx.delegations = delegations.clone();
-                        if let Some(sc) = stake_change {
-                            tx.stake_change = Some(*sc);
-                        }
                     }
                 }
 
                 if block.filter_by_delegators {
+                    // Computes UTXO changes + delegation impact in one pass
+                    filter::apply_stake_changes(&mut txs, delegators, feed_pool_id);
                     txs.retain(|tx| {
                         !tx.delegations.is_empty()
                             || tx
@@ -580,17 +574,9 @@ async fn filtered_events(
                 )
             };
 
-            // Build delegation info map: tx_hash -> (delegations, stake_change)
-            let mut deleg_info: HashMap<String, (Vec<DelegationInfo>, Option<i64>)> =
-                HashMap::new();
+            // Build delegation info map: tx_hash -> delegations
+            let mut deleg_info: HashMap<String, Vec<DelegationInfo>> = HashMap::new();
             for entry in &delegations {
-                let is_to = entry.to.as_ref().map_or(false, |t| t.raw == *ph);
-                let is_from = entry.from.as_ref().map_or(false, |t| t.raw == *ph);
-                let stake_change = match (is_to, is_from) {
-                    (true, false) => Some(entry.live_stake),
-                    (false, true) => Some(-entry.live_stake),
-                    _ => None,
-                };
                 let info = DelegationInfo {
                     stake_address: entry.stake_address.clone(),
                     from_pool_id: entry.from.as_ref().map(|t| t.id.clone()),
@@ -599,13 +585,10 @@ async fn filtered_events(
                     to_ticker: entry.to.as_ref().and_then(|t| t.label.clone()),
                     live_stake: entry.live_stake,
                 };
-                let e = deleg_info
+                deleg_info
                     .entry(entry.tx_hash.clone())
-                    .or_insert_with(|| (Vec::new(), None));
-                e.0.push(info);
-                if e.1.is_none() {
-                    e.1 = stake_change;
-                }
+                    .or_default()
+                    .push(info);
             }
 
             // Build block actions: PoolMinted > StakeChange priority per slot
@@ -659,10 +642,12 @@ async fn filtered_events(
             }
 
             // Send blocks via N2N with delegation info injected
+            let feed_pool_id = pool_id.as_deref().unwrap_or("");
             send_replay_blocks(
                 &sender,
                 &mut replay_blocks,
                 &replay_delegators,
+                feed_pool_id,
                 &deleg_info,
                 stake_threshold,
                 &replay_state.nftcdn,

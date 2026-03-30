@@ -2,6 +2,7 @@ use imbl::HashSet;
 use pallas::ledger::addresses::{Address, ShelleyDelegationPart};
 
 use crate::event::{BlockTx, Event};
+use crate::model::pool_bech32_id;
 use crate::state::BlockSnapshot;
 
 #[derive(Clone)]
@@ -21,6 +22,13 @@ impl FeedFilter {
             "drep" => Some(FeedFilter::DRep([&[0x00u8][..], &data].concat())),
             "drep_script" => Some(FeedFilter::DRep([&[0x01u8][..], &data].concat())),
             _ => None,
+        }
+    }
+
+    pub fn pool_id_bech32(&self) -> String {
+        match self {
+            FeedFilter::Pool(hash) => pool_bech32_id(hash),
+            FeedFilter::DRep(_) => String::new(),
         }
     }
 
@@ -72,7 +80,7 @@ impl FeedFilter {
             Event::MempoolTx(tx) => {
                 if self.matches_tx(tx, delegators) {
                     let mut tx = tx.clone();
-                    apply_stake_change(&mut tx, delegators);
+                    apply_stake_change(&mut tx, delegators, &self.pool_id_bech32());
                     Some(Event::MempoolTx(tx))
                 } else {
                     None
@@ -100,7 +108,7 @@ impl FeedFilter {
                 if filtered.is_empty() {
                     None
                 } else {
-                    apply_stake_changes(&mut filtered, delegators);
+                    apply_stake_changes(&mut filtered, delegators, &self.pool_id_bech32());
                     Some(Event::Block {
                         slot: *slot,
                         hash: hash.clone(),
@@ -118,10 +126,9 @@ impl FeedFilter {
 }
 
 /// Compute net stake change for a single tx relative to pool delegators.
-/// Withdrawals from delegator stake addresses are subtracted because
-/// rewards are already counted as pool stake — converting them to UTXOs
-/// doesn't add new stake.
-pub fn apply_stake_change(tx: &mut BlockTx, delegators: &HashSet<Vec<u8>>) {
+/// Combines UTXO changes (outputs - inputs - withdrawals) with delegation
+/// impact (live_stake gained/lost from delegation certificate changes).
+pub fn apply_stake_change(tx: &mut BlockTx, delegators: &HashSet<Vec<u8>>, pool_id: &str) {
     let mut net: i64 = 0;
     for output in &tx.outputs {
         if let Some(cred) = stake_credential(&output.address) {
@@ -144,15 +151,27 @@ pub fn apply_stake_change(tx: &mut BlockTx, delegators: &HashSet<Vec<u8>>) {
             net -= *amount as i64;
         }
     }
+    // Add delegation impact: live_stake gained (to pool) or lost (from pool)
+    for deleg in &tx.delegations {
+        if deleg.to_pool_id.as_deref() == Some(pool_id)
+            && deleg.from_pool_id.as_deref() != Some(pool_id)
+        {
+            net += deleg.live_stake;
+        } else if deleg.from_pool_id.as_deref() == Some(pool_id)
+            && deleg.to_pool_id.as_deref() != Some(pool_id)
+        {
+            net -= deleg.live_stake;
+        }
+    }
     if net != 0 {
         tx.stake_change = Some(net);
     }
 }
 
-/// Compute net stake change per tx for pool delegators (outputs - inputs).
-pub fn apply_stake_changes(txs: &mut [BlockTx], delegators: &HashSet<Vec<u8>>) {
+/// Apply stake change to multiple txs.
+pub fn apply_stake_changes(txs: &mut [BlockTx], delegators: &HashSet<Vec<u8>>, pool_id: &str) {
     for tx in txs {
-        apply_stake_change(tx, delegators);
+        apply_stake_change(tx, delegators, pool_id);
     }
 }
 
