@@ -72,19 +72,8 @@ function handleEvent(event: Event): void {
     case 'Block': {
       const now = Date.now();
       sections.update((s) => {
-        // If block already exists at this slot, merge delegation txs into it
-        const existingIdx = s.findIndex((sec, i) => i > 0 && sec.block?.slot === event.slot);
-        if (existingIdx >= 0) {
-          const delegTxs = event.txs.filter((tx) => tx.delegations && tx.delegations.length > 0);
-          if (delegTxs.length > 0) {
-            const result = [...s];
-            const existing = { ...result[existingIdx] };
-            existing.txs = [...existing.txs, ...delegTxs.map((tx) => ({ ...tx, receivedAt: now }))];
-            result[existingIdx] = existing;
-            return result;
-          }
-          return s;
-        }
+        // Deduplicate: skip if this block is already in sections
+        if (s.some((sec, i) => i > 0 && sec.block?.slot === event.slot)) return s;
 
         const newestBlockSlot = s[1]?.block?.slot ?? 0;
 

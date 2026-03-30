@@ -100,14 +100,19 @@
           {@const isDeregistration = !deleg.to_pool_id && !!deleg.from_pool_id}
           <div class="addr-item">
             {#if deleg.to_pool_id}
-              <a class="deleg-pool" href="/{deleg.to_pool_id}">{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a>
+              <a class="deleg-pool" style:color={poolColor(deleg.to_pool_id)} href="/{deleg.to_pool_id}"
+                >{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a
+              >
             {/if}
             {#if deleg.to_pool_id}
               <span class="deleg-arrow">{@html '&#x2191;'}</span>
             {/if}
             {#if deleg.from_pool_id}
-              <a class="deleg-pool" class:deregistered={isDeregistration} href="/{deleg.from_pool_id}"
-                >{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
+              <a
+                class="deleg-pool"
+                class:deregistered={isDeregistration}
+                style:color={poolColor(deleg.from_pool_id)}
+                href="/{deleg.from_pool_id}">{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
               >
             {/if}
             <span class="ada">{@html formatAda(deleg.live_stake)}</span>
@@ -207,13 +212,13 @@
   }
 
   .deleg-section {
-    background: rgb(0 0 0 / 0.5);
+    background: rgb(0 0 0 / 0.6);
     border-radius: 6px;
     padding: 8px 10px;
   }
 
   .tx-body {
-    background: rgb(0 0 0 / 0.5);
+    background: rgb(0 0 0 / 0.6);
     border-radius: 6px;
     padding: 8px 10px;
   }

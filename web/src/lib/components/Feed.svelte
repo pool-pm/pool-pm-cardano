@@ -296,7 +296,11 @@
         out:slide={{ duration: FLIP_DURATION, axis: landscape ? 'x' : 'y' }}
       >
         <div class="block-header">
-          {#if section.block}
+          {#if isMempool && $config?.genesis}
+            {@const ei = epochInfo($config.genesis)}
+            <span class="block-meta">Epoch {ei.epoch}</span>
+            <span class="block-meta">{formatTimeLeft(ei.epochEnd)}</span>
+          {:else if section.block}
             <span class="block-meta">{formatDate(section.block.timestamp)}</span>
             <span class="block-meta">
               {#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
@@ -324,13 +328,7 @@
           </div>
         {/if}
 
-        {#if isMempool && $config?.genesis}
-          {@const ei = epochInfo($config.genesis)}
-          <div class="block-footer">
-            <span class="block-meta">Epoch {ei.epoch}</span>
-            <span class="block-meta">{formatTimeLeft(ei.epochEnd)}</span>
-          </div>
-        {:else if section.block}
+        {#if section.block}
           <div class="block-footer">
             <span class="block-meta block-hash mono">{section.block.hash}</span>
             <span class="block-meta mono">#{section.block.number}</span>

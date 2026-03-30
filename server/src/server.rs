@@ -25,7 +25,7 @@ use crate::event_bus::EventBus;
 use crate::filter;
 use crate::model::{asset_fingerprint, pool_bech32_id, Pool};
 use crate::nftcdn::NftcdnConfig;
-use crate::state::feed_index::{BlockRef, DelegationEntry};
+use crate::state::feed_index::BlockRef;
 use crate::state::{BlockSnapshot, State};
 
 #[derive(Clone)]
@@ -265,10 +265,12 @@ struct ReplayBlock {
 }
 
 /// Fetch replay blocks via N2N and send as SSE events. Newest-first order.
+/// `deleg_info` maps tx_hash -> Vec<DelegationInfo> for injecting correct delegation data.
 async fn send_replay_blocks(
     sender: &Sender<Result<SseEvent, Infallible>>,
     blocks: &mut [ReplayBlock],
     delegators: &imbl::hashset::HashSet<Vec<u8>>,
+    deleg_info: &HashMap<String, (Vec<DelegationInfo>, Option<i64>)>,
     stake_threshold: u64,
     nftcdn: &NftcdnConfig,
     genesis: &GenesisConfig,
@@ -314,6 +316,21 @@ async fn send_replay_blocks(
 
                 if block.filter_by_delegators {
                     filter::apply_stake_changes(&mut txs, delegators);
+                }
+
+                // Inject delegation info from feed index AFTER stake changes,
+                // so delegation-based stake_change (live_stake) takes precedence
+                // over UTXO-based calculation (which is just the fee for delegation txs)
+                for tx in &mut txs {
+                    if let Some((delegations, stake_change)) = deleg_info.get(&tx.hash) {
+                        tx.delegations = delegations.clone();
+                        if let Some(sc) = stake_change {
+                            tx.stake_change = Some(*sc);
+                        }
+                    }
+                }
+
+                if block.filter_by_delegators {
                     txs.retain(|tx| {
                         !tx.delegations.is_empty()
                             || tx
@@ -400,58 +417,6 @@ async fn send_pool_info(
         if let Some(pool) = snap.pools.get(&hex::encode(pool_hash)) {
             let _ = sender.send(pool_sse_event(pool, Some(snap))).await;
         }
-    }
-}
-
-/// Construct a delegation-only SSE event from a DelegationEntry.
-fn delegation_entry_to_event(
-    entry: &DelegationEntry,
-    genesis: &GenesisConfig,
-    feed_pool_hash: &[u8],
-) -> crate::event::Event {
-    let deleg_info = DelegationInfo {
-        stake_address: entry.stake_address.clone(),
-        from_pool_id: entry.from.as_ref().map(|t| t.id.clone()),
-        from_ticker: entry.from.as_ref().and_then(|t| t.label.clone()),
-        to_pool_id: entry.to.as_ref().map(|t| t.id.clone()),
-        to_ticker: entry.to.as_ref().and_then(|t| t.label.clone()),
-        live_stake: entry.live_stake,
-    };
-    let is_to = entry.to.as_ref().map_or(false, |t| t.raw == feed_pool_hash);
-    let is_from = entry
-        .from
-        .as_ref()
-        .map_or(false, |t| t.raw == feed_pool_hash);
-    let stake_change = match (is_to, is_from) {
-        (true, false) => Some(entry.live_stake),
-        (false, true) => Some(-entry.live_stake),
-        _ => None,
-    };
-    let tx = BlockTx {
-        hash: entry.tx_hash.clone(),
-        fee: 0,
-        size: 0,
-        inputs: vec![],
-        outputs: vec![],
-        expiry: None,
-        delegations: vec![deleg_info],
-        stake_change,
-        stake_credentials: vec![],
-        withdrawals: vec![],
-    };
-    let block_pool_id = if entry.block_pool_hash.is_empty() {
-        None
-    } else {
-        Some(pool_bech32_id(&entry.block_pool_hash))
-    };
-    crate::event::Event::Block {
-        slot: entry.slot,
-        hash: entry.block_hash.clone(),
-        number: entry.block_no,
-        timestamp: slot_to_timestamp(entry.slot, genesis),
-        pool_id: block_pool_id,
-        pool_ticker: entry.block_pool_ticker.clone(),
-        txs: vec![tx],
     }
 }
 
@@ -615,6 +580,34 @@ async fn filtered_events(
                 )
             };
 
+            // Build delegation info map: tx_hash -> (delegations, stake_change)
+            let mut deleg_info: HashMap<String, (Vec<DelegationInfo>, Option<i64>)> =
+                HashMap::new();
+            for entry in &delegations {
+                let is_to = entry.to.as_ref().map_or(false, |t| t.raw == *ph);
+                let is_from = entry.from.as_ref().map_or(false, |t| t.raw == *ph);
+                let stake_change = match (is_to, is_from) {
+                    (true, false) => Some(entry.live_stake),
+                    (false, true) => Some(-entry.live_stake),
+                    _ => None,
+                };
+                let info = DelegationInfo {
+                    stake_address: entry.stake_address.clone(),
+                    from_pool_id: entry.from.as_ref().map(|t| t.id.clone()),
+                    from_ticker: entry.from.as_ref().and_then(|t| t.label.clone()),
+                    to_pool_id: entry.to.as_ref().map(|t| t.id.clone()),
+                    to_ticker: entry.to.as_ref().and_then(|t| t.label.clone()),
+                    live_stake: entry.live_stake,
+                };
+                let e = deleg_info
+                    .entry(entry.tx_hash.clone())
+                    .or_insert_with(|| (Vec::new(), None));
+                e.0.push(info);
+                if e.1.is_none() {
+                    e.1 = stake_change;
+                }
+            }
+
             // Build block actions: PoolMinted > StakeChange priority per slot
             let mut slot_map: HashMap<u64, SlotAction> = HashMap::new();
 
@@ -626,10 +619,18 @@ async fn filtered_events(
                     .entry(r.slot)
                     .or_insert(SlotAction::StakeChange(r.clone()));
             }
+            // Add delegation slots not already covered by block fetches
+            for entry in &delegations {
+                slot_map
+                    .entry(entry.slot)
+                    .or_insert(SlotAction::StakeChange(BlockRef {
+                        slot: entry.slot,
+                        hash: entry.block_hash.clone(),
+                        number: entry.block_no,
+                    }));
+            }
 
-            // Exclude slots covered by block fetches OR delegation entries
-            let mut exclude_slots: HashSet<u64> = slot_map.keys().copied().collect();
-            exclude_slots.extend(delegations.iter().map(|d| d.slot));
+            let exclude_slots: HashSet<u64> = slot_map.keys().copied().collect();
 
             // Sort block actions newest-first
             let mut replay_blocks: Vec<ReplayBlock> = Vec::new();
@@ -657,11 +658,12 @@ async fn filtered_events(
                 }
             }
 
-            // Send blocks via N2N (newest-first)
+            // Send blocks via N2N with delegation info injected
             send_replay_blocks(
                 &sender,
                 &mut replay_blocks,
                 &replay_delegators,
+                &deleg_info,
                 stake_threshold,
                 &replay_state.nftcdn,
                 &replay_state.genesis,
@@ -671,14 +673,6 @@ async fn filtered_events(
                 replay_state.mainnet,
             )
             .await;
-
-            // Always send delegation entries separately (correct from/to from feed index)
-            for entry in &delegations {
-                let event = delegation_entry_to_event(entry, &replay_state.genesis, ph);
-                if let Some(sse) = serialize_event(event) {
-                    let _ = sender.send(sse).await;
-                }
-            }
 
             exclude_slots
         } else {
