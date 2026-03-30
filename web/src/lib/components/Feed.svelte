@@ -160,11 +160,31 @@
 
     feedEl.addEventListener('scroll', handleScroll, { passive: true });
 
+    function handleWheel(e: WheelEvent) {
+      if (!landscape) return;
+      if (e.deltaX !== 0) return; // native horizontal scroll, don't remap
+      e.preventDefault();
+      feedEl.scrollLeft -= e.deltaY;
+    }
+
+    function handleKeydown(e: KeyboardEvent) {
+      if (!landscape) return;
+      if (e.key === 'Home') {
+        e.preventDefault();
+        feedEl.scrollLeft = 0;
+      }
+    }
+
+    feedEl.addEventListener('wheel', handleWheel, { passive: false });
+    window.addEventListener('keydown', handleKeydown);
+
     sectionObserver = new ResizeObserver(scheduleMeasure);
     for (const el of sectionRefs.values()) sectionObserver.observe(el);
 
     return () => {
       feedEl.removeEventListener('scroll', handleScroll);
+      feedEl.removeEventListener('wheel', handleWheel);
+      window.removeEventListener('keydown', handleKeydown);
       window.removeEventListener('resize', updateLandscape);
       feedObserver.disconnect();
       sectionObserver?.disconnect();
