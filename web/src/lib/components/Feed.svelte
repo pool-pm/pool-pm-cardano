@@ -8,8 +8,7 @@
 
   const MAX_BLOCKS = 30;
   const MAX_MEMPOOL_AGE_MS = 600_000;
-  const DEFAULT_PX_PER_SECOND = 2;
-  const MAX_TOTAL_GAP_PX = 400;
+  const PX_PER_SECOND = 2;
   const BLOCK_PADDING = 10;
   const BLOCK_BORDER = 2;
   const BLOCK_INSET = (BLOCK_PADDING + BLOCK_BORDER) * 2;
@@ -31,19 +30,7 @@
   let sectionObserver: ResizeObserver | undefined;
   let measurePending = false;
 
-  // Dynamic spacing: shrink PX_PER_SECOND so total gaps fit on screen.
-  // Use the block timestamp range (not Date.now()) so that pxPerSecond only
-  // changes when blocks are added/removed, not on every mempool tx arrival.
-  let pxPerSecond = $derived.by(() => {
-    const sects = $sections;
-    if (sects.length <= 2) return DEFAULT_PX_PER_SECOND;
-    const newest = sects[1]?.block?.timestamp;
-    const oldest = sects[sects.length - 1].block?.timestamp;
-    if (!newest || !oldest) return DEFAULT_PX_PER_SECOND;
-    const totalTime = newest - oldest;
-    if (totalTime <= 0) return DEFAULT_PX_PER_SECOND;
-    return Math.min(DEFAULT_PX_PER_SECOND, MAX_TOTAL_GAP_PX / totalTime);
-  });
+  let pxPerSecond = $derived($pool ? 1 / 60 : PX_PER_SECOND);
 
   // Available height for tx columns in landscape mode
   let txAreaHeight = $derived(feedHeight - BLOCK_INSET - 40 - poolHeaderHeight - LANDSCAPE_MARGIN);
