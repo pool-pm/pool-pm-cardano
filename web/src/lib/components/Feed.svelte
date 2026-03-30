@@ -28,7 +28,10 @@
   let sectionObserver: ResizeObserver | undefined;
   let measurePending = false;
 
-  let pxPerSecond = $derived($pool ? 1 / 60 : PX_PER_SECOND);
+  // Pool feeds: logarithmic spacing — 2px/sec for small gaps, ~100px/day
+  function logGap(seconds: number): number {
+    return 10 * Math.log1p(seconds / 5);
+  }
 
   // Available height for tx columns in landscape mode.
   // Overhead = section padding + border + 3 flex gaps + header + ticker + footer
@@ -67,7 +70,7 @@
       if (i > 0) {
         const prev = sects[i - 1].block?.timestamp ?? now / 1000;
         const delta = section.block ? Math.max(0, prev - section.block.timestamp) : 0;
-        spacing = Math.max(2, Math.min($pool ? 100 : Infinity, Math.round(pxPerSecond * delta)));
+        spacing = Math.max(2, Math.round($pool ? logGap(delta) : PX_PER_SECOND * delta));
         pos += spacing;
       }
       positions.set(section.id, { pos, spacing });
@@ -154,7 +157,6 @@
     $sections;
     now;
     landscape;
-    pxPerSecond;
     untrack(scheduleMeasure);
   });
 
