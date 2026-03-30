@@ -27,6 +27,8 @@
   let animated = $state(false);
   let sectionObserver: ResizeObserver | undefined;
   let measurePending = false;
+  let scrolledAway = false;
+  let ignoreScroll = false;
 
   // Pool feeds: logarithmic spacing — 2px/sec for small gaps, ~100px/day
   function logGap(seconds: number): number {
@@ -60,8 +62,33 @@
     }
   }
 
+  function handleScroll() {
+    if (ignoreScroll) return;
+    if (!feedEl) return;
+    // row-reverse: scrollLeft ≈ 0 at right edge (can be slightly negative
+    // due to padding/scrollbar gutter), goes more negative when scrolled left
+    scrolledAway = landscape ? feedEl.scrollLeft < -30 : feedEl.scrollTop > 10;
+  }
+
   function measureSections() {
     const sects = $sections;
+
+    // Before remeasuring, record an anchor section's viewport position.
+    // After DOM update we'll measure the actual shift and compensate scroll.
+    let anchorEl: HTMLElement | undefined;
+    let anchorBefore: number | undefined;
+    if (animated && scrolledAway && canvasSize > 0) {
+      for (let i = 1; i < sects.length; i++) {
+        const el = sectionRefs.get(sects[i].id);
+        if (el) {
+          anchorEl = el;
+          const rect = el.getBoundingClientRect();
+          anchorBefore = landscape ? rect.left : rect.top;
+          break;
+        }
+      }
+    }
+
     const positions = new Map<string, { pos: number; spacing: number }>();
     let pos = 0;
     for (let i = 0; i < sects.length; i++) {
@@ -69,20 +96,43 @@
       let spacing = 0;
       if (i > 0) {
         const prev = sects[i - 1].block?.timestamp ?? now / 1000;
-        const delta = section.block ? Math.max(0, prev - section.block.timestamp) : 0;
-        spacing = Math.max(2, Math.round($pool ? logGap(delta) : PX_PER_SECOND * delta));
+        const timeDelta = section.block ? Math.max(0, prev - section.block.timestamp) : 0;
+        spacing = Math.max(2, Math.round($pool ? logGap(timeDelta) : PX_PER_SECOND * timeDelta));
         pos += spacing;
       }
       positions.set(section.id, { pos, spacing });
       const el = sectionRefs.get(section.id);
       pos += landscape ? (el?.offsetWidth ?? 0) : (el?.offsetHeight ?? 0);
     }
+
+    if (anchorEl) animated = false;
+
     sectionPositions = positions;
     canvasSize = pos;
-    if (!animated)
+
+    if (anchorEl && anchorBefore !== undefined) {
+      const anchor = anchorEl;
+      const before = anchorBefore;
+      tick().then(() => {
+        const rect = anchor.getBoundingClientRect();
+        const shift = (landscape ? rect.left : rect.top) - before;
+        if (shift !== 0) {
+          ignoreScroll = true;
+          if (landscape) feedEl.scrollLeft += shift;
+          else feedEl.scrollTop += shift;
+          requestAnimationFrame(() => {
+            ignoreScroll = false;
+          });
+        }
+        requestAnimationFrame(() => {
+          animated = true;
+        });
+      });
+    } else if (!animated) {
       tick().then(() => {
         animated = true;
       });
+    }
   }
 
   function updateLandscape() {
@@ -90,6 +140,7 @@
     landscape = window.innerWidth > window.innerHeight;
     if (was !== landscape) {
       animated = false;
+      scrolledAway = false;
     }
   }
 
@@ -107,10 +158,13 @@
     });
     feedObserver.observe(feedEl);
 
+    feedEl.addEventListener('scroll', handleScroll, { passive: true });
+
     sectionObserver = new ResizeObserver(scheduleMeasure);
     for (const el of sectionRefs.values()) sectionObserver.observe(el);
 
     return () => {
+      feedEl.removeEventListener('scroll', handleScroll);
       window.removeEventListener('resize', updateLandscape);
       feedObserver.disconnect();
       sectionObserver?.disconnect();
