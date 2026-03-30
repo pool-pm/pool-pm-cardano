@@ -277,14 +277,25 @@
     <div class="pool-circle" style:border-color={color}>
       <span class="pool-name" style:color>{formatTicker($pool.ticker ?? $pool.pool_id.slice(5, 10))}</span>
       {#if $pool.delegators != null}
-        <span class="pool-info">{$pool.delegators.toLocaleString()} delegators</span>
+        <span class="pool-delegators">{$pool.delegators.toLocaleString()} delegators</span>
       {/if}
       {#if $pool.live_stake}
         <span class="pool-stake">{formatAda($pool.live_stake)}</span>
       {/if}
-      <span class="pool-info">{formatAda($pool.pledge)} pledge</span>
-      <span class="pool-info">{formatMargin($pool.margin)} margin</span>
-      <span class="pool-info">{formatAda($pool.fixed_cost)} fixed cost</span>
+      <div class="pool-param">
+        <span class="pool-param-label">pledge</span>
+        <span class="pool-param-value">{formatAda($pool.pledge)}</span>
+      </div>
+      <div class="pool-params">
+        <div class="pool-param">
+          <span class="pool-param-label">margin</span>
+          <span class="pool-param-value">{formatMargin($pool.margin)}</span>
+        </div>
+        <div class="pool-param">
+          <span class="pool-param-label">cost</span>
+          <span class="pool-param-value">{formatAda($pool.fixed_cost)}</span>
+        </div>
+      </div>
     </div>
   {/if}
   <div class="canvas" style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}>
@@ -410,9 +421,46 @@
     margin: 2px 0;
   }
 
+  .pool-delegators {
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
   .pool-info {
     font-size: 10px;
     color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .pool-params {
+    display: flex;
+    gap: 0;
+    margin-top: 4px;
+  }
+
+  .pool-param {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0 6px;
+    border-right: 1px solid rgb(255 255 255 / 0.15);
+  }
+
+  .pool-param:last-child {
+    border-right: none;
+  }
+
+  .pool-param-label {
+    font-size: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+  }
+
+  .pool-param-value {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
     white-space: nowrap;
   }
 
