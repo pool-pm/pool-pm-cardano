@@ -99,6 +99,7 @@ fn decode_block_txs(
     nftcdn: &NftcdnConfig,
     state: Option<&State>,
     mainnet: bool,
+    extract_delegations: bool,
 ) -> (Vec<BlockTx>, Option<String>, Option<String>) {
     let block = match MultiEraBlock::decode(cbor) {
         Ok(b) => b,
@@ -180,9 +181,13 @@ fn decode_block_txs(
                 })
                 .collect();
 
-            let delegations = state
-                .map(|s| crate::mempool::extract_delegations(tx, s, mainnet))
-                .unwrap_or_default();
+            let delegations = if extract_delegations {
+                state
+                    .map(|s| crate::mempool::extract_delegations(tx, s, mainnet))
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
 
             BlockTx {
                 hash: tx.hash().to_string(),
@@ -276,8 +281,13 @@ async fn send_replay_blocks(
         match client.blockfetch().fetch_single(point).await {
             Ok(cbor) => {
                 let state_guard = chain_state.read().await;
-                let (mut txs, cbor_pool_id, cbor_pool_ticker) =
-                    decode_block_txs(&cbor, nftcdn, Some(&state_guard), mainnet);
+                let (mut txs, cbor_pool_id, cbor_pool_ticker) = decode_block_txs(
+                    &cbor,
+                    nftcdn,
+                    Some(&state_guard),
+                    mainnet,
+                    !block.filter_by_delegators,
+                );
                 drop(state_guard);
                 resolve_block_inputs(&mut txs, chain_state).await;
                 for tx in &mut txs {
