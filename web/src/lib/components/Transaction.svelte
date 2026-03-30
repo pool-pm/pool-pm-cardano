@@ -52,6 +52,22 @@
     return trimmed ? sym + '0' + dec(trimmed) : sym + '0';
   }
 
+  function formatAssetQuantity(quantity: string): string {
+    const dot = quantity.indexOf('.');
+    if (dot === -1) {
+      return Number(quantity).toLocaleString();
+    }
+    const whole = quantity.slice(0, dot);
+    const frac = quantity.slice(dot + 1);
+    const wholeNum = Number(whole);
+    if (wholeNum >= 1000) return wholeNum.toLocaleString();
+    if (wholeNum >= 1) {
+      const trimmed = frac.slice(0, 2).replace(/0+$/, '');
+      return trimmed ? wholeNum.toLocaleString() + '.' + trimmed : wholeNum.toLocaleString();
+    }
+    return '0.' + frac;
+  }
+
   function nftcdnUrl(asset: AssetInfo): string {
     const base = `https://${asset.fingerprint}.${$config!.nftcdn}/preview`;
     return asset.tk ? `${base}?tk=${asset.tk}&size=128` : `${base}?size=128`;
@@ -160,7 +176,7 @@
                       onmouseleave={hidePreview}
                     />
                     {#if thumbSize >= 32 && asset.quantity !== '1'}
-                      <span class="asset-label">{BigInt(asset.quantity).toLocaleString()}</span>
+                      <span class="asset-label">{formatAssetQuantity(asset.quantity)}</span>
                     {/if}
                   </div>
                 {/each}
