@@ -52,14 +52,24 @@
     return trimmed ? sym + '0' + dec(trimmed) : sym + '0';
   }
 
+  function compactNumber(n: number): string {
+    if (n >= 1e15) return (n / 1e15).toFixed(1).replace(/\.0$/, '') + 'Q';
+    if (n >= 1e12) return (n / 1e12).toFixed(1).replace(/\.0$/, '') + 'T';
+    if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1e4) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+    return n.toLocaleString();
+  }
+
   function formatAssetQuantity(quantity: string): string {
     const dot = quantity.indexOf('.');
     if (dot === -1) {
-      return Number(quantity).toLocaleString();
+      return compactNumber(Number(quantity));
     }
     const whole = quantity.slice(0, dot);
     const frac = quantity.slice(dot + 1);
     const wholeNum = Number(whole);
+    if (wholeNum >= 10000) return compactNumber(wholeNum);
     if (wholeNum >= 1000) return wholeNum.toLocaleString();
     if (wholeNum >= 1) {
       const trimmed = frac.slice(0, 2).replace(/0+$/, '');

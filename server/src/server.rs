@@ -20,7 +20,7 @@ use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
-use crate::event::{format_quantity, AssetInfo, BlockTx, DelegationInfo, TxInput, TxOutputInfo};
+use crate::event::{AssetInfo, BlockTx, DelegationInfo, TxInput, TxOutputInfo};
 use crate::event_bus::EventBus;
 use crate::filter;
 use crate::model::{asset_fingerprint, pool_bech32_id, Pool};
@@ -94,7 +94,7 @@ fn serialize_event(event: crate::event::Event) -> Option<Result<SseEvent, Infall
 // --- Block decoding ---
 
 /// Decode a block CBOR into a BlockTx list and extract the minting pool info.
-async fn decode_block_txs(
+fn decode_block_txs(
     cbor: &[u8],
     nftcdn: &NftcdnConfig,
     state: Option<&State>,
@@ -156,11 +156,10 @@ async fn decode_block_txs(
                         .filter(|s| !s.is_empty())
                         .map(String::from);
                     let tk = nftcdn.compute_tk(&fp, "preview", 128);
-                    let decimals = nftcdn.get_decimals(&fp, raw_quantity).await;
                     assets.push(AssetInfo {
                         fingerprint: fp,
                         name,
-                        quantity: format_quantity(raw_quantity, decimals),
+                        quantity: raw_quantity.to_string(),
                         tk,
                     });
                 }
@@ -301,8 +300,7 @@ async fn send_replay_blocks(
                     Some(&state_guard),
                     mainnet,
                     !block.filter_by_delegators,
-                )
-                .await;
+                );
                 drop(state_guard);
                 resolve_block_inputs(&mut txs, chain_state).await;
                 for tx in &mut txs {
