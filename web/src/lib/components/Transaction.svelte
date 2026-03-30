@@ -3,7 +3,7 @@
   import { config } from '../stores';
   import { poolColor, formatTicker } from '../layout';
 
-  let { tx }: { tx: FeedTx } = $props();
+  let { tx, compact = false }: { tx: FeedTx; compact?: boolean } = $props();
 
   function poolLabel(ticker?: string, poolId?: string): string {
     return formatTicker(ticker ?? poolId?.slice(5, 10) ?? '');
@@ -38,15 +38,18 @@
   let totalAssets = $derived(tx.outputs.reduce((sum, o) => sum + o.assets.length, 0));
   let thumbSize = $derived(totalAssets <= 1 ? 64 : Math.max(16, Math.floor(64 / Math.sqrt(totalAssets))));
 
-  const MAX_OUTPUTS = 8;
-  const MAX_ASSETS = 50;
+  let maxOutputs = $derived(compact ? 2 : 8);
+  let maxInputs = $derived(compact ? 2 : 8);
+  let maxAssets = $derived(compact ? 10 : 50);
+  let maxAssetsPerOutput = $derived(compact ? 5 : 25);
+
   let sortedOutputs = $derived([...tx.outputs].sort((a, b) => Number(BigInt(b.lovelace) - BigInt(a.lovelace))));
   let visibleOutputs = $derived.by(() => {
     let assets = 0;
     let count = 0;
     for (const o of sortedOutputs) {
-      if (count >= MAX_OUTPUTS) break;
-      if (assets >= MAX_ASSETS) break;
+      if (count >= maxOutputs) break;
+      if (assets >= maxAssets) break;
       assets += o.assets.length;
       count++;
     }
@@ -56,7 +59,7 @@
 
   // Deduplicate inputs by address
   let uniqueInputs = $derived([...new Map(tx.inputs.map((i) => [i.address, i])).values()]);
-  let visibleInputs = $derived(uniqueInputs.slice(0, MAX_OUTPUTS));
+  let visibleInputs = $derived(uniqueInputs.slice(0, maxInputs));
   let hiddenInputCount = $derived(uniqueInputs.length - visibleInputs.length);
 </script>
 
@@ -99,10 +102,10 @@
           <div class="addr-item">
             <span class="ada">{@html formatAda(output.lovelace)}</span>
             {#if output.assets.length > 0 && $config}
-              {@const maxAssets = 25}
-              {@const hiddenAssets = output.assets.length - maxAssets}
+              {@const visibleAssetCount = Math.min(output.assets.length, maxAssetsPerOutput)}
+              {@const hiddenAssets = output.assets.length - visibleAssetCount}
               <div class="assets">
-                {#each output.assets.slice(0, maxAssets) as asset}
+                {#each output.assets.slice(0, visibleAssetCount) as asset}
                   <div class="asset">
                     <img
                       class="asset-thumb"
@@ -239,7 +242,7 @@
   }
 
   .arrow {
-    color: rgb(255 255 255 / 0.4);
+    color: var(--section-color, var(--accent));
     text-align: center;
     font-size: 12px;
     line-height: 1;
@@ -298,7 +301,7 @@
   }
 
   .more-outputs {
-    color: var(--text-muted);
+    color: rgb(255 255 255 / 0.4);
     font-size: 10px;
   }
 </style>

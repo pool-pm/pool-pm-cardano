@@ -313,7 +313,7 @@
           >
             {#each section.txs as tx (tx.hash)}
               <div class="tx-grid-item">
-                <Transaction {tx} />
+                <Transaction {tx} compact={landscape && feedHeight < 500} />
               </div>
             {/each}
           </div>
