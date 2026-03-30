@@ -418,7 +418,6 @@ fn delegation_entry_to_event(
 enum SlotAction {
     PoolMinted(BlockRef),
     StakeChange(BlockRef),
-    DelegationOnly(Vec<DelegationEntry>),
 }
 
 /// Build the live stream that detects pool parameter/stake changes and filters events.
@@ -568,7 +567,7 @@ async fn filtered_events(
                 )
             };
 
-            // Build slot actions with priority: PoolMinted > StakeChange > DelegationOnly
+            // Build block actions: PoolMinted > StakeChange priority per slot
             let mut slot_map: HashMap<u64, SlotAction> = HashMap::new();
 
             for r in &minted {
@@ -579,27 +578,17 @@ async fn filtered_events(
                     .entry(r.slot)
                     .or_insert(SlotAction::StakeChange(r.clone()));
             }
-            let mut deleg_by_slot: HashMap<u64, Vec<DelegationEntry>> = HashMap::new();
-            for d in delegations {
-                deleg_by_slot.entry(d.slot).or_default().push(d);
-            }
-            for (slot, entries) in deleg_by_slot {
-                slot_map
-                    .entry(slot)
-                    .or_insert(SlotAction::DelegationOnly(entries));
-            }
 
-            let exclude_slots: HashSet<u64> = slot_map.keys().copied().collect();
+            // Exclude slots covered by block fetches OR delegation entries
+            let mut exclude_slots: HashSet<u64> = slot_map.keys().copied().collect();
+            exclude_slots.extend(delegations.iter().map(|d| d.slot));
 
-            // Separate block fetches from delegation-only events
+            // Sort block actions newest-first
             let mut replay_blocks: Vec<ReplayBlock> = Vec::new();
-            let mut deleg_only: Vec<(u64, Vec<DelegationEntry>)> = Vec::new();
-
-            // Sort newest-first
             let mut actions: Vec<(u64, SlotAction)> = slot_map.into_iter().collect();
             actions.sort_by(|a, b| b.0.cmp(&a.0));
 
-            for (_slot, action) in actions {
+            for (_, action) in actions {
                 match action {
                     SlotAction::PoolMinted(r) => replay_blocks.push(ReplayBlock {
                         slot: r.slot,
@@ -617,9 +606,6 @@ async fn filtered_events(
                         pool_ticker: None,
                         filter_by_delegators: true,
                     }),
-                    SlotAction::DelegationOnly(entries) => {
-                        deleg_only.push((_slot, entries));
-                    }
                 }
             }
 
@@ -637,13 +623,11 @@ async fn filtered_events(
             )
             .await;
 
-            // Send delegation-only events
-            for (_, entries) in deleg_only {
-                for entry in entries {
-                    let event = delegation_entry_to_event(&entry, &replay_state.genesis);
-                    if let Some(sse) = serialize_event(event) {
-                        let _ = sender.send(sse).await;
-                    }
+            // Always send delegation entries separately (correct from/to from feed index)
+            for entry in &delegations {
+                let event = delegation_entry_to_event(entry, &replay_state.genesis);
+                if let Some(sse) = serialize_event(event) {
+                    let _ = sender.send(sse).await;
                 }
             }
 
