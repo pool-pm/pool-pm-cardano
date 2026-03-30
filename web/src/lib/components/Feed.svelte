@@ -315,13 +315,13 @@
     const whole = padded.slice(0, -6) || '0';
     const frac = padded.slice(-6);
     const wholeNum = Number(whole);
-    if (wholeNum >= 1000) return '₳' + wholeNum.toLocaleString();
+    if (wholeNum >= 1000) return '₳\u2009' + wholeNum.toLocaleString();
     if (wholeNum >= 1) {
       const trimmed = frac.slice(0, 2).replace(/0+$/, '');
-      return trimmed ? '₳' + whole + '.' + trimmed : '₳' + whole;
+      return trimmed ? '₳\u2009' + whole + '.' + trimmed : '₳\u2009' + whole;
     }
     const trimmed = frac.replace(/0+$/, '');
-    return trimmed ? '₳0.' + trimmed : '₳0';
+    return trimmed ? '₳\u20090.' + trimmed : '₳\u20090';
   }
 
   function formatMargin(m: number): string {
@@ -381,10 +381,6 @@
       {#if $pool.live_stake}
         <span class="pool-stake">{formatAda($pool.live_stake)}</span>
       {/if}
-      <div class="pool-param">
-        <span class="pool-param-label">pledge</span>
-        <span class="pool-param-value">{formatAda($pool.pledge)}</span>
-      </div>
       <div class="pool-params">
         <div class="pool-param">
           <span class="pool-param-label">margin</span>
@@ -394,6 +390,10 @@
           <span class="pool-param-label">cost</span>
           <span class="pool-param-value">{formatAda($pool.fixed_cost)}</span>
         </div>
+      </div>
+      <div class="pool-param">
+        <span class="pool-param-label">pledge</span>
+        <span class="pool-param-value">{formatAda($pool.pledge)}</span>
       </div>
     </div>
   {/if}
@@ -493,7 +493,7 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 2px;
+    gap: 6px;
     text-align: center;
     padding: 20px;
     box-sizing: border-box;
@@ -517,7 +517,6 @@
     font-size: 24px;
     color: var(--text);
     line-height: 1;
-    margin: 2px 0;
   }
 
   .pool-delegators {
@@ -534,7 +533,6 @@
   .pool-params {
     display: flex;
     gap: 0;
-    margin-top: 4px;
   }
 
   .pool-param {
@@ -542,11 +540,10 @@
     flex-direction: column;
     align-items: center;
     padding: 0 6px;
-    border-right: 1px solid rgb(255 255 255 / 0.15);
   }
 
-  .pool-param:last-child {
-    border-right: none;
+  .pool-params .pool-param + .pool-param {
+    border-left: 1px solid rgb(255 255 255 / 0.15);
   }
 
   .pool-param-label {
