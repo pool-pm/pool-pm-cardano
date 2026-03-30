@@ -240,13 +240,15 @@
     return (m * 100).toFixed(2).replace(/\.?0+$/, '') + '%';
   }
 
-  function formatTime(timestamp: number): string {
+  function formatDate(timestamp: number): string {
     const date = new Date(timestamp * 1000);
     const today = new Date(now);
-    if (date.toDateString() === today.toDateString()) {
-      return date.toLocaleTimeString();
-    }
-    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + date.toLocaleTimeString();
+    if (date.toDateString() === today.toDateString()) return 'Today';
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  function formatTime(timestamp: number): string {
+    return new Date(timestamp * 1000).toLocaleTimeString();
   }
 
   function epochInfo(genesis: GenesisConfig): { epoch: number; epochEnd: number } {
@@ -323,14 +325,19 @@
       >
         <div class="block-header">
           {#if section.block}
-            <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
-              >{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</a
-            >
-            <span class="block-meta">#{section.block.number}</span>
-          {:else}
-            <span class="block-ticker">MEMPOOL</span>
+            <span class="block-meta">{formatDate(section.block.timestamp)}</span>
+            <span class="block-meta">
+              {#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
+            </span>
           {/if}
         </div>
+        {#if section.block && (!$pool || section.block.pool_id === $pool.pool_id)}
+          <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
+            >{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</a
+          >
+        {:else if !section.block}
+          <span class="block-ticker">MEMPOOL</span>
+        {/if}
 
         {#if section.txs.length > 0}
           <div
@@ -354,9 +361,7 @@
         {:else if section.block}
           <div class="block-footer">
             <span class="block-meta block-hash mono">{section.block.hash}</span>
-            <span class="block-meta">
-              {#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
-            </span>
+            <span class="block-meta">#{section.block.number}</span>
           </div>
         {/if}
       </div>
@@ -427,6 +432,7 @@
     padding: var(--block-padding);
     display: flex;
     flex-direction: column;
+    gap: var(--block-padding);
   }
 
   .landscape .section {
@@ -479,15 +485,10 @@
     filter: grayscale(1);
   }
 
-  .section.mempool .block-header {
-    justify-content: center;
-  }
-
   .block-header {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    margin-bottom: calc(var(--block-padding) + var(--block-border));
     line-height: 1;
     white-space: nowrap;
     gap: 8px;
@@ -496,7 +497,6 @@
   .block-footer {
     display: flex;
     justify-content: space-between;
-    margin-top: 8px;
     white-space: nowrap;
     gap: 8px;
   }
@@ -513,6 +513,8 @@
   }
 
   .block-ticker {
+    display: block;
+    text-align: center;
     color: white;
     font-size: 13px;
     font-weight: 700;
