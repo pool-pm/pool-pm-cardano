@@ -225,6 +225,10 @@
     return trimmed ? '₳0.' + trimmed : '₳0';
   }
 
+  function formatMargin(m: number): string {
+    return (m * 100).toFixed(2).replace(/\.?0+$/, '') + '%';
+  }
+
   function formatDate(timestamp: number): string {
     const date = new Date(timestamp * 1000);
     const today = new Date(now);
@@ -268,6 +272,21 @@
   style:--block-border="{BLOCK_BORDER}px"
   style:--flip-duration="{FLIP_DURATION}ms"
 >
+  {#if $pool}
+    {@const color = poolColor($pool.pool_id)}
+    <div class="pool-circle" style:border-color={color}>
+      <span class="pool-name" style:color>{formatTicker($pool.ticker ?? $pool.pool_id.slice(5, 10))}</span>
+      {#if $pool.delegators != null}
+        <span class="pool-info">{$pool.delegators.toLocaleString()} delegators</span>
+      {/if}
+      {#if $pool.live_stake}
+        <span class="pool-stake">{formatAda($pool.live_stake)}</span>
+      {/if}
+      <span class="pool-info">{formatAda($pool.pledge)} pledge</span>
+      <span class="pool-info">{formatMargin($pool.margin)} margin</span>
+      <span class="pool-info">{formatAda($pool.fixed_cost)} fixed cost</span>
+    </div>
+  {/if}
   <div class="canvas" style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}>
     {#each $sections as section, i (section.id)}
       {@const isMempool = !section.block}
@@ -348,13 +367,58 @@
   }
 
   .feed.landscape {
+    display: flex;
+    flex-direction: row-reverse;
+    align-items: center;
     overflow-y: hidden;
     overflow-x: auto;
-    direction: rtl;
+  }
+
+  .pool-circle {
+    width: 200px;
+    height: 200px;
+    border-radius: 50%;
+    border: 2px solid;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    text-align: center;
+    padding: 20px;
+    box-sizing: border-box;
+    margin: 0 auto 16px;
+    flex-shrink: 0;
+  }
+
+  .landscape .pool-circle {
+    margin: 0 16px;
+    direction: ltr;
+  }
+
+  .pool-name {
+    font-weight: 700;
+    font-size: 24px;
+    line-height: 1;
+  }
+
+  .pool-stake {
+    font-weight: 600;
+    font-size: 24px;
+    color: var(--text);
+    line-height: 1;
+    margin: 2px 0;
+  }
+
+  .pool-info {
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
   }
 
   .canvas {
     position: relative;
+    flex-shrink: 0;
   }
 
   .landscape .canvas {
