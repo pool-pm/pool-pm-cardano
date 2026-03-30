@@ -14,10 +14,8 @@
   const BLOCK_INSET = (BLOCK_PADDING + BLOCK_BORDER) * 2;
 
   let feedEl: HTMLDivElement;
-  let poolHeaderEl = $state<HTMLDivElement | undefined>();
   let feedWidth = $state(0);
   let feedHeight = $state(0);
-  let poolHeaderHeight = $state(0);
   const LANDSCAPE_MARGIN = 16; // vertical breathing room in landscape
   let landscape = $state(false);
   let actualGridWidths = $state<Record<string, number>>({});
@@ -33,7 +31,7 @@
   let pxPerSecond = $derived($pool ? 1 / 60 : PX_PER_SECOND);
 
   // Available height for tx columns in landscape mode
-  let txAreaHeight = $derived(feedHeight - BLOCK_INSET - 40 - poolHeaderHeight - LANDSCAPE_MARGIN);
+  let txAreaHeight = $derived(feedHeight - BLOCK_INSET - 40 - LANDSCAPE_MARGIN);
 
   function trackSection(node: HTMLElement, id: string) {
     sectionRefs.set(id, node);
@@ -128,23 +126,6 @@
     document.title = p ? `${formatTicker(p.ticker ?? p.pool_id.slice(5, 10))} - pool.pm` : 'pool.pm';
   });
 
-  // Measure pool header height reactively (it appears after SSE sends Pool event)
-  $effect(() => {
-    const el = poolHeaderEl;
-    if (!el) {
-      poolHeaderHeight = 0;
-      return;
-    }
-    const style = getComputedStyle(el);
-    poolHeaderHeight = el.offsetHeight + parseFloat(style.marginBottom);
-    const obs = new ResizeObserver(() => {
-      const s = getComputedStyle(el);
-      poolHeaderHeight = el.offsetHeight + parseFloat(s.marginBottom);
-    });
-    obs.observe(el);
-    return () => obs.disconnect();
-  });
-
   $effect(() => {
     const interval = setInterval(() => {
       now = Date.now();
@@ -236,10 +217,6 @@
     return trimmed ? '₳0.' + trimmed : '₳0';
   }
 
-  function formatMargin(m: number): string {
-    return (m * 100).toFixed(2).replace(/\.?0+$/, '') + '%';
-  }
-
   function formatDate(timestamp: number): string {
     const date = new Date(timestamp * 1000);
     const today = new Date(now);
@@ -283,20 +260,6 @@
   style:--block-border="{BLOCK_BORDER}px"
   style:--flip-duration="{FLIP_DURATION}ms"
 >
-  {#if $pool}
-    <div class="pool-header" bind:this={poolHeaderEl} style:border-color={poolColor($pool.pool_id)}>
-      <span class="pool-ticker">{formatTicker($pool.ticker ?? $pool.pool_id.slice(5, 10))}</span>
-      {#if $pool.live_stake}
-        <span class="pool-stat">{formatAda($pool.live_stake)} stake</span>
-      {/if}
-      {#if $pool.delegators != null}
-        <span class="pool-stat">{$pool.delegators.toLocaleString()} delegators</span>
-      {/if}
-      <span class="pool-stat">{formatAda($pool.pledge)} pledge</span>
-      <span class="pool-stat">{formatMargin($pool.margin)} margin</span>
-      <span class="pool-stat">{formatAda($pool.fixed_cost)} fixed cost</span>
-    </div>
-  {/if}
   <div class="canvas" style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}>
     {#each $sections as section, i (section.id)}
       {@const isMempool = !section.block}
@@ -381,34 +344,6 @@
     overflow-y: hidden;
     overflow-x: auto;
     direction: rtl;
-  }
-
-  .pool-header {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    padding: 8px 12px;
-    margin-bottom: 16px;
-    border-left: 3px solid;
-    white-space: nowrap;
-  }
-
-  .landscape .pool-header {
-    direction: ltr;
-    margin-bottom: 16px;
-    position: sticky;
-    right: 0;
-  }
-
-  .pool-ticker {
-    font-weight: 700;
-    font-size: 14px;
-    color: var(--text);
-  }
-
-  .pool-stat {
-    font-size: 11px;
-    color: var(--text-muted);
   }
 
   .canvas {

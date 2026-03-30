@@ -39,8 +39,19 @@
   let thumbSize = $derived(totalAssets <= 1 ? 64 : Math.max(16, Math.floor(64 / Math.sqrt(totalAssets))));
 
   const MAX_OUTPUTS = 8;
+  const MAX_ASSETS = 50;
   let sortedOutputs = $derived([...tx.outputs].sort((a, b) => Number(BigInt(b.lovelace) - BigInt(a.lovelace))));
-  let visibleOutputs = $derived(sortedOutputs.slice(0, MAX_OUTPUTS));
+  let visibleOutputs = $derived.by(() => {
+    let assets = 0;
+    let count = 0;
+    for (const o of sortedOutputs) {
+      if (count >= MAX_OUTPUTS) break;
+      if (assets >= MAX_ASSETS) break;
+      assets += o.assets.length;
+      count++;
+    }
+    return sortedOutputs.slice(0, count);
+  });
   let hiddenOutputCount = $derived(tx.outputs.length - visibleOutputs.length);
 
   // Deduplicate inputs by address
@@ -118,13 +129,13 @@
         {#if tx.outputs.length === 0}
           <span class="ada">{@html formatAda(tx.outputs.reduce((s, o) => s + BigInt(o.lovelace), 0n).toString())}</span>
         {/if}
+        {#if hiddenOutputCount > 0}
+          <span class="more-outputs">+{hiddenOutputCount} output{hiddenOutputCount > 1 ? 's' : ''}</span>
+        {/if}
         <div class="addr-item">
           <span class="ada">{@html formatAda(tx.fee)}</span>
           <span class="addr">fee</span>
         </div>
-        {#if hiddenOutputCount > 0}
-          <span class="more-outputs">+{hiddenOutputCount} more</span>
-        {/if}
       </div>
       <div class="arrow" class:flip={tx.outputs.length === 0}>{tx.outputs.length === 0 ? '↻' : '↑'}</div>
 
@@ -136,7 +147,7 @@
           </div>
         {/each}
         {#if hiddenInputCount > 0}
-          <span class="more-outputs">+{hiddenInputCount} more</span>
+          <span class="more-outputs">+{hiddenInputCount} input{hiddenInputCount > 1 ? 's' : ''}</span>
         {/if}
       </div>
       {#if tx.hash}
