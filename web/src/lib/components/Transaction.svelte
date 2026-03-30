@@ -83,6 +83,12 @@
 </script>
 
 <div class="tx-card" style:--thumb-size="{thumbSize}px">
+  {#if tx.stake_change}
+    {@const negative = tx.stake_change.startsWith('-')}
+    <div class="stake-change">
+      {negative ? '−' : '+'}{@html formatAda(negative ? tx.stake_change.slice(1) : tx.stake_change)}
+    </div>
+  {/if}
   {#if visibleDelegations.length > 0}
     <div class="deleg-section">
       <div class="addr-list">
@@ -176,6 +182,13 @@
     text-align: center;
     transition: filter var(--flip-duration) ease;
     overflow: hidden;
+  }
+
+  .stake-change {
+    font-size: 13px;
+    font-weight: 700;
+    color: white;
+    margin-bottom: 8px;
   }
 
   .deleg-section {

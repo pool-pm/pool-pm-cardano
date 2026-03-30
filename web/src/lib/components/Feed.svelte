@@ -67,7 +67,7 @@
       if (i > 0) {
         const prev = sects[i - 1].block?.timestamp ?? now / 1000;
         const delta = section.block ? Math.max(0, prev - section.block.timestamp) : 0;
-        spacing = Math.max(2, Math.round(pxPerSecond * delta));
+        spacing = Math.max(2, Math.min($pool ? 100 : Infinity, Math.round(pxPerSecond * delta)));
         pos += spacing;
       }
       positions.set(section.id, { pos, spacing });
@@ -183,8 +183,8 @@
     });
   });
 
-  const STAKE_POSITIVE = 'oklch(0.55 0.13 155)';
-  const STAKE_NEGATIVE = 'oklch(0.55 0.13 25)';
+  const STAKE_POSITIVE = '#0ecb81';
+  const STAKE_NEGATIVE = '#ef5350';
 
   function sectionColor(section: Section): string {
     if (!section.block) return '#444';
