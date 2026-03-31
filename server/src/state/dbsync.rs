@@ -300,7 +300,7 @@ impl DbSync {
         let label_prefix: Vec<u8> = vec![0x00, 0x06, 0x43, 0xb0];
         let rows = sqlx::query!(
             r#"SELECT ma.policy AS "policy!", ma.name AS "name!",
-                      (entry->>'v')::jsonb->>'int' AS "decimals"
+                      entry->'v'->>'int' AS "decimals"
             FROM tx_out
             JOIN ma_tx_out ON ma_tx_out.tx_out_id = tx_out.id
             JOIN multi_asset ma ON ma.id = ma_tx_out.ident
@@ -311,8 +311,8 @@ impl DbSync {
             WHERE substring(ma.name from 1 for 4) = $2
               AND tx_out.tx_id <= $1
               AND (tx_out.consumed_by_tx_id IS NULL OR tx_out.consumed_by_tx_id > $1)
-              AND entry->>'k' = '{"bytes":"646563696d616c73"}'
-              AND ((entry->>'v')::jsonb->>'int') IS NOT NULL"#,
+              AND (entry->'k') @> '{"bytes":"646563696d616c73"}'
+              AND (entry->'v'->>'int') IS NOT NULL"#,
             last_tx_id,
             &label_prefix
         )
