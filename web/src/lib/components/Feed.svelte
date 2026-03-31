@@ -97,7 +97,10 @@
         const prev = sects[i - 1].block?.timestamp ?? now / 1000;
         const timeDelta = section.block ? Math.max(0, prev - section.block.timestamp) : 0;
         const maxSpacing = Math.round((landscape ? feedWidth : feedHeight) / 2);
-        spacing = Math.min(maxSpacing, Math.max(2, Math.round($pool || $drep ? logGap(timeDelta) : PX_PER_SECOND * timeDelta)));
+        spacing = Math.min(
+          maxSpacing,
+          Math.max(2, Math.round($pool || $drep ? logGap(timeDelta) : PX_PER_SECOND * timeDelta)),
+        );
         pos += spacing;
       }
       positions.set(section.id, { pos, spacing });
@@ -460,7 +463,7 @@
             </span>
           {/if}
         </div>
-        {#if section.block && (!$pool || section.block.pool_id === $pool.pool_id)}
+        {#if section.block && !$drep && (!$pool || section.block.pool_id === $pool.pool_id)}
           <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
             >{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</a
           >
