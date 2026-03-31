@@ -391,8 +391,9 @@
   }
 
   .asset-thumb {
-    max-width: var(--thumb-size, 64px);
-    max-height: var(--thumb-size, 64px);
+    width: var(--thumb-size, 64px);
+    height: var(--thumb-size, 64px);
+    object-fit: contain;
     align-self: center;
     border-radius: 3px;
     background: transparent;
