@@ -20,13 +20,17 @@ impl FeedFilter {
             _ => {}
         }
         let (hrp, data) = bech32::decode(id).ok()?;
-        if data.len() != 28 {
-            return None;
-        }
         match hrp.as_str() {
-            "pool" => Some(FeedFilter::Pool(data)),
-            "drep" => Some(FeedFilter::DRep([&[0x00u8][..], &data].concat())),
-            "drep_script" => Some(FeedFilter::DRep([&[0x01u8][..], &data].concat())),
+            "pool" if data.len() == 28 => Some(FeedFilter::Pool(data)),
+            "drep" if data.len() == 28 => Some(FeedFilter::DRep([&[0x00u8][..], &data].concat())),
+            "drep" if data.len() == 29 => {
+                // CIP-129: first byte is credential type (0x22=key, 0x23=script)
+                let tag = if data[0] == 0x23 { 0x01u8 } else { 0x00 };
+                Some(FeedFilter::DRep([&[tag][..], &data[1..]].concat()))
+            }
+            "drep_script" if data.len() == 28 => {
+                Some(FeedFilter::DRep([&[0x01u8][..], &data].concat()))
+            }
             _ => None,
         }
     }
