@@ -533,6 +533,11 @@
   .pool-params {
     display: flex;
     gap: 0;
+    width: 100%;
+  }
+
+  .pool-params .pool-param {
+    flex: 1;
   }
 
   .pool-param {

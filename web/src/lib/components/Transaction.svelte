@@ -36,12 +36,12 @@
     (tx.delegations ?? []).filter((d) => d.from_pool_id || d.to_pool_id),
   );
 
-  function formatAda(lovelace: string): string {
+  function formatAda(lovelace: string, sign?: string): string {
     const padded = lovelace.padStart(7, '0');
     const whole = padded.slice(0, -6) || '0';
     const frac = padded.slice(-6);
     const wholeNum = Number(whole);
-    const sym = '<span class="ada-sym">₳\u2009</span>';
+    const sym = '<span class="ada-sym">₳\u2009</span>' + (sign ?? '');
     const dec = (d: string) => `<span class="ada-dec">.${d}</span>`;
     if (wholeNum >= 1000) return sym + wholeNum.toLocaleString();
     if (wholeNum >= 1) {
@@ -116,7 +116,7 @@
   {#if tx.stake_change}
     {@const negative = tx.stake_change.startsWith('-')}
     <div class="stake-change" style:color={negative ? 'oklch(0.7 0.25 25)' : 'oklch(0.7 0.25 145)'}>
-      {negative ? '−' : '+'}{@html formatAda(negative ? tx.stake_change.slice(1) : tx.stake_change)}
+      {@html formatAda(negative ? tx.stake_change.slice(1) : tx.stake_change, negative ? '−' : '+')}
     </div>
   {/if}
   {#if tx.message?.length}
