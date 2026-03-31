@@ -8,7 +8,7 @@
 
   const MAX_BLOCKS = 30;
   /** Prune blocks older than 1h whose net stake change is below this fraction of live stake. */
-  const STAKE_CHANGE_PRUNE_DIVISOR = 10_000n; // 0.01%
+  const STAKE_CHANGE_PRUNE_DIVISOR = 1_000n; // 0.1%
   const PX_PER_SECOND = 2;
   const BLOCK_PADDING = 10;
   const BLOCK_BORDER = 2;

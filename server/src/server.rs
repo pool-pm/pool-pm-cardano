@@ -60,7 +60,7 @@ const MAX_REPLAY_BLOCKS: usize = 30;
 
 /// Minimum stake change (as fraction of live stake) to include a block in feed
 /// replay. Must match `STAKE_CHANGE_PRUNE_DIVISOR` in Feed.svelte.
-const STAKE_CHANGE_DIVISOR: u64 = 10_000; // 0.01%
+const STAKE_CHANGE_DIVISOR: u64 = 1_000; // 0.1%
 
 // --- SSE event builders ---
 
