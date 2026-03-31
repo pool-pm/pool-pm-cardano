@@ -1,13 +1,12 @@
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { sections, config, pool } from '../stores';
+  import { sections, config, pool, blockCount } from '../stores';
   import type { GenesisConfig, Section } from '../types';
   import { TX_WIDTH, TX_GAP, FLIP_DURATION, poolColor, formatTicker, layoutGrid } from '../layout';
   import Transaction from './Transaction.svelte';
 
   const MAX_BLOCKS = 30;
-  const CLEANUP_INTERVAL_MS = 300_000;
   const PX_PER_SECOND = 2;
   const BLOCK_PADDING = 10;
   const BLOCK_BORDER = 2;
@@ -97,7 +96,8 @@
       if (i > 0) {
         const prev = sects[i - 1].block?.timestamp ?? now / 1000;
         const timeDelta = section.block ? Math.max(0, prev - section.block.timestamp) : 0;
-        spacing = Math.max(2, Math.round($pool ? logGap(timeDelta) : PX_PER_SECOND * timeDelta));
+        const maxSpacing = Math.round((landscape ? feedWidth : feedHeight) / 2);
+        spacing = Math.min(maxSpacing, Math.max(2, Math.round($pool ? logGap(timeDelta) : PX_PER_SECOND * timeDelta)));
         pos += spacing;
       }
       positions.set(section.id, { pos, spacing });
@@ -215,38 +215,36 @@
   });
 
   $effect(() => {
+    $blockCount; // trigger on each new block
     const p = $pool;
-    const interval = setInterval(() => {
-      const nowSec = Math.floor(Date.now() / 1000);
-      sections.update((s) => {
-        s[0].txs = s[0].txs.filter((tx) => !tx.expiry || tx.expiry > nowSec);
-        let result = s.slice(0, MAX_BLOCKS + 1);
-        // In pool feeds, prune old small stake/delegation changes
-        if (p?.live_stake) {
-          const threshold = BigInt(p.live_stake) / 1000n;
-          const oneHourAgo = nowSec - 3600;
-          result = result.filter((section, i) => {
-            if (i === 0 || !section.block) return true;
-            if (section.block.pool_id === p.pool_id) return true;
-            if (section.block.timestamp > oneHourAgo) return true;
-            if (
-              section.txs.some((tx) =>
-                tx.delegations?.some((d) => d.from_pool_id === p.pool_id || d.to_pool_id === p.pool_id),
-              )
+    const nowSec = Math.floor(Date.now() / 1000);
+    sections.update((s) => {
+      s[0].txs = s[0].txs.filter((tx) => !tx.expiry || tx.expiry > nowSec);
+      let result = s.slice(0, MAX_BLOCKS + 1);
+      // In pool feeds, prune old small stake/delegation changes
+      if (p?.live_stake) {
+        const threshold = BigInt(p.live_stake) / 1000n;
+        const oneHourAgo = nowSec - 3600;
+        result = result.filter((section, i) => {
+          if (i === 0 || !section.block) return true;
+          if (section.block.pool_id === p.pool_id) return true;
+          if (section.block.timestamp > oneHourAgo) return true;
+          if (
+            section.txs.some((tx) =>
+              tx.delegations?.some((d) => d.from_pool_id === p.pool_id || d.to_pool_id === p.pool_id),
             )
-              return true;
-            let net = 0n;
-            for (const tx of section.txs) {
-              if (tx.stake_change) net += BigInt(tx.stake_change);
-            }
-            if (net < 0n) net = -net;
-            return net >= threshold;
-          });
-        }
-        return result;
-      });
-    }, CLEANUP_INTERVAL_MS);
-    return () => clearInterval(interval);
+          )
+            return true;
+          let net = 0n;
+          for (const tx of section.txs) {
+            if (tx.stake_change) net += BigInt(tx.stake_change);
+          }
+          if (net < 0n) net = -net;
+          return net >= threshold;
+        });
+      }
+      return result;
+    });
   });
 
   // Re-measure positions when sections change, time advances, or orientation changes

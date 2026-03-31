@@ -1,4 +1,4 @@
-import { sections, newSection, config, pool } from './stores';
+import { sections, newSection, config, pool, blockCount } from './stores';
 import type { BlockEvent, BlockTx, Config, Event, MempoolTxEvent, PoolInfo, Section } from './types';
 
 let source: EventSource | null = null;
@@ -126,6 +126,7 @@ function handleEvent(event: Event): void {
           return result;
         }
       });
+      blockCount.update((n) => n + 1);
       break;
     }
 
