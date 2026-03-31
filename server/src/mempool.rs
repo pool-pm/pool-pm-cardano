@@ -7,9 +7,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
 
-use crate::event::{
-    format_quantity, AssetInfo, BlockTx, DelegationInfo, Event, TxInput, TxOutputInfo,
-};
+use crate::event::{AssetInfo, BlockTx, DelegationInfo, Event, TxInput, TxOutputInfo};
 use crate::event_bus::EventBus;
 use crate::filter;
 use crate::model::{asset_fingerprint, pool_bech32_id, TxOutput};
@@ -61,43 +59,50 @@ pub async fn extract_tx(
         });
     }
 
-    let mut outputs: Vec<TxOutputInfo> = Vec::new();
-    for output in tx.outputs().iter() {
-        let address = output
-            .address()
-            .ok()
-            .map(|a| a.to_string())
-            .unwrap_or_default();
-        let lovelace = output.value().coin();
-        let mut assets: Vec<AssetInfo> = Vec::new();
-        for policy_assets in output.value().assets().iter() {
-            let policy_id = policy_assets.policy().as_ref().to_vec();
-            for asset in policy_assets.assets().iter() {
-                let raw_quantity = match asset.output_coin() {
-                    Some(q) => q,
-                    None => continue,
-                };
-                let fingerprint = asset_fingerprint(&policy_id, asset.name());
-                let name = std::str::from_utf8(asset.name())
-                    .ok()
-                    .filter(|s| !s.is_empty())
-                    .map(String::from);
-                let tk = nftcdn.compute_tk(&fingerprint, "preview", 128);
-                let decimals = nftcdn.get_decimals(&fingerprint, raw_quantity).await;
-                assets.push(AssetInfo {
-                    fingerprint,
-                    name,
-                    quantity: format_quantity(raw_quantity, decimals),
-                    tk,
-                });
+    let outputs: Vec<TxOutputInfo> = tx
+        .outputs()
+        .iter()
+        .map(|output| {
+            let address = output
+                .address()
+                .ok()
+                .map(|a| a.to_string())
+                .unwrap_or_default();
+            let lovelace = output.value().coin();
+            let assets: Vec<AssetInfo> = output
+                .value()
+                .assets()
+                .iter()
+                .flat_map(|policy_assets| {
+                    let policy_id = policy_assets.policy().as_ref().to_vec();
+                    policy_assets
+                        .assets()
+                        .iter()
+                        .filter_map(|asset| {
+                            let fingerprint = asset_fingerprint(&policy_id, asset.name());
+                            let name = std::str::from_utf8(asset.name())
+                                .ok()
+                                .filter(|s| !s.is_empty())
+                                .map(String::from);
+                            let tk = nftcdn.compute_tk(&fingerprint, "preview", 128);
+                            Some(AssetInfo {
+                                fingerprint,
+                                name,
+                                quantity: asset.output_coin()?,
+                                tk,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+
+            TxOutputInfo {
+                address,
+                lovelace,
+                assets,
             }
-        }
-        outputs.push(TxOutputInfo {
-            address,
-            lovelace,
-            assets,
-        });
-    }
+        })
+        .collect();
 
     let delegations = extract_delegations(tx, state, mainnet);
 

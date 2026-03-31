@@ -121,96 +121,107 @@ fn decode_block_txs(
         .map(|pool| (Some(pool_bech32_id(&pool.hash_raw)), pool.ticker))
         .unwrap_or((None, None));
 
-    let mut txs = Vec::new();
-    for tx in block.txs().iter() {
-        let mut inputs: Vec<TxInput> = tx
-            .inputs()
-            .iter()
-            .map(|input| TxInput {
-                tx_hash: input.hash().to_string(),
-                index: input.index() as i16,
-                address: None,
-                lovelace: 0,
-            })
-            .collect();
+    let txs = block
+        .txs()
+        .iter()
+        .map(|tx| {
+            let mut inputs: Vec<TxInput> = tx
+                .inputs()
+                .iter()
+                .map(|input| TxInput {
+                    tx_hash: input.hash().to_string(),
+                    index: input.index() as i16,
+                    address: None,
+                    lovelace: 0,
+                })
+                .collect();
 
-        let mut outputs = Vec::new();
-        for output in tx.outputs().iter() {
-            let address = output
-                .address()
-                .ok()
-                .map(|a| a.to_string())
-                .unwrap_or_default();
-            let lovelace = output.value().coin();
-            let mut assets: Vec<AssetInfo> = Vec::new();
-            for policy_assets in output.value().assets().iter() {
-                let policy_id = policy_assets.policy().as_ref().to_vec();
-                for asset in policy_assets.assets().iter() {
-                    let raw_quantity = match asset.output_coin() {
-                        Some(q) => q,
-                        None => continue,
-                    };
-                    let fp = asset_fingerprint(&policy_id, asset.name());
-                    let name = std::str::from_utf8(asset.name())
+            let outputs = tx
+                .outputs()
+                .iter()
+                .map(|output| {
+                    let address = output
+                        .address()
                         .ok()
-                        .filter(|s| !s.is_empty())
-                        .map(String::from);
-                    let tk = nftcdn.compute_tk(&fp, "preview", 128);
-                    assets.push(AssetInfo {
-                        fingerprint: fp,
-                        name,
-                        quantity: raw_quantity.to_string(),
-                        tk,
+                        .map(|a| a.to_string())
+                        .unwrap_or_default();
+                    let lovelace = output.value().coin();
+                    let assets: Vec<AssetInfo> = output
+                        .value()
+                        .assets()
+                        .iter()
+                        .flat_map(|policy_assets| {
+                            let policy_id = policy_assets.policy().as_ref().to_vec();
+                            policy_assets
+                                .assets()
+                                .iter()
+                                .filter_map(|asset| {
+                                    let fp = asset_fingerprint(&policy_id, asset.name());
+                                    let name = std::str::from_utf8(asset.name())
+                                        .ok()
+                                        .filter(|s| !s.is_empty())
+                                        .map(String::from);
+                                    let tk = nftcdn.compute_tk(&fp, "preview", 128);
+                                    Some(AssetInfo {
+                                        fingerprint: fp,
+                                        name,
+                                        quantity: asset.output_coin()?,
+                                        tk,
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .collect();
+
+                    TxOutputInfo {
+                        address,
+                        lovelace,
+                        assets,
+                    }
+                })
+                .collect();
+
+            let delegations = if extract_delegations {
+                state
+                    .map(|s| crate::mempool::extract_delegations(tx, s, mainnet))
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
+
+            let mut withdrawals = Vec::new();
+            for (addr, amount) in tx.withdrawals_sorted_set() {
+                if addr.len() >= 29 {
+                    withdrawals.push((addr[1..29].to_vec(), amount));
+                    let stake_addr = pallas::ledger::addresses::Address::from_bytes(addr)
+                        .ok()
+                        .map(|a| a.to_string());
+                    inputs.push(TxInput {
+                        tx_hash: String::new(),
+                        index: -1,
+                        address: stake_addr,
+                        lovelace: amount,
                     });
                 }
             }
-            outputs.push(TxOutputInfo {
-                address,
-                lovelace,
-                assets,
-            });
-        }
 
-        let delegations = if extract_delegations {
-            state
-                .map(|s| crate::mempool::extract_delegations(tx, s, mainnet))
-                .unwrap_or_default()
-        } else {
-            vec![]
-        };
+            let message = crate::pallas::extract_cip20_message(tx);
 
-        let mut withdrawals = Vec::new();
-        for (addr, amount) in tx.withdrawals_sorted_set() {
-            if addr.len() >= 29 {
-                withdrawals.push((addr[1..29].to_vec(), amount));
-                let stake_addr = pallas::ledger::addresses::Address::from_bytes(addr)
-                    .ok()
-                    .map(|a| a.to_string());
-                inputs.push(TxInput {
-                    tx_hash: String::new(),
-                    index: -1,
-                    address: stake_addr,
-                    lovelace: amount,
-                });
+            BlockTx {
+                hash: tx.hash().to_string(),
+                fee: tx.fee().unwrap_or(0),
+                size: tx.size(),
+                inputs,
+                outputs,
+                expiry: None,
+                delegations,
+                message,
+                stake_change: None,
+                stake_credentials: vec![],
+                withdrawals,
             }
-        }
-
-        let message = crate::pallas::extract_cip20_message(tx);
-
-        txs.push(BlockTx {
-            hash: tx.hash().to_string(),
-            fee: tx.fee().unwrap_or(0),
-            size: tx.size(),
-            inputs,
-            outputs,
-            expiry: None,
-            delegations,
-            message,
-            stake_change: None,
-            stake_credentials: vec![],
-            withdrawals,
-        });
-    }
+        })
+        .collect();
 
     (txs, block_pool_id, block_pool_ticker)
 }
