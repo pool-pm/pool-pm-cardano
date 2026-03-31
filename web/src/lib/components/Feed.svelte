@@ -7,6 +7,8 @@
   import Transaction from './Transaction.svelte';
 
   const MAX_BLOCKS = 30;
+  /** Prune blocks older than 1h whose net stake change is below this fraction of live stake. */
+  const STAKE_CHANGE_PRUNE_DIVISOR = 10_000n; // 0.01%
   const PX_PER_SECOND = 2;
   const BLOCK_PADDING = 10;
   const BLOCK_BORDER = 2;
@@ -235,7 +237,7 @@
       // In pool/drep feeds, prune old small stake/delegation changes
       const liveStake = p?.live_stake ?? d?.live_stake;
       if (liveStake) {
-        const threshold = BigInt(liveStake) / 1000n;
+        const threshold = BigInt(liveStake) / STAKE_CHANGE_PRUNE_DIVISOR;
         const oneHourAgo = nowSec - 3600;
         const feedPoolId = p?.pool_id;
         const feedDrepId = d?.drep_id;

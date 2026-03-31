@@ -58,6 +58,10 @@ fn slot_to_timestamp(slot: u64, genesis: &GenesisConfig) -> u64 {
 /// `MAX_BLOCKS` in `web/src/lib/components/Feed.svelte`.
 const MAX_REPLAY_BLOCKS: usize = 30;
 
+/// Minimum stake change (as fraction of live stake) to include a block in feed
+/// replay. Must match `STAKE_CHANGE_PRUNE_DIVISOR` in Feed.svelte.
+const STAKE_CHANGE_DIVISOR: u64 = 10_000; // 0.01%
+
 // --- SSE event builders ---
 
 fn config_event(nftcdn_subdomain: &str, genesis: &GenesisConfig) -> Result<SseEvent, Infallible> {
@@ -629,7 +633,7 @@ async fn filtered_events(
                 let live_stake = snap
                     .and_then(|s| State::pool_live_stake(s, ph))
                     .unwrap_or(0);
-                let threshold = (live_stake as u64) / 10_000;
+                let threshold = (live_stake as u64) / STAKE_CHANGE_DIVISOR;
 
                 let resolve_pool = |hash: &[u8]| -> (String, Option<String>) {
                     let ticker = snap
@@ -765,7 +769,7 @@ async fn filtered_events(
                 let live_stake = snap
                     .and_then(|s| State::drep_live_stake(s, db))
                     .unwrap_or(0);
-                let threshold = (live_stake as u64) / 10_000;
+                let threshold = (live_stake as u64) / STAKE_CHANGE_DIVISOR;
 
                 let resolve_drep = |bytes: &[u8]| -> (String, Option<String>) {
                     let name = match bytes.first() {
