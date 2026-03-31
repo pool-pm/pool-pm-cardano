@@ -146,16 +146,22 @@ pub fn run(args: Args) -> Result<(), Error> {
         if let Some((snapshot, fi)) = State::load_snapshot(&snapshot_path, args.network.magic()) {
             let snap_slot = snapshot.slot;
             let snap_hash = snapshot.block_hash.clone().unwrap_or_default();
-            info!(
-                snap_slot,
-                hash = snap_hash.as_str(),
-                "loaded snapshot, resuming"
-            );
             state.restore_from_snapshot(snapshot);
             state.feed_index = fi;
 
-            let decimals_count = state.current().map(|s| s.decimals.len()).unwrap_or(0);
-            info!(decimals_count, "decimals cache loaded");
+            if let Some(snap) = state.current() {
+                info!(
+                    slot = snap_slot,
+                    hash = snap_hash.as_str(),
+                    pools = snap.pools.len(),
+                    delegators = snap.pool_delegators.values().map(|d| d.len()).sum::<usize>(),
+                    dreps = snap.drep_delegators.len(),
+                    drep_delegators = snap.drep_delegators.values().map(|d| d.len()).sum::<usize>(),
+                    utxos = snap.utxos.len(),
+                    decimals = snap.decimals.len(),
+                    "loaded snapshot, resuming"
+                );
+            }
 
             (IntersectConfig::Point(snap_slot, snap_hash), None)
         } else {
