@@ -7,7 +7,7 @@ use url::Url;
 
 use crate::cip26;
 use crate::cip68;
-use crate::model::{Pool, TxOutput};
+use crate::model::{DRep, Pool, TxOutput};
 use crate::pallas::PoolUpdate;
 use dbsync::DbSync;
 pub use feed_index::FeedIndex;
@@ -25,6 +25,8 @@ pub struct BlockSnapshot {
     pub drep_delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
     pub stakes: HashMap<Vec<u8>, i64>,
     pub rewards: HashMap<Vec<u8>, i64>,
+    /// DRep bytes → DRep metadata (given_name from off-chain vote data)
+    pub dreps: HashMap<Vec<u8>, DRep>,
     /// Asset fingerprint → decimals (non-zero only, from CIP-26 + CIP-68)
     pub decimals: HashMap<String, u8>,
 }
@@ -106,6 +108,10 @@ impl State {
         let rewards = db.rewards(current_epoch, last_tx_id).await?;
         tracing::info!("{} stake addresses with rewards", rewards.len());
 
+        tracing::info!("Fetching DRep metadata...");
+        let dreps = db.drep_metadata(last_tx_id).await?;
+        tracing::info!("{} DReps with metadata", dreps.len());
+
         tracing::info!("Fetching CIP-68 reference token decimals...");
         let cip68_rows = db.cip68_decimals(last_tx_id).await?;
         let mut decimals = HashMap::new();
@@ -146,6 +152,7 @@ impl State {
             pool_delegators,
             drep_delegations,
             drep_delegators,
+            dreps,
             stakes,
             rewards,
             decimals,
@@ -239,6 +246,7 @@ impl State {
             }
         }
 
+        let dreps = prev.dreps.clone();
         let decimals = prev.decimals.clone();
         self.history.push(BlockSnapshot {
             slot,
@@ -250,6 +258,7 @@ impl State {
             pool_delegators,
             drep_delegations,
             drep_delegators,
+            dreps,
             stakes,
             rewards,
             decimals,
@@ -322,17 +331,27 @@ impl State {
         Some(utxo_total + reward_total)
     }
 
+    /// Compute total live stake for a DRep by summing stakes + rewards
+    /// of all its delegators.
+    pub fn drep_live_stake(snap: &BlockSnapshot, drep_bytes: &[u8]) -> Option<i64> {
+        let delegators = snap.drep_delegators.get(drep_bytes)?;
+        let mut total: i64 = 0;
+        for cred in delegators.iter() {
+            if let Some(&s) = snap.stakes.get(cred) {
+                total += s;
+            }
+            if let Some(&r) = snap.rewards.get(cred) {
+                total += r;
+            }
+        }
+        Some(total)
+    }
+
     /// Find the most recent block at or before the given slot.
     /// Creates a temporary db connection (for use at startup before State is fully initialized).
     pub async fn boundary_block(db_url: &Url, boundary_slot: u64) -> Option<(u64, String)> {
         let db = DbSync::new(db_url).await.ok()?;
         db.boundary_block(boundary_slot).await
-    }
-
-    /// Fetch epoch reward deltas from db-sync for a new epoch.
-    pub async fn epoch_reward_delta(&self, epoch: u64) -> Option<HashMap<Vec<u8>, i64>> {
-        let db = self.db().await?;
-        db.epoch_reward_delta(epoch).await.ok()
     }
 
     /// Batch-resolve input addresses and lovelace from db-sync.
@@ -345,6 +364,12 @@ impl State {
         } else {
             std::collections::HashMap::new()
         }
+    }
+
+    /// Fetch epoch reward deltas from db-sync for a new epoch.
+    pub async fn epoch_reward_delta(&self, epoch: u64) -> Option<HashMap<Vec<u8>, i64>> {
+        let db = self.db().await?;
+        db.epoch_reward_delta(epoch).await.ok()
     }
 
     /// Rollback to the given slot: drop all snapshots after it.

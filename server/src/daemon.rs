@@ -154,9 +154,17 @@ pub fn run(args: Args) -> Result<(), Error> {
                     slot = snap_slot,
                     hash = snap_hash.as_str(),
                     pools = snap.pools.len(),
-                    delegators = snap.pool_delegators.values().map(|d| d.len()).sum::<usize>(),
-                    dreps = snap.drep_delegators.len(),
-                    drep_delegators = snap.drep_delegators.values().map(|d| d.len()).sum::<usize>(),
+                    delegators = snap
+                        .pool_delegators
+                        .values()
+                        .map(|d| d.len())
+                        .sum::<usize>(),
+                    dreps = snap.dreps.len(),
+                    drep_delegators = snap
+                        .drep_delegators
+                        .values()
+                        .map(|d| d.len())
+                        .sum::<usize>(),
                     utxos = snap.utxos.len(),
                     decimals = snap.decimals.len(),
                     "loaded snapshot, resuming"

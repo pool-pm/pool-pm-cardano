@@ -33,6 +33,25 @@ pub fn pool_bech32_id(hash_raw: &[u8]) -> String {
     bech32::encode::<Bech32>(Hrp::parse("pool").unwrap(), hash_raw).unwrap()
 }
 
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DRep {
+    pub hash_bytes: Vec<u8>,
+    pub given_name: Option<String>,
+}
+
+/// Convert DRep bytes (tag + hash) to a human-readable identifier.
+pub fn drep_bech32_id(bytes: &[u8]) -> String {
+    match bytes.first() {
+        Some(0x00) => bech32::encode::<Bech32>(Hrp::parse("drep").unwrap(), &bytes[1..]).unwrap(),
+        Some(0x01) => {
+            bech32::encode::<Bech32>(Hrp::parse("drep_script").unwrap(), &bytes[1..]).unwrap()
+        }
+        Some(0x02) => "drep_always_abstain".to_string(),
+        Some(0x03) => "drep_always_no_confidence".to_string(),
+        _ => String::new(),
+    }
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct TxOutput {
     pub lovelaces: Decimal,

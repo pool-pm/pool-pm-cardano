@@ -7,7 +7,7 @@ use sqlx::{
 use tokio::time::Duration;
 use url::Url;
 
-use crate::model::Pool;
+use crate::model::{DRep, Pool};
 
 pub struct DbSync {
     db: sqlx::Pool<sqlx::Postgres>,
@@ -285,6 +285,47 @@ impl DbSync {
         }
 
         Ok((delegations, delegators))
+    }
+
+    /// Fetch DRep metadata (given_name) from off-chain vote data.
+    /// Returns a map keyed by DRep bytes (tag + raw hash).
+    pub async fn drep_metadata(
+        &self,
+        last_tx_id: i64,
+    ) -> Result<HashMap<Vec<u8>, DRep>, sqlx::Error> {
+        let mut rows = sqlx::query!(
+            r#"SELECT dh.raw AS drep_raw,
+                      dh.has_script AS drep_has_script,
+                      dd.given_name
+            FROM drep_registration dr
+            JOIN drep_hash dh ON dh.id = dr.drep_hash_id
+            JOIN off_chain_vote_data ovd ON ovd.voting_anchor_id = dr.voting_anchor_id
+            JOIN off_chain_vote_drep_data dd ON dd.off_chain_vote_data_id = ovd.id
+            WHERE dr.tx_id <= $1
+              AND dh.raw IS NOT NULL
+              AND dr.id = (
+                  SELECT MAX(dr2.id) FROM drep_registration dr2
+                  WHERE dr2.drep_hash_id = dr.drep_hash_id AND dr2.tx_id <= $1
+              )"#,
+            last_tx_id
+        )
+        .fetch(&self.db);
+
+        let mut dreps: HashMap<Vec<u8>, DRep> = HashMap::new();
+        while let Some(row) = rows.try_next().await? {
+            let Some(raw) = &row.drep_raw else { continue };
+            let tag = if row.drep_has_script { 0x01u8 } else { 0x00 };
+            let hash_bytes = [&[tag][..], raw].concat();
+            dreps.insert(
+                hash_bytes.clone(),
+                DRep {
+                    hash_bytes,
+                    given_name: Some(row.given_name),
+                },
+            );
+        }
+
+        Ok(dreps)
     }
 
     /// Fetch CIP-68 decimals from reference token datums.
