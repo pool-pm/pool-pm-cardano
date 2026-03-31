@@ -23,7 +23,7 @@ use tracing::{info, warn};
 use crate::event::{format_quantity, AssetInfo, BlockTx, DelegationInfo, TxInput, TxOutputInfo};
 use crate::event_bus::EventBus;
 use crate::filter;
-use crate::model::{asset_fingerprint, pool_bech32_id, Pool};
+use crate::model::{asset_fingerprint, drep_bech32_id, pool_bech32_id, Pool};
 use crate::nftcdn::NftcdnConfig;
 use crate::state::feed_index::BlockRef;
 use crate::state::{BlockSnapshot, State};
@@ -54,6 +54,10 @@ fn slot_to_timestamp(slot: u64, genesis: &GenesisConfig) -> u64 {
         + slot.saturating_sub(genesis.shelley_known_slot) * genesis.shelley_slot_length as u64
 }
 
+/// Maximum number of blocks to replay on feed connection. Must match
+/// `MAX_BLOCKS` in `web/src/lib/components/Feed.svelte`.
+const MAX_REPLAY_BLOCKS: usize = 30;
+
 // --- SSE event builders ---
 
 fn config_event(nftcdn_subdomain: &str, genesis: &GenesisConfig) -> Result<SseEvent, Infallible> {
@@ -80,6 +84,32 @@ fn pool_sse_event(pool: &Pool, snap: Option<&BlockSnapshot>) -> Result<SseEvent,
         pool.pledge,
         pool.margin,
         pool.fixed_cost,
+        live_stake,
+        delegators
+    )))
+}
+
+fn drep_sse_event(drep_bytes: &[u8], snap: Option<&BlockSnapshot>) -> Result<SseEvent, Infallible> {
+    let drep_id = drep_bech32_id(drep_bytes);
+    let given_name = match drep_bytes.first() {
+        Some(0x02) => Some("Always Abstain".to_string()),
+        Some(0x03) => Some("Always No Confidence".to_string()),
+        _ => snap
+            .and_then(|s| s.dreps.get(drep_bytes))
+            .and_then(|d| d.given_name.clone()),
+    };
+    let live_stake = snap
+        .and_then(|s| State::drep_live_stake(s, drep_bytes))
+        .map(|v| format!(r#","live_stake":"{}""#, v))
+        .unwrap_or_default();
+    let delegators = snap
+        .and_then(|s| s.drep_delegators.get(drep_bytes))
+        .map(|d| format!(r#","delegators":{}"#, d.len()))
+        .unwrap_or_default();
+    Ok(SseEvent::default().data(format!(
+        r#"{{"type":"DRep","drep_id":"{}","given_name":{}{}{}}}"#,
+        drep_id,
+        serde_json::to_string(&given_name).unwrap(),
         live_stake,
         delegators
     )))
@@ -278,7 +308,7 @@ async fn send_replay_blocks(
     sender: &Sender<Result<SseEvent, Infallible>>,
     blocks: &mut [ReplayBlock],
     delegators: &imbl::hashset::HashSet<Vec<u8>>,
-    feed_pool_id: &str,
+    feed_filter: &filter::FeedFilter,
     deleg_info: &HashMap<String, Vec<DelegationInfo>>,
     stake_threshold: u64,
     nftcdn: &NftcdnConfig,
@@ -332,7 +362,7 @@ async fn send_replay_blocks(
 
                 if block.filter_by_delegators {
                     // Computes UTXO changes + delegation impact in one pass
-                    filter::apply_stake_changes(&mut txs, delegators, feed_pool_id);
+                    filter::apply_stake_changes(&mut txs, delegators, feed_filter);
                     txs.retain(|tx| {
                         !tx.delegations.is_empty()
                             || tx
@@ -422,6 +452,17 @@ async fn send_pool_info(
     }
 }
 
+/// Send current DRep info as an SSE event.
+async fn send_drep_info(
+    sender: &Sender<Result<SseEvent, Infallible>>,
+    chain_state: &RwLock<State>,
+    drep_bytes: &[u8],
+) {
+    let guard = chain_state.read().await;
+    let snap = guard.current();
+    let _ = sender.send(drep_sse_event(drep_bytes, snap)).await;
+}
+
 /// Categories for feed index replay actions, by priority.
 enum SlotAction {
     PoolMinted(BlockRef),
@@ -456,25 +497,41 @@ fn build_live_stream(
 
                 let event = rx.next().await?.ok()?;
 
-                if let filter::FeedFilter::Pool(ref hash) = filter {
-                    if matches!(
-                        event,
-                        crate::event::Event::Block { .. } | crate::event::Event::Rollback { .. }
-                    ) {
-                        let (current_pool, current_live_stake, pool_event) = {
-                            let guard = chain_state.read().await;
-                            let snap = guard.current();
-                            let pool = snap.and_then(|s| s.pools.get(&hex::encode(hash)).cloned());
-                            let live_stake = snap.and_then(|s| State::pool_live_stake(s, hash));
-                            let event = pool.as_ref().map(|p| pool_sse_event(p, snap));
-                            (pool, live_stake, event)
-                        };
-                        if current_pool != last_pool || current_live_stake != last_live_stake {
-                            if let Some(event) = pool_event {
-                                buf.push_back(event);
+                if matches!(
+                    event,
+                    crate::event::Event::Block { .. } | crate::event::Event::Rollback { .. }
+                ) {
+                    match &filter {
+                        filter::FeedFilter::Pool(ref hash) => {
+                            let (current_pool, current_live_stake, pool_event) = {
+                                let guard = chain_state.read().await;
+                                let snap = guard.current();
+                                let pool =
+                                    snap.and_then(|s| s.pools.get(&hex::encode(hash)).cloned());
+                                let live_stake = snap.and_then(|s| State::pool_live_stake(s, hash));
+                                let event = pool.as_ref().map(|p| pool_sse_event(p, snap));
+                                (pool, live_stake, event)
+                            };
+                            if current_pool != last_pool || current_live_stake != last_live_stake {
+                                if let Some(event) = pool_event {
+                                    buf.push_back(event);
+                                }
+                                last_pool = current_pool;
+                                last_live_stake = current_live_stake;
                             }
-                            last_pool = current_pool;
-                            last_live_stake = current_live_stake;
+                        }
+                        filter::FeedFilter::DRep(ref bytes) => {
+                            let current_live_stake = {
+                                let guard = chain_state.read().await;
+                                guard
+                                    .current()
+                                    .and_then(|s| State::drep_live_stake(s, bytes))
+                            };
+                            if current_live_stake != last_live_stake {
+                                let guard = chain_state.read().await;
+                                buf.push_back(drep_sse_event(bytes, guard.current()));
+                                last_live_stake = current_live_stake;
+                            }
                         }
                     }
                 }
@@ -560,44 +617,75 @@ async fn filtered_events(
         let exclude_slots = if let Some(ref ph) = pool_hash {
             send_pool_info(&sender, &replay_state.chain_state, ph).await;
 
-            // Read feed index data and pool live stake
-            let (minted, stake_changes, delegations, stake_threshold) = {
+            // Read feed index data, pool live stake, and resolve delegation labels
+            let (minted, stake_changes, deleg_info, deleg_slots, stake_threshold) = {
                 let guard = replay_state.chain_state.read().await;
-                let live_stake = guard
-                    .current()
+                let snap = guard.current();
+                let live_stake = snap
                     .and_then(|s| State::pool_live_stake(s, ph))
                     .unwrap_or(0);
-                // 0.1% of pool live stake as minimum threshold for stake change txs
                 let threshold = (live_stake as u64) / 1000;
+
+                let resolve_pool = |hash: &[u8]| -> (String, Option<String>) {
+                    let ticker = snap
+                        .and_then(|s| s.pools.get(&hex::encode(hash)))
+                        .and_then(|p| p.ticker.clone());
+                    (pool_bech32_id(hash), ticker)
+                };
+
+                let delegations = guard.feed_index.pool_delegation_entries(ph);
+                let mut deleg_info: HashMap<String, Vec<DelegationInfo>> = HashMap::new();
+                for entry in &delegations {
+                    let (from_pool_id, from_ticker) = entry
+                        .from
+                        .as_ref()
+                        .map(|h| resolve_pool(h))
+                        .map(|(id, t)| (Some(id), t))
+                        .unwrap_or((None, None));
+                    let (to_pool_id, to_ticker) = entry
+                        .to
+                        .as_ref()
+                        .map(|h| resolve_pool(h))
+                        .map(|(id, t)| (Some(id), t))
+                        .unwrap_or((None, None));
+                    let info = DelegationInfo {
+                        stake_address: crate::pallas::stake_address_from_cred_bytes(
+                            &entry.cred,
+                            replay_state.mainnet,
+                        ),
+                        from_pool_id,
+                        from_ticker,
+                        to_pool_id,
+                        to_ticker,
+                        from_drep_id: None,
+                        from_drep_name: None,
+                        to_drep_id: None,
+                        to_drep_name: None,
+                        live_stake: entry.live_stake,
+                    };
+                    deleg_info
+                        .entry(entry.tx_hash.clone())
+                        .or_default()
+                        .push(info);
+                }
+
+                let deleg_slots: Vec<BlockRef> = delegations
+                    .iter()
+                    .map(|e| BlockRef {
+                        slot: e.slot,
+                        hash: e.block_hash.clone(),
+                        number: e.block_no,
+                    })
+                    .collect();
+
                 (
                     guard.feed_index.pool_minted_blocks(ph).to_vec(),
                     guard.feed_index.pool_stake_change_blocks(ph).to_vec(),
-                    guard
-                        .feed_index
-                        .pool_delegation_entries(ph)
-                        .into_iter()
-                        .cloned()
-                        .collect::<Vec<_>>(),
+                    deleg_info,
+                    deleg_slots,
                     threshold,
                 )
             };
-
-            // Build delegation info map: tx_hash -> delegations
-            let mut deleg_info: HashMap<String, Vec<DelegationInfo>> = HashMap::new();
-            for entry in &delegations {
-                let info = DelegationInfo {
-                    stake_address: entry.stake_address.clone(),
-                    from_pool_id: entry.from.as_ref().map(|t| t.id.clone()),
-                    from_ticker: entry.from.as_ref().and_then(|t| t.label.clone()),
-                    to_pool_id: entry.to.as_ref().map(|t| t.id.clone()),
-                    to_ticker: entry.to.as_ref().and_then(|t| t.label.clone()),
-                    live_stake: entry.live_stake,
-                };
-                deleg_info
-                    .entry(entry.tx_hash.clone())
-                    .or_default()
-                    .push(info);
-            }
 
             // Build block actions: PoolMinted > StakeChange priority per slot
             let mut slot_map: HashMap<u64, SlotAction> = HashMap::new();
@@ -610,23 +698,19 @@ async fn filtered_events(
                     .entry(r.slot)
                     .or_insert(SlotAction::StakeChange(r.clone()));
             }
-            // Add delegation slots not already covered by block fetches
-            for entry in &delegations {
+            for r in &deleg_slots {
                 slot_map
-                    .entry(entry.slot)
-                    .or_insert(SlotAction::StakeChange(BlockRef {
-                        slot: entry.slot,
-                        hash: entry.block_hash.clone(),
-                        number: entry.block_no,
-                    }));
+                    .entry(r.slot)
+                    .or_insert(SlotAction::StakeChange(r.clone()));
             }
 
             let exclude_slots: HashSet<u64> = slot_map.keys().copied().collect();
 
-            // Sort block actions newest-first
+            // Sort block actions newest-first, cap at 30 (frontend MAX_BLOCKS)
             let mut replay_blocks: Vec<ReplayBlock> = Vec::new();
             let mut actions: Vec<(u64, SlotAction)> = slot_map.into_iter().collect();
             actions.sort_by(|a, b| b.0.cmp(&a.0));
+            actions.truncate(MAX_REPLAY_BLOCKS);
 
             for (_, action) in actions {
                 match action {
@@ -650,12 +734,137 @@ async fn filtered_events(
             }
 
             // Send blocks via N2N with delegation info injected
-            let feed_pool_id = pool_id.as_deref().unwrap_or("");
             send_replay_blocks(
                 &sender,
                 &mut replay_blocks,
                 &replay_delegators,
-                feed_pool_id,
+                &replay_filter,
+                &deleg_info,
+                stake_threshold,
+                &replay_state.nftcdn,
+                &replay_state.genesis,
+                &replay_state.chain_state,
+                replay_state.n2n_addr,
+                replay_state.magic,
+                replay_state.mainnet,
+            )
+            .await;
+
+            exclude_slots
+        } else if let Some(ref db) = replay_filter.drep_bytes().cloned() {
+            send_drep_info(&sender, &replay_state.chain_state, db).await;
+
+            // Read DRep feed index data and resolve delegation labels
+            let (stake_changes, deleg_info, deleg_slots, stake_threshold) = {
+                let guard = replay_state.chain_state.read().await;
+                let snap = guard.current();
+                let live_stake = snap
+                    .and_then(|s| State::drep_live_stake(s, db))
+                    .unwrap_or(0);
+                let threshold = (live_stake as u64) / 1000;
+
+                let resolve_drep = |bytes: &[u8]| -> (String, Option<String>) {
+                    let name = match bytes.first() {
+                        Some(0x02) => Some("Always Abstain".to_string()),
+                        Some(0x03) => Some("Always No Confidence".to_string()),
+                        _ => snap
+                            .and_then(|s| s.dreps.get(bytes))
+                            .and_then(|d| d.given_name.clone()),
+                    };
+                    (drep_bech32_id(bytes), name)
+                };
+
+                let delegations = guard.feed_index.drep_delegation_entries(db);
+                let mut deleg_info: HashMap<String, Vec<DelegationInfo>> = HashMap::new();
+                for entry in &delegations {
+                    let (from_drep_id, from_drep_name) = entry
+                        .from
+                        .as_ref()
+                        .map(|h| resolve_drep(h))
+                        .map(|(id, n)| (Some(id), n))
+                        .unwrap_or((None, None));
+                    let (to_drep_id, to_drep_name) = entry
+                        .to
+                        .as_ref()
+                        .map(|h| resolve_drep(h))
+                        .map(|(id, n)| (Some(id), n))
+                        .unwrap_or((None, None));
+                    let info = DelegationInfo {
+                        stake_address: crate::pallas::stake_address_from_cred_bytes(
+                            &entry.cred,
+                            replay_state.mainnet,
+                        ),
+                        from_pool_id: None,
+                        from_ticker: None,
+                        to_pool_id: None,
+                        to_ticker: None,
+                        from_drep_id,
+                        from_drep_name,
+                        to_drep_id,
+                        to_drep_name,
+                        live_stake: entry.live_stake,
+                    };
+                    deleg_info
+                        .entry(entry.tx_hash.clone())
+                        .or_default()
+                        .push(info);
+                }
+
+                let deleg_slots: Vec<BlockRef> = delegations
+                    .iter()
+                    .map(|e| BlockRef {
+                        slot: e.slot,
+                        hash: e.block_hash.clone(),
+                        number: e.block_no,
+                    })
+                    .collect();
+
+                (
+                    guard.feed_index.drep_stake_change_blocks(db).to_vec(),
+                    deleg_info,
+                    deleg_slots,
+                    threshold,
+                )
+            };
+
+            // Build block actions: only StakeChange (no minting for DReps)
+            let mut slot_map: HashMap<u64, SlotAction> = HashMap::new();
+            for r in &stake_changes {
+                slot_map
+                    .entry(r.slot)
+                    .or_insert(SlotAction::StakeChange(r.clone()));
+            }
+            for r in &deleg_slots {
+                slot_map
+                    .entry(r.slot)
+                    .or_insert(SlotAction::StakeChange(r.clone()));
+            }
+
+            let exclude_slots: HashSet<u64> = slot_map.keys().copied().collect();
+
+            let mut replay_blocks: Vec<ReplayBlock> = Vec::new();
+            let mut actions: Vec<(u64, SlotAction)> = slot_map.into_iter().collect();
+            actions.sort_by(|a, b| b.0.cmp(&a.0));
+            actions.truncate(MAX_REPLAY_BLOCKS);
+
+            for (_, action) in actions {
+                if let SlotAction::StakeChange(r) = action {
+                    replay_blocks.push(ReplayBlock {
+                        slot: r.slot,
+                        hash: r.hash,
+                        number: r.number,
+                        pool_id: None,
+                        pool_ticker: None,
+                        filter_by_delegators: true,
+                    });
+                }
+            }
+
+            send_replay_blocks(
+                &sender,
+                &mut replay_blocks,
+                &replay_delegators,
+                &replay_filter,
                 &deleg_info,
                 stake_threshold,
                 &replay_state.nftcdn,
@@ -682,16 +891,22 @@ async fn filtered_events(
         .await;
     });
 
-    // Build live stream with pool change detection
+    // Build live stream with pool/drep change detection
     let chain_state = state.chain_state.clone();
-    let (last_pool, last_live_stake) = if let filter::FeedFilter::Pool(ref hash) = filter {
-        let guard = state.chain_state.read().await;
-        let snap = guard.current();
-        let pool = snap.and_then(|s| s.pools.get(&hex::encode(hash)).cloned());
-        let live_stake = snap.and_then(|s| State::pool_live_stake(s, hash));
-        (pool, live_stake)
-    } else {
-        (None, None)
+    let (last_pool, last_live_stake) = match &filter {
+        filter::FeedFilter::Pool(ref hash) => {
+            let guard = state.chain_state.read().await;
+            let snap = guard.current();
+            let pool = snap.and_then(|s| s.pools.get(&hex::encode(hash)).cloned());
+            let live_stake = snap.and_then(|s| State::pool_live_stake(s, hash));
+            (pool, live_stake)
+        }
+        filter::FeedFilter::DRep(ref bytes) => {
+            let guard = state.chain_state.read().await;
+            let snap = guard.current();
+            let live_stake = snap.and_then(|s| State::drep_live_stake(s, bytes));
+            (None, live_stake)
+        }
     };
 
     let replay = tokio_stream::wrappers::ReceiverStream::new(receiver);
