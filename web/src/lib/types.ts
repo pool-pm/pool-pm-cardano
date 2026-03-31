@@ -38,6 +38,10 @@ export interface DelegationInfo {
   from_ticker?: string;
   to_pool_id?: string;
   to_ticker?: string;
+  from_drep_id?: string;
+  from_drep_name?: string;
+  to_drep_id?: string;
+  to_drep_name?: string;
   live_stake: string;
 }
 
@@ -79,6 +83,13 @@ export interface MempoolPruneEvent {
 }
 
 export type Event = MempoolTxEvent | BlockEvent | RollbackEvent | MempoolPruneEvent;
+
+export interface DRepInfo {
+  drep_id: string;
+  given_name: string | null;
+  live_stake?: string;
+  delegators?: number;
+}
 
 export interface PoolInfo {
   pool_id: string;

@@ -33,7 +33,7 @@
   }
 
   let visibleDelegations: DelegationInfo[] = $derived(
-    (tx.delegations ?? []).filter((d) => d.from_pool_id || d.to_pool_id),
+    (tx.delegations ?? []).filter((d) => d.from_pool_id || d.to_pool_id || d.from_drep_id || d.to_drep_id),
   );
 
   function formatAda(lovelace: string, sign?: string): string {
@@ -130,14 +130,20 @@
     <div class="deleg-section">
       <div class="addr-list">
         {#each visibleDelegations as deleg}
-          {@const isDeregistration = !deleg.to_pool_id && !!deleg.from_pool_id}
+          {@const isDeregistration =
+            !deleg.to_pool_id && !deleg.to_drep_id && (!!deleg.from_pool_id || !!deleg.from_drep_id)}
           <div class="addr-item">
             {#if deleg.to_pool_id}
               <a class="deleg-pool" style:color={poolColor(deleg.to_pool_id)} href="/{deleg.to_pool_id}"
                 >{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a
               >
             {/if}
-            {#if deleg.to_pool_id}
+            {#if deleg.to_drep_id}
+              <a class="deleg-drep" style:color={poolColor(deleg.to_drep_id)} href="/{deleg.to_drep_id}"
+                >{deleg.to_drep_name ?? deleg.to_drep_id.slice(5, 13)}</a
+              >
+            {/if}
+            {#if deleg.to_pool_id || deleg.to_drep_id}
               <span class="deleg-arrow">{@html '&#x2191;'}</span>
             {/if}
             {#if deleg.from_pool_id}
@@ -146,6 +152,14 @@
                 class:deregistered={isDeregistration}
                 style:color={poolColor(deleg.from_pool_id)}
                 href="/{deleg.from_pool_id}">{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
+              >
+            {/if}
+            {#if deleg.from_drep_id}
+              <a
+                class="deleg-drep"
+                class:deregistered={isDeregistration}
+                style:color={poolColor(deleg.from_drep_id)}
+                href="/{deleg.from_drep_id}">{deleg.from_drep_name ?? deleg.from_drep_id.slice(5, 13)}</a
               >
             {/if}
             <span class="ada">{@html formatAda(deleg.live_stake)}</span>
@@ -337,8 +351,17 @@
     color: white;
   }
 
-  .deleg-pool.deregistered {
+  .deleg-pool.deregistered,
+  .deleg-drep.deregistered {
     text-decoration: line-through;
+  }
+
+  .deleg-drep {
+    font-family: Inter, sans-serif;
+    font-size: 10px;
+    font-weight: 600;
+    text-decoration: none;
+    color: white;
   }
 
   .deleg-arrow {

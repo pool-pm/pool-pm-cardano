@@ -1,5 +1,5 @@
-import { sections, newSection, config, pool, blockCount } from './stores';
-import type { BlockEvent, BlockTx, Config, Event, MempoolTxEvent, PoolInfo, Section } from './types';
+import { sections, newSection, config, pool, drep, blockCount } from './stores';
+import type { BlockEvent, BlockTx, Config, DRepInfo, Event, MempoolTxEvent, PoolInfo, Section } from './types';
 
 let source: EventSource | null = null;
 let pendingPrune = new Set<string>();
@@ -146,10 +146,11 @@ function handleEvent(event: Event): void {
 export function connectSSE(url: string): void {
   if (source) source.close();
 
-  // Reset stores immediately so stale data from previous pool doesn't linger
+  // Reset stores immediately so stale data from previous feed doesn't linger
   sections.set([newSection()]);
   config.set(null);
   pool.set(null);
+  drep.set(null);
   pendingPrune.clear();
 
   source = new EventSource(url);
@@ -162,6 +163,8 @@ export function connectSSE(url: string): void {
         config.set(data as Config);
       } else if (data.type === 'Pool') {
         pool.set(data as PoolInfo);
+      } else if (data.type === 'DRep') {
+        drep.set(data as DRepInfo);
       } else if (Array.isArray(data)) {
         handleSnapshot(data as Event[]);
       } else {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { sections, config, pool, blockCount } from '../stores';
+  import { sections, config, pool, drep, blockCount } from '../stores';
   import type { GenesisConfig, Section } from '../types';
   import { TX_WIDTH, TX_GAP, FLIP_DURATION, poolColor, formatTicker, layoutGrid } from '../layout';
   import Transaction from './Transaction.svelte';
@@ -97,7 +97,7 @@
         const prev = sects[i - 1].block?.timestamp ?? now / 1000;
         const timeDelta = section.block ? Math.max(0, prev - section.block.timestamp) : 0;
         const maxSpacing = Math.round((landscape ? feedWidth : feedHeight) / 2);
-        spacing = Math.min(maxSpacing, Math.max(2, Math.round($pool ? logGap(timeDelta) : PX_PER_SECOND * timeDelta)));
+        spacing = Math.min(maxSpacing, Math.max(2, Math.round($pool || $drep ? logGap(timeDelta) : PX_PER_SECOND * timeDelta)));
         pos += spacing;
       }
       positions.set(section.id, { pos, spacing });
@@ -201,10 +201,17 @@
 
   let now = $state(Date.now());
 
-  // Set page title from pool ticker
+  // Set page title from pool ticker or DRep name
   $effect(() => {
     const p = $pool;
-    document.title = p ? `${formatTicker(p.ticker ?? p.pool_id.slice(5, 10))} - pool.pm` : 'pool.pm';
+    const d = $drep;
+    if (d) {
+      document.title = `${d.given_name ?? d.drep_id.slice(5, 13)} - pool.pm`;
+    } else if (p) {
+      document.title = `${formatTicker(p.ticker ?? p.pool_id.slice(5, 10))} - pool.pm`;
+    } else {
+      document.title = 'pool.pm';
+    }
   });
 
   $effect(() => {
@@ -217,21 +224,29 @@
   $effect(() => {
     $blockCount; // trigger on each new block
     const p = $pool;
+    const d = $drep;
     const nowSec = Math.floor(Date.now() / 1000);
     sections.update((s) => {
       s[0].txs = s[0].txs.filter((tx) => !tx.expiry || tx.expiry > nowSec);
       let result = s.slice(0, MAX_BLOCKS + 1);
-      // In pool feeds, prune old small stake/delegation changes
-      if (p?.live_stake) {
-        const threshold = BigInt(p.live_stake) / 1000n;
+      // In pool/drep feeds, prune old small stake/delegation changes
+      const liveStake = p?.live_stake ?? d?.live_stake;
+      if (liveStake) {
+        const threshold = BigInt(liveStake) / 1000n;
         const oneHourAgo = nowSec - 3600;
+        const feedPoolId = p?.pool_id;
+        const feedDrepId = d?.drep_id;
         result = result.filter((section, i) => {
           if (i === 0 || !section.block) return true;
-          if (section.block.pool_id === p.pool_id) return true;
+          if (feedPoolId && section.block.pool_id === feedPoolId) return true;
           if (section.block.timestamp > oneHourAgo) return true;
           if (
             section.txs.some((tx) =>
-              tx.delegations?.some((d) => d.from_pool_id === p.pool_id || d.to_pool_id === p.pool_id),
+              tx.delegations?.some(
+                (dl) =>
+                  (feedPoolId && (dl.from_pool_id === feedPoolId || dl.to_pool_id === feedPoolId)) ||
+                  (feedDrepId && (dl.from_drep_id === feedDrepId || dl.to_drep_id === feedDrepId)),
+              ),
             )
           )
             return true;
@@ -269,12 +284,12 @@
   const STAKE_NEGATIVE = 'oklch(0.7 0.25 25)';
 
   function sectionColors(section: Section): { bg: string; border: string; accent: string } {
-    if (!section.block) return { bg: '#222', border: '#222', accent: '#222' };
-    if (!$pool) {
+    if (!section.block) return { bg: '#222', border: '#222', accent: 'rgb(255 255 255 / 0.4)' };
+    if (!$pool && !$drep) {
       const c = poolColor(section.block.pool_id);
       return { bg: c, border: c, accent: c };
     }
-    if (section.block.pool_id === $pool.pool_id) {
+    if ($pool && section.block.pool_id === $pool.pool_id) {
       const c = poolColor($pool.pool_id);
       return { bg: c, border: c, accent: c };
     }
@@ -394,6 +409,17 @@
         <span class="pool-param-value">{formatAda($pool.pledge)}</span>
       </div>
     </div>
+  {:else if $drep}
+    {@const color = poolColor($drep.drep_id)}
+    <div class="pool-circle" style:border-color={color}>
+      <span class="drep-name" style:color>{$drep.given_name ?? $drep.drep_id.slice(5, 13)}</span>
+      {#if $drep.delegators != null}
+        <span class="pool-delegators">{$drep.delegators.toLocaleString()} delegators</span>
+      {/if}
+      {#if $drep.live_stake}
+        <span class="pool-stake">{formatAda($drep.live_stake)}</span>
+      {/if}
+    </div>
   {/if}
   <div class="canvas" style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}>
     {#each $sections as section, i (section.id)}
@@ -508,6 +534,19 @@
     font-weight: 700;
     font-size: 24px;
     line-height: 1;
+  }
+
+  .drep-name {
+    font-weight: 600;
+    font-size: 14px;
+    line-height: 1.2;
+    text-align: center;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
   }
 
   .pool-stake {
