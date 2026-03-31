@@ -514,8 +514,8 @@
   }
 
   .pool-circle {
-    width: 200px;
-    height: 200px;
+    width: 220px;
+    height: 220px;
     border-radius: 50%;
     border: 2px solid;
     display: flex;
