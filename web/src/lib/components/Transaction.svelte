@@ -191,6 +191,7 @@
                         (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
                       }}
                       onerror={(e: Event) => {
+                        (e.target as HTMLElement).style.display = 'none';
                         const el = (e.target as HTMLElement).parentElement!;
                         el.style.display = 'none';
                         el.dispatchEvent(new Event('remeasure', { bubbles: true }));
