@@ -331,6 +331,7 @@ async fn send_replay_blocks(
             return;
         }
     };
+    let mut sent = 0usize;
     for block in blocks.iter() {
         let hash_bytes = match hex::decode(&block.hash) {
             Ok(b) => b,
@@ -388,6 +389,10 @@ async fn send_replay_blocks(
                 };
                 if let Some(sse) = serialize_event(event) {
                     let _ = sender.send(sse).await;
+                    sent += 1;
+                    if sent >= MAX_REPLAY_BLOCKS {
+                        break;
+                    }
                 }
             }
             Err(e) => {
@@ -624,7 +629,7 @@ async fn filtered_events(
                 let live_stake = snap
                     .and_then(|s| State::pool_live_stake(s, ph))
                     .unwrap_or(0);
-                let threshold = (live_stake as u64) / 1000;
+                let threshold = (live_stake as u64) / 10_000;
 
                 let resolve_pool = |hash: &[u8]| -> (String, Option<String>) {
                     let ticker = snap
@@ -706,11 +711,10 @@ async fn filtered_events(
 
             let exclude_slots: HashSet<u64> = slot_map.keys().copied().collect();
 
-            // Sort block actions newest-first, cap at 30 (frontend MAX_BLOCKS)
+            // Sort block actions newest-first
             let mut replay_blocks: Vec<ReplayBlock> = Vec::new();
             let mut actions: Vec<(u64, SlotAction)> = slot_map.into_iter().collect();
             actions.sort_by(|a, b| b.0.cmp(&a.0));
-            actions.truncate(MAX_REPLAY_BLOCKS);
 
             for (_, action) in actions {
                 match action {
@@ -761,7 +765,7 @@ async fn filtered_events(
                 let live_stake = snap
                     .and_then(|s| State::drep_live_stake(s, db))
                     .unwrap_or(0);
-                let threshold = (live_stake as u64) / 1000;
+                let threshold = (live_stake as u64) / 10_000;
 
                 let resolve_drep = |bytes: &[u8]| -> (String, Option<String>) {
                     let name = match bytes.first() {
@@ -845,7 +849,6 @@ async fn filtered_events(
             let mut replay_blocks: Vec<ReplayBlock> = Vec::new();
             let mut actions: Vec<(u64, SlotAction)> = slot_map.into_iter().collect();
             actions.sort_by(|a, b| b.0.cmp(&a.0));
-            actions.truncate(MAX_REPLAY_BLOCKS);
 
             for (_, action) in actions {
                 if let SlotAction::StakeChange(r) = action {
