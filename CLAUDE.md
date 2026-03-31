@@ -116,4 +116,5 @@ SSE events from the server may arrive in any order (pool blocks, delegation chan
 - **Package versions**: Use LTS or stable versions when possible, particularly for TypeScript, JavaScript runtimes, and Svelte.
 - **Type safety**: Prefer specific types over `any`. Use `unknown` when the type is genuinely dynamic, narrowing it before use. `any` is acceptable when interfacing with untyped libraries or when proper typing would require disproportionately complex generics.
 - **No macros**: Avoid Rust macros (`macro_rules!`, proc macros) for deduplication or abstraction. Prefer functions, generics, or a small amount of repetition. Ask for confirmation before introducing any macro.
+- **Named constants**: Always use named constants instead of hardcoded magic numbers. The name documents the intent and factorizes the value so it can be changed in one place.
 
