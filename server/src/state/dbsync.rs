@@ -287,6 +287,47 @@ impl DbSync {
         Ok((delegations, delegators))
     }
 
+    /// Fetch CIP-68 decimals from reference token datums.
+    /// Queries unspent outputs holding label-100 assets and extracts "decimals"
+    /// from their inline datum JSONB. Returns (policy_id, asset_name, decimals).
+    pub async fn cip68_decimals(
+        &self,
+        last_tx_id: i64,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>, i32)>, sqlx::Error> {
+        // Reference tokens have asset name starting with 000643b0 (CIP-67 label 100).
+        // The datum value JSONB is: {"constructor":0,"fields":[{"map":[...]}, ...]}
+        // We look for a "decimals" key in the first field's map entries.
+        let label_prefix: Vec<u8> = vec![0x00, 0x06, 0x43, 0xb0];
+        let rows = sqlx::query!(
+            r#"SELECT ma.policy AS "policy!", ma.name AS "name!",
+                      (entry->>'v')::jsonb->>'int' AS "decimals"
+            FROM tx_out
+            JOIN ma_tx_out ON ma_tx_out.tx_out_id = tx_out.id
+            JOIN multi_asset ma ON ma.id = ma_tx_out.ident
+            JOIN datum ON datum.hash = tx_out.data_hash OR datum.id = tx_out.inline_datum_id
+            CROSS JOIN LATERAL jsonb_array_elements(
+                datum.value->'fields'->0->'map'
+            ) AS entry
+            WHERE substring(ma.name from 1 for 4) = $2
+              AND tx_out.tx_id <= $1
+              AND (tx_out.consumed_by_tx_id IS NULL OR tx_out.consumed_by_tx_id > $1)
+              AND entry->>'k' = '{"bytes":"646563696d616c73"}'
+              AND ((entry->>'v')::jsonb->>'int') IS NOT NULL"#,
+            last_tx_id,
+            &label_prefix
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                let decimals: i32 = r.decimals?.parse().ok()?;
+                Some((r.policy, r.name, decimals))
+            })
+            .collect())
+    }
+
     /// Find the most recent block at or before the given slot.
     /// Used at startup to find a valid intersection point for backfill.
     pub async fn boundary_block(&self, boundary_slot: u64) -> Option<(u64, String)> {

@@ -7,7 +7,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
 
-use crate::event::{AssetInfo, BlockTx, DelegationInfo, Event, TxInput, TxOutputInfo};
+use crate::event::{
+    format_quantity, AssetInfo, BlockTx, DelegationInfo, Event, TxInput, TxOutputInfo,
+};
 use crate::event_bus::EventBus;
 use crate::filter;
 use crate::model::{asset_fingerprint, pool_bech32_id, TxOutput};
@@ -79,7 +81,12 @@ pub async fn extract_tx(
                         .assets()
                         .iter()
                         .filter_map(|asset| {
+                            let raw = asset.output_coin()?;
                             let fingerprint = asset_fingerprint(&policy_id, asset.name());
+                            let decimals = state
+                                .current()
+                                .and_then(|s| s.decimals.get(&fingerprint).copied())
+                                .unwrap_or(0);
                             let name = std::str::from_utf8(asset.name())
                                 .ok()
                                 .filter(|s| !s.is_empty())
@@ -88,7 +95,7 @@ pub async fn extract_tx(
                             Some(AssetInfo {
                                 fingerprint,
                                 name,
-                                quantity: asset.output_coin()?,
+                                quantity: format_quantity(raw, decimals),
                                 tk,
                             })
                         })

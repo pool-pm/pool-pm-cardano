@@ -11,6 +11,7 @@ use tracing::{info, warn};
 
 use pallas::crypto::hash::Hasher;
 
+use crate::cip68;
 use crate::event::Event;
 use crate::event_bus::EventBus;
 use crate::mempool::extract_tx;
@@ -34,8 +35,15 @@ impl Worker {
             if state.rollback(slot) {
                 // Snapshot covered this slot, just truncate history
             } else {
-                state.reset(slot, &stage.genesis).await.or_panic()?;
-                match state.save_snapshot(&stage.snapshot_path, stage.snapshot_depth) {
+                state
+                    .reset(slot, &stage.genesis, stage.mainnet)
+                    .await
+                    .or_panic()?;
+                match state.save_snapshot(
+                    &stage.snapshot_path,
+                    stage.snapshot_depth,
+                    stage.genesis.magic,
+                ) {
                     Ok(saved_slot) => info!(saved_slot, "snapshot saved after reset"),
                     Err(e) => warn!("failed to save snapshot after reset: {}", e),
                 }
@@ -69,6 +77,7 @@ impl Worker {
             issuer_pool_hash,
             stake_change_pools,
             feed_delegations,
+            new_decimals,
         ) = {
             let state = stage.state.read().await;
             let snap = state.current();
@@ -85,6 +94,9 @@ impl Worker {
             // Feed index: track pools with stake changes in this block
             let mut stake_change_pools: std::collections::HashSet<Vec<u8>> =
                 std::collections::HashSet::new();
+
+            // CIP-68: collect decimals from reference token datums in this block
+            let mut new_decimals: Vec<(String, u8)> = Vec::new();
 
             // Feed index: collect raw delegation certs for building DelegationEntry
             struct RawDelegCert {
@@ -145,6 +157,9 @@ impl Worker {
                     )
                     .await,
                 );
+
+                // CIP-68: extract decimals from reference token datums
+                new_decimals.extend(cip68::extract_from_tx(&tx));
 
                 // Track produced UTXOs: add lovelaces to stake credentials
                 for (idx, output) in tx.outputs().iter().enumerate() {
@@ -272,6 +287,7 @@ impl Worker {
                 issuer_pool_hash,
                 stake_change_pools,
                 feed_delegations,
+                new_decimals,
             )
         };
 
@@ -333,6 +349,19 @@ impl Worker {
                 epoch,
                 reward_deltas.as_ref(),
             );
+
+            // CIP-68: update decimals in the latest snapshot
+            if !new_decimals.is_empty() {
+                if let Some(snap) = state.current_mut() {
+                    for (fp, d) in new_decimals {
+                        if d > 0 {
+                            snap.decimals.insert(fp, d);
+                        } else {
+                            snap.decimals.remove(&fp);
+                        }
+                    }
+                }
+            }
         }
 
         let tx_count = txs.len();
@@ -364,7 +393,11 @@ impl Worker {
 
         if height % 50 == 0 {
             let state = stage.state.read().await;
-            match state.save_snapshot(&stage.snapshot_path, stage.snapshot_depth) {
+            match state.save_snapshot(
+                &stage.snapshot_path,
+                stage.snapshot_depth,
+                stage.genesis.magic,
+            ) {
                 Ok(saved_slot) => info!(saved_slot, "snapshot saved"),
                 Err(e) => warn!("failed to save snapshot: {}", e),
             }

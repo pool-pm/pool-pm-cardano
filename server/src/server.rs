@@ -20,7 +20,7 @@ use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
-use crate::event::{AssetInfo, BlockTx, DelegationInfo, TxInput, TxOutputInfo};
+use crate::event::{format_quantity, AssetInfo, BlockTx, DelegationInfo, TxInput, TxOutputInfo};
 use crate::event_bus::EventBus;
 use crate::filter;
 use crate::model::{asset_fingerprint, pool_bech32_id, Pool};
@@ -156,7 +156,12 @@ fn decode_block_txs(
                                 .assets()
                                 .iter()
                                 .filter_map(|asset| {
+                                    let raw = asset.output_coin()?;
                                     let fp = asset_fingerprint(&policy_id, asset.name());
+                                    let decimals = state
+                                        .and_then(|s| s.current())
+                                        .and_then(|s| s.decimals.get(&fp).copied())
+                                        .unwrap_or(0);
                                     let name = std::str::from_utf8(asset.name())
                                         .ok()
                                         .filter(|s| !s.is_empty())
@@ -165,7 +170,7 @@ fn decode_block_txs(
                                     Some(AssetInfo {
                                         fingerprint: fp,
                                         name,
-                                        quantity: asset.output_coin()?,
+                                        quantity: format_quantity(raw, decimals),
                                         tk,
                                     })
                                 })

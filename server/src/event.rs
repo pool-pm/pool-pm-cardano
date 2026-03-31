@@ -114,8 +114,36 @@ pub struct AssetInfo {
     pub fingerprint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(with = "string")]
-    pub quantity: u64,
+    pub quantity: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tk: Option<String>,
+}
+
+/// Format a raw on-chain quantity with the given number of decimals.
+/// E.g. `format_quantity(1500000, 6)` → `"1.5"`, `format_quantity(100, 0)` → `"100"`.
+pub fn format_quantity(raw: u64, decimals: u8) -> String {
+    if decimals == 0 {
+        return raw.to_string();
+    }
+    let mut d = rust_decimal::Decimal::from(raw);
+    d.set_scale(decimals as u32).unwrap();
+    d.normalize().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_quantity() {
+        assert_eq!(format_quantity(100, 0), "100");
+        assert_eq!(format_quantity(1500000, 6), "1.5");
+        assert_eq!(format_quantity(1000000, 6), "1");
+        assert_eq!(format_quantity(500, 6), "0.0005");
+        assert_eq!(format_quantity(0, 6), "0");
+        assert_eq!(format_quantity(123456789, 6), "123.456789");
+        assert_eq!(format_quantity(1230000, 6), "1.23");
+        assert_eq!(format_quantity(10, 2), "0.1");
+        assert_eq!(format_quantity(1, 8), "0.00000001");
+    }
 }

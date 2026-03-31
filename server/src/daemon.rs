@@ -6,6 +6,7 @@ use tracing::{info, warn};
 use url::Url;
 
 use crate::args::{Args, Metrics};
+use crate::cip26;
 use crate::event_bus::EventBus;
 use crate::mempool;
 use crate::nftcdn::NftcdnConfig;
@@ -142,7 +143,7 @@ pub fn run(args: Args) -> Result<(), Error> {
     let snapshot_depth = args.snapshot_depth;
 
     let (intersect, catchup_target) =
-        if let Some((snapshot, fi)) = State::load_snapshot(&snapshot_path) {
+        if let Some((snapshot, fi)) = State::load_snapshot(&snapshot_path, args.network.magic()) {
             let snap_slot = snapshot.slot;
             let snap_hash = snapshot.block_hash.clone().unwrap_or_default();
             info!(
@@ -152,6 +153,10 @@ pub fn run(args: Args) -> Result<(), Error> {
             );
             state.restore_from_snapshot(snapshot);
             state.feed_index = fi;
+
+            let decimals_count = state.current().map(|s| s.decimals.len()).unwrap_or(0);
+            info!(decimals_count, "decimals cache loaded");
+
             (IntersectConfig::Point(snap_slot, snap_hash), None)
         } else {
             // No snapshot — query tip from db-sync and start from 5 days ago
@@ -219,6 +224,8 @@ pub fn run(args: Args) -> Result<(), Error> {
 
     let prometheus = tokio_rt.spawn(serve_prometheus(daemon.clone(), args.metrics));
 
+    tokio_rt.spawn(cip26_refresh_task(state.clone(), mainnet));
+
     if let Some(addr) = listen {
         tokio_rt.spawn(server::serve(
             addr,
@@ -240,4 +247,54 @@ pub fn run(args: Args) -> Result<(), Error> {
     prometheus.abort();
 
     Ok(())
+}
+
+/// Background task: periodically check GitHub for CIP-26 token registry updates.
+async fn cip26_refresh_task(state: Arc<RwLock<State>>, mainnet: bool) {
+    let config = if mainnet {
+        cip26::RegistryConfig::mainnet()
+    } else {
+        cip26::RegistryConfig::testnet()
+    };
+    let client = reqwest::Client::new();
+    let mut last_sha: Option<String> = None;
+
+    loop {
+        tokio::time::sleep(Duration::from_secs(30 * 60)).await;
+
+        // Check if the registry has new commits
+        let sha = match cip26::fetch_commit_sha(&client, &config).await {
+            Some(s) => s,
+            None => continue,
+        };
+        if last_sha.as_ref() == Some(&sha) {
+            continue;
+        }
+
+        info!(
+            sha = sha.as_str(),
+            "CIP-26 registry updated, refreshing decimals"
+        );
+        let entries = cip26::fetch_decimals(&client, &config).await;
+        if entries.is_empty() {
+            continue;
+        }
+
+        let mut state = state.write().await;
+        if let Some(snap) = state.current_mut() {
+            let before = snap.decimals.len();
+            for (fp, d) in entries {
+                snap.decimals.entry(fp).or_insert(d);
+            }
+            let added = snap.decimals.len() - before;
+            if added > 0 {
+                info!(
+                    added,
+                    total = snap.decimals.len(),
+                    "CIP-26 decimals updated"
+                );
+            }
+        }
+        last_sha = Some(sha);
+    }
 }

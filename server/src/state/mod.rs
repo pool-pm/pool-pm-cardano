@@ -5,6 +5,8 @@ use imbl::{hashmap::HashMap, hashset::HashSet};
 use std::path::Path;
 use url::Url;
 
+use crate::cip26;
+use crate::cip68;
 use crate::model::{Pool, TxOutput};
 use crate::pallas::PoolUpdate;
 use dbsync::DbSync;
@@ -23,6 +25,8 @@ pub struct BlockSnapshot {
     pub drep_delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
     pub stakes: HashMap<Vec<u8>, i64>,
     pub rewards: HashMap<Vec<u8>, i64>,
+    /// Asset fingerprint → decimals (non-zero only, from CIP-26 + CIP-68)
+    pub decimals: HashMap<String, u8>,
 }
 
 pub struct State {
@@ -53,6 +57,10 @@ impl State {
         self.history.last()
     }
 
+    pub fn current_mut(&mut self) -> Option<&mut BlockSnapshot> {
+        self.history.last_mut()
+    }
+
     /// Initialize state from db-sync data at a given reset point.
     /// Fetches pools, delegations, stakes, and rewards from db-sync,
     /// replaces all history with a single snapshot.
@@ -60,6 +68,7 @@ impl State {
         &mut self,
         slot: u64,
         genesis: &oura::framework::GenesisValues,
+        mainnet: bool,
     ) -> Result<(), sqlx::Error> {
         let db = self
             .db
@@ -97,6 +106,35 @@ impl State {
         let rewards = db.rewards(current_epoch, last_tx_id).await?;
         tracing::info!("{} stake addresses with rewards", rewards.len());
 
+        tracing::info!("Fetching CIP-68 reference token decimals...");
+        let cip68_rows = db.cip68_decimals(last_tx_id).await?;
+        let mut decimals = HashMap::new();
+        for (policy, name, d) in &cip68_rows {
+            if *d > 0 && *d <= 255 {
+                let fp = cip68::ft_fingerprint(policy, name);
+                decimals.insert(fp, *d as u8);
+                let rfp = cip68::rft_fingerprint(policy, name);
+                decimals.insert(rfp, *d as u8);
+            }
+        }
+        tracing::info!("{} CIP-68 tokens with decimals", decimals.len());
+
+        // CIP-26: fetch decimals from GitHub token registry
+        let registry = if mainnet {
+            cip26::RegistryConfig::mainnet()
+        } else {
+            cip26::RegistryConfig::testnet()
+        };
+        let client = reqwest::Client::new();
+        let cip26_entries = cip26::fetch_decimals(&client, &registry).await;
+        for (fp, d) in cip26_entries {
+            decimals.entry(fp).or_insert(d); // CIP-68 takes precedence
+        }
+        tracing::info!(
+            "{} total tokens with decimals (CIP-68 + CIP-26)",
+            decimals.len()
+        );
+
         self.history.clear();
         self.history.push(BlockSnapshot {
             slot,
@@ -110,6 +148,7 @@ impl State {
             drep_delegators,
             stakes,
             rewards,
+            decimals,
         });
         self.feed_index = FeedIndex::new();
 
@@ -200,6 +239,7 @@ impl State {
             }
         }
 
+        let decimals = prev.decimals.clone();
         self.history.push(BlockSnapshot {
             slot,
             block_hash: Some(block_hash),
@@ -212,6 +252,7 @@ impl State {
             drep_delegators,
             stakes,
             rewards,
+            decimals,
         });
 
         const MAX_HISTORY: usize = 2160;
@@ -326,24 +367,25 @@ impl State {
         self.history.push(snapshot);
     }
 
-    /// Save snapshot + feed_index to disk. Picks the snapshot `depth` blocks back from tip.
-    /// Writes atomically via tmp file + rename.
+    /// Save snapshot + feed_index + network_magic to disk. Picks the snapshot
+    /// `depth` blocks back from tip. Writes atomically via tmp file + rename.
     pub fn save_snapshot(
         &self,
         path: &Path,
         depth: usize,
+        network_magic: u64,
     ) -> Result<u64, Box<dyn std::error::Error>> {
         let idx = self.history.len().saturating_sub(depth);
         let snap = &self.history[idx];
-        let data = rmp_serde::to_vec(&(snap, &self.feed_index))?;
+        let data = rmp_serde::to_vec(&(snap, &self.feed_index, network_magic))?;
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, &data)?;
         std::fs::rename(&tmp, path)?;
         Ok(snap.slot)
     }
 
-    /// Load snapshot + feed_index from disk.
-    pub fn load_snapshot(path: &Path) -> Option<(BlockSnapshot, FeedIndex)> {
+    /// Load snapshot + feed_index from disk. Validates network magic matches.
+    pub fn load_snapshot(path: &Path, network_magic: u64) -> Option<(BlockSnapshot, FeedIndex)> {
         let data = match std::fs::read(path) {
             Ok(data) => data,
             Err(e) => {
@@ -352,8 +394,18 @@ impl State {
             }
         };
         tracing::info!("loading snapshot from {}...", path.display());
-        match rmp_serde::from_slice(&data) {
-            Ok(combined) => Some(combined),
+        match rmp_serde::from_slice::<(BlockSnapshot, FeedIndex, u64)>(&data) {
+            Ok((snap, fi, magic)) => {
+                if magic != network_magic {
+                    tracing::warn!(
+                        "snapshot network mismatch: snapshot={}, expected={}",
+                        magic,
+                        network_magic
+                    );
+                    return None;
+                }
+                Some((snap, fi))
+            }
             Err(e) => {
                 tracing::warn!("failed to deserialize snapshot: {}", e);
                 None

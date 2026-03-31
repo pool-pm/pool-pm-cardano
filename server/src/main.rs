@@ -5,6 +5,8 @@ use std::process;
 
 mod args;
 mod chain;
+mod cip26;
+mod cip68;
 mod daemon;
 mod event;
 mod event_bus;
