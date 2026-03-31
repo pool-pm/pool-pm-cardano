@@ -78,6 +78,23 @@ pub fn stake_address_bech32(cred: &StakeCredential, mainnet: bool) -> String {
     bech32::encode::<Bech32>(Hrp::parse(hrp).unwrap(), &payload).unwrap()
 }
 
+/// Build a bech32 stake address from raw 28-byte credential bytes.
+/// Assumes key-based credential (0xe1/0xe0 header). Used when we only
+/// have the raw bytes (e.g. from drep_delegation_changes) without the
+/// StakeCredential enum.
+pub fn stake_address_from_cred_bytes(cred: &[u8], mainnet: bool) -> String {
+    use bech32::{Bech32, Hrp};
+    let (header, hrp) = if mainnet {
+        (0xe1u8, "stake")
+    } else {
+        (0xe0u8, "stake_test")
+    };
+    let mut payload = Vec::with_capacity(29);
+    payload.push(header);
+    payload.extend_from_slice(cred);
+    bech32::encode::<Bech32>(Hrp::parse(hrp).unwrap(), &payload).unwrap()
+}
+
 pub fn drep_to_bytes(drep: &conway::DRep) -> Vec<u8> {
     match drep {
         conway::DRep::Key(h) => [&[0x00], h.as_ref()].concat(),

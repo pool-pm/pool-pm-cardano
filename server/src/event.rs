@@ -65,6 +65,14 @@ pub struct DelegationInfo {
     pub to_pool_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to_ticker: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_drep_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_drep_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_drep_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_drep_name: Option<String>,
     #[serde(with = "string_i64")]
     pub live_stake: i64,
 }
