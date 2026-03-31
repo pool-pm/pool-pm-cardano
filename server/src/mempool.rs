@@ -12,7 +12,7 @@ use crate::event::{
 };
 use crate::event_bus::EventBus;
 use crate::filter;
-use crate::model::{asset_fingerprint, pool_bech32_id, TxOutput};
+use crate::model::{asset_fingerprint, drep_bech32_id, pool_bech32_id, TxOutput};
 use crate::nftcdn::NftcdnConfig;
 use crate::pallas::{
     extract_cip20_message, stake_address_bech32, stake_credential_bytes, MultiEraTxExt,
@@ -150,6 +150,20 @@ pub async fn extract_tx(
     block_tx
 }
 
+/// Resolve DRep bytes to (bech32_id, given_name).
+fn resolve_drep(
+    bytes: &[u8],
+    snap: &crate::state::BlockSnapshot,
+) -> (Option<String>, Option<String>) {
+    let id = drep_bech32_id(bytes);
+    let name = match bytes.first() {
+        Some(0x02) => Some("Always Abstain".to_string()),
+        Some(0x03) => Some("Always No Confidence".to_string()),
+        _ => snap.dreps.get(bytes).and_then(|d| d.given_name.clone()),
+    };
+    (Some(id), name)
+}
+
 pub fn extract_delegations(
     tx: &MultiEraTx<'_>,
     state: &State,
@@ -168,33 +182,95 @@ pub fn extract_delegations(
         )
     };
 
-    tx.pool_delegation_certs()
-        .iter()
-        .map(|(cred, pool_hash)| {
-            let cred_bytes = stake_credential_bytes(cred);
+    // Collect pool delegation certs by credential
+    let pool_certs = tx.pool_delegation_certs();
+    // Collect DRep delegation changes by credential
+    let drep_changes = tx.drep_delegation_changes();
 
-            let (from_pool_id, from_ticker) = snap
-                .pool_delegations
-                .get(&cred_bytes)
+    // Merge by credential: build a map of cred_bytes → (pool info, drep info, StakeCredential)
+    let mut merged: std::collections::HashMap<
+        Vec<u8>,
+        (
+            Option<&pallas::ledger::primitives::conway::StakeCredential>,
+            Option<Option<&Vec<u8>>>, // pool_hash: Some(Some(hash)) or Some(None) for deregistration
+            Option<Option<&Vec<u8>>>, // drep_bytes: Some(Some(bytes)) or Some(None) for deregistration
+        ),
+    > = std::collections::HashMap::new();
+
+    for (cred, pool_hash) in &pool_certs {
+        let cred_bytes = stake_credential_bytes(cred);
+        let entry = merged.entry(cred_bytes).or_insert((None, None, None));
+        entry.0 = Some(cred);
+        entry.1 = Some(pool_hash.as_ref());
+    }
+
+    for (cred_bytes, drep_bytes) in &drep_changes {
+        let entry = merged
+            .entry(cred_bytes.clone())
+            .or_insert((None, None, None));
+        entry.2 = Some(drep_bytes.as_ref());
+    }
+
+    merged
+        .into_iter()
+        .filter_map(|(cred_bytes, (maybe_cred, pool_change, drep_change))| {
+            // Need at least a pool or drep change with a target to show
+            let has_pool = pool_change.is_some();
+            let has_drep = drep_change.is_some();
+            if !has_pool && !has_drep {
+                return None;
+            }
+
+            let stake_address = if let Some(cred) = maybe_cred {
+                stake_address_bech32(cred, mainnet)
+            } else {
+                // DRep-only change (e.g. VoteDeleg): build stake address from cred bytes
+                crate::pallas::stake_address_from_cred_bytes(&cred_bytes, mainnet)
+            };
+
+            let (from_pool_id, from_ticker) = if has_pool {
+                snap.pool_delegations
+                    .get(&cred_bytes)
+                    .map(|h| resolve_pool(h))
+                    .unwrap_or((None, None))
+            } else {
+                (None, None)
+            };
+
+            let (to_pool_id, to_ticker) = pool_change
+                .flatten()
                 .map(|h| resolve_pool(h))
                 .unwrap_or((None, None));
 
-            let (to_pool_id, to_ticker) = pool_hash
-                .as_ref()
-                .map(|h| resolve_pool(h))
+            let (from_drep_id, from_drep_name) = if has_drep {
+                snap.drep_delegations
+                    .get(&cred_bytes)
+                    .map(|h| resolve_drep(h, snap))
+                    .unwrap_or((None, None))
+            } else {
+                (None, None)
+            };
+
+            let (to_drep_id, to_drep_name) = drep_change
+                .flatten()
+                .map(|h| resolve_drep(h, snap))
                 .unwrap_or((None, None));
 
             let live_stake = snap.stakes.get(&cred_bytes).copied().unwrap_or(0)
                 + snap.rewards.get(&cred_bytes).copied().unwrap_or(0);
 
-            DelegationInfo {
-                stake_address: stake_address_bech32(cred, mainnet),
+            Some(DelegationInfo {
+                stake_address,
                 from_pool_id,
                 from_ticker,
                 to_pool_id,
                 to_ticker,
+                from_drep_id,
+                from_drep_name,
+                to_drep_id,
+                to_drep_name,
                 live_stake,
-            }
+            })
         })
         .collect()
 }
