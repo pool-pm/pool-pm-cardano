@@ -94,34 +94,43 @@
   let maxAssetsPerOutput = $derived(compact ? 5 : 25);
 
   // Detect change outputs: match by exact address or by stake credential + address type
-  let inputAddresses = $derived(new Set(tx.inputs.map((i) => i.address).filter(Boolean)));
-  let inputStakeKeys = $derived(() => {
-    const map = new Map<string, number>(); // stake_cred_hex → header byte
+  function bytesToHex(bytes: Uint8Array, start: number, end: number): string {
+    return Array.from(bytes.slice(start, end))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  let inputCreds = $derived.by(() => {
+    const addresses = new Set<string>();
+    const paymentCreds = new Set<string>();
+    const stakeCreds = new Map<string, number>(); // hex → header byte
     for (const input of tx.inputs) {
       if (!input.address) continue;
+      addresses.add(input.address);
       const bytes = bech32Decode(input.address);
-      if (!bytes || bytes.length < 57) continue;
-      const stakeCred = Array.from(bytes.slice(29, 57))
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
-      map.set(stakeCred, bytes[0]);
+      if (!bytes || bytes.length < 29) continue;
+      paymentCreds.add(bytesToHex(bytes, 1, 29));
+      if (bytes.length >= 57) {
+        stakeCreds.set(bytesToHex(bytes, 29, 57), bytes[0]);
+      }
     }
-    return map;
+    return { addresses, paymentCreds, stakeCreds };
   });
 
   function isChange(output: TxOutputInfo): boolean {
+    const { addresses, paymentCreds, stakeCreds } = inputCreds;
     // Rule 1: exact address match
-    if (inputAddresses.has(output.address)) return true;
-    // Rule 2: same stake credential + same address type
+    if (addresses.has(output.address)) return true;
     const bytes = bech32Decode(output.address);
-    if (!bytes || bytes.length < 57) return false;
-    const stakeCred = Array.from(bytes.slice(29, 57))
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-    const inputHeader = inputStakeKeys().get(stakeCred);
-    if (inputHeader === undefined) return false;
-    // Compare address type (top nibble of header)
-    return bytes[0] >> 4 === inputHeader >> 4;
+    if (!bytes || bytes.length < 29) return false;
+    // Rule 2: same payment credential
+    if (paymentCreds.has(bytesToHex(bytes, 1, 29))) return true;
+    // Rule 3: same stake credential + same address type
+    if (bytes.length >= 57) {
+      const inputHeader = stakeCreds.get(bytesToHex(bytes, 29, 57));
+      if (inputHeader !== undefined && bytes[0] >> 4 === inputHeader >> 4) return true;
+    }
+    return false;
   }
 
   let nonChangeOutputs = $derived(tx.outputs.filter((o) => !isChange(o)));
