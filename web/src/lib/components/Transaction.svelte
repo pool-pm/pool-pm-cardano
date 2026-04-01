@@ -253,8 +253,7 @@
           <span class="more-outputs">+{hiddenOutputCount} output{hiddenOutputCount > 1 ? 's' : ''}</span>
         {/if}
       </div>
-      {@const selfTransfer = visibleOutputs.length === 0}
-      <div class="arrow" class:flip={selfTransfer}>{selfTransfer ? '↻' : '↑'}</div>
+      <div class="arrow" class:flip={visibleOutputs.length === 0}>{visibleOutputs.length === 0 ? '↻' : '↑'}</div>
 
       <div class="addr-list">
         {#each visibleInputs as input}
