@@ -3,7 +3,7 @@
   import Feed from './lib/components/Feed.svelte';
   import './app.css';
 
-  const SSE_BASE = import.meta.env.VITE_SSE_URL || 'http://localhost:3000/events';
+  const SSE_BASE = import.meta.env.VITE_SSE_URL || `${window.location.origin}/events`;
 
   function sseUrl(): string {
     const path = window.location.pathname.replace(/^\/+/, '');
