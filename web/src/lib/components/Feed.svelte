@@ -270,6 +270,7 @@
   // Re-measure positions when sections change, time advances, or orientation changes
   $effect(() => {
     $sections;
+    now;
     landscape;
     untrack(scheduleMeasure);
   });
