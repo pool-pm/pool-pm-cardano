@@ -30,8 +30,6 @@
   let measurePending = false;
   let scrolledAway = false;
   let ignoreScroll = false;
-  let scrolling = false;
-  let scrollTimer = 0;
 
   // Pool feeds: logarithmic spacing — 2px/sec for small gaps, ~100px/day
   function logGap(seconds: number): number {
@@ -71,11 +69,6 @@
     // row-reverse: scrollLeft ≈ 0 at right edge (can be slightly negative
     // due to padding/scrollbar gutter), goes more negative when scrolled left
     scrolledAway = landscape ? feedEl.scrollLeft < -30 : feedEl.scrollTop > 10;
-    scrolling = true;
-    clearTimeout(scrollTimer);
-    scrollTimer = setTimeout(() => {
-      scrolling = false;
-    }, 200) as unknown as number;
   }
 
   function measureSections() {
@@ -85,7 +78,7 @@
     // After DOM update we'll measure the actual shift and compensate scroll.
     let anchorEl: HTMLElement | undefined;
     let anchorBefore: number | undefined;
-    if (animated && scrolledAway && !scrolling && canvasSize > 0) {
+    if (animated && scrolledAway && canvasSize > 0) {
       for (let i = 1; i < sects.length; i++) {
         const el = sectionRefs.get(sects[i].id);
         if (el) {
@@ -277,7 +270,6 @@
   // Re-measure positions when sections change, time advances, or orientation changes
   $effect(() => {
     $sections;
-    now;
     landscape;
     untrack(scheduleMeasure);
   });
