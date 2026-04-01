@@ -2,6 +2,7 @@
   import type { AssetInfo, DelegationInfo, FeedTx, TxOutputInfo } from '../types';
   import { config } from '../stores';
   import { poolColor, formatTicker } from '../layout';
+  import { bech32Decode } from '../bech32';
 
   let { tx, compact = false }: { tx: FeedTx; compact?: boolean } = $props();
   let failedAssets = $state<Record<number, number>>({});
@@ -92,7 +93,39 @@
   let maxAssets = $derived(compact ? 10 : 50);
   let maxAssetsPerOutput = $derived(compact ? 5 : 25);
 
-  let sortedOutputs = $derived([...tx.outputs].sort((a, b) => Number(BigInt(b.lovelace) - BigInt(a.lovelace))));
+  // Detect change outputs: match by exact address or by stake credential + address type
+  let inputAddresses = $derived(new Set(tx.inputs.map((i) => i.address).filter(Boolean)));
+  let inputStakeKeys = $derived(() => {
+    const map = new Map<string, number>(); // stake_cred_hex → header byte
+    for (const input of tx.inputs) {
+      if (!input.address) continue;
+      const bytes = bech32Decode(input.address);
+      if (!bytes || bytes.length < 57) continue;
+      const stakeCred = Array.from(bytes.slice(29, 57))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+      map.set(stakeCred, bytes[0]);
+    }
+    return map;
+  });
+
+  function isChange(output: TxOutputInfo): boolean {
+    // Rule 1: exact address match
+    if (inputAddresses.has(output.address)) return true;
+    // Rule 2: same stake credential + same address type
+    const bytes = bech32Decode(output.address);
+    if (!bytes || bytes.length < 57) return false;
+    const stakeCred = Array.from(bytes.slice(29, 57))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    const inputHeader = inputStakeKeys().get(stakeCred);
+    if (inputHeader === undefined) return false;
+    // Compare address type (top nibble of header)
+    return bytes[0] >> 4 === inputHeader >> 4;
+  }
+
+  let nonChangeOutputs = $derived(tx.outputs.filter((o) => !isChange(o)));
+  let sortedOutputs = $derived([...nonChangeOutputs].sort((a, b) => Number(BigInt(b.lovelace) - BigInt(a.lovelace))));
   let visibleOutputs = $derived.by(() => {
     let assets = 0;
     let count = 0;
@@ -104,7 +137,7 @@
     }
     return sortedOutputs.slice(0, count);
   });
-  let hiddenOutputCount = $derived(tx.outputs.length - visibleOutputs.length);
+  let hiddenOutputCount = $derived(nonChangeOutputs.length - visibleOutputs.length);
 
   // Deduplicate inputs by address
   let uniqueInputs = $derived([...new Map(tx.inputs.map((i) => [i.address, i])).values()]);
@@ -219,17 +252,12 @@
         {#if hiddenOutputCount > 0}
           <span class="more-outputs">+{hiddenOutputCount} output{hiddenOutputCount > 1 ? 's' : ''}</span>
         {/if}
-        <div class="addr-item">
-          <span class="ada">{@html formatAda(tx.fee)}</span>
-          <span class="addr">fee</span>
-        </div>
       </div>
       <div class="arrow" class:flip={tx.outputs.length === 0}>{tx.outputs.length === 0 ? '↻' : '↑'}</div>
 
       <div class="addr-list">
         {#each visibleInputs as input}
           <div class="addr-item">
-            <span class="ada">{@html formatAda(input.lovelace)}</span>
             <span class="addr mono">{input.address ?? '???'}</span>
           </div>
         {/each}
