@@ -246,14 +246,14 @@
             <span class="addr mono">{output.address}</span>
           </div>
         {/each}
-        {#if visibleOutputs.length === 0 && tx.outputs.length > 0}
+        {#if visibleOutputs.length === 0}
           <span class="ada">{@html formatAda(tx.outputs.reduce((s, o) => s + BigInt(o.lovelace), 0n).toString())}</span>
         {/if}
         {#if hiddenOutputCount > 0}
           <span class="more-outputs">+{hiddenOutputCount} output{hiddenOutputCount > 1 ? 's' : ''}</span>
         {/if}
       </div>
-      {@const selfTransfer = visibleOutputs.length === 0 || tx.outputs.length === 0}
+      {@const selfTransfer = visibleOutputs.length === 0}
       <div class="arrow" class:flip={selfTransfer}>{selfTransfer ? '↻' : '↑'}</div>
 
       <div class="addr-list">
