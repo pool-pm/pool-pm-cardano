@@ -37,8 +37,8 @@
   }
 
   // Available height for tx columns in landscape mode.
-  // Overhead = section padding + border + 3 flex gaps + header + ticker + footer
-  const SECTION_OVERHEAD = BLOCK_PADDING * 5 + BLOCK_BORDER * 2 + 37; // = 91
+  // Overhead = section border (4) + padding (20) + 3 flex gaps (30) + header (10) + ticker (13) + footer (10)
+  const SECTION_OVERHEAD = BLOCK_BORDER * 2 + BLOCK_PADDING * 2 + BLOCK_PADDING * 3 + 33; // = 87
   let txAreaHeight = $derived(feedHeight - SECTION_OVERHEAD - LANDSCAPE_MARGIN);
 
   function trackSection(node: HTMLElement, id: string) {

@@ -187,7 +187,8 @@ export function layoutGrid(node: HTMLElement, params: LayoutGridParams) {
       node.style.width = '';
       node.dispatchEvent(new CustomEvent('gridwidth', { detail: gridWidth, bubbles: true }));
     }
-    node.style.height = `${gridHeight}px`;
+    const maxHeight = landscape ? availableHeight : Infinity;
+    node.style.height = `${Math.min(gridHeight, maxHeight)}px`;
   }
 
   function schedule() {
