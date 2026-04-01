@@ -84,8 +84,8 @@
     return asset.tk ? `${base}?tk=${asset.tk}&size=128` : `${base}?size=128`;
   }
 
-  // Total asset count across outputs → scale thumbnails
-  let totalAssets = $derived(tx.outputs.reduce((sum, o) => sum + o.assets.length, 0));
+  // Total asset count across visible outputs → scale thumbnails
+  let totalAssets = $derived(nonChangeOutputs.reduce((sum, o) => sum + o.assets.length, 0));
   let thumbSize = $derived(totalAssets <= 1 ? 64 : Math.max(16, Math.floor(64 / Math.sqrt(totalAssets))));
 
   let maxOutputs = $derived(compact ? 2 : 8);
