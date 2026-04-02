@@ -356,10 +356,14 @@ impl State {
 
     /// Batch-resolve input addresses, lovelace, and asset fingerprints.
     /// Checks in-memory UTXOs first, falls back to db-sync for the rest.
+    /// Returns (resolved_map, unspent_utxos_to_cache).
     pub async fn resolve_utxos_batch(
         &self,
         inputs: &[(Vec<u8>, i16)],
-    ) -> std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<String>)> {
+    ) -> (
+        std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<String>)>,
+        Vec<((Vec<u8>, i16), TxOutput)>,
+    ) {
         let mut result =
             std::collections::HashMap::<(Vec<u8>, i16), (String, u64, Vec<String>)>::with_capacity(
                 inputs.len(),
@@ -389,15 +393,34 @@ impl State {
             remaining.extend_from_slice(inputs);
         }
 
+        let mut to_cache = Vec::new();
+
         if !remaining.is_empty() {
             if let Some(db) = self.db().await {
                 if let Ok(db_result) = db.resolve_utxos_batch(&remaining).await {
-                    result.extend(db_result);
+                    for (key, (addr, lovelace, assets, unspent)) in db_result {
+                        if unspent {
+                            let address_bytes =
+                                pallas::ledger::addresses::Address::from_bech32(&addr)
+                                    .ok()
+                                    .map(|a| a.to_vec())
+                                    .unwrap_or_default();
+                            to_cache.push((
+                                key.clone(),
+                                TxOutput {
+                                    lovelaces: rust_decimal::Decimal::from(lovelace),
+                                    address: address_bytes,
+                                    asset_fingerprints: assets.clone(),
+                                },
+                            ));
+                        }
+                        result.insert(key, (addr, lovelace, assets));
+                    }
                 }
             }
         }
 
-        result
+        (result, to_cache)
     }
 
     /// Fetch epoch reward deltas from db-sync for a new epoch.

@@ -280,10 +280,21 @@ async fn resolve_block_inputs(txs: &mut Vec<BlockTx>, chain_state: &RwLock<State
     if input_keys.is_empty() {
         return;
     }
-    let resolved = {
+    let (resolved, to_cache) = {
         let guard = chain_state.read().await;
         guard.resolve_utxos_batch(&input_keys).await
     };
+
+    // Cache unspent UTXOs so subsequent feed loads skip db-sync
+    if !to_cache.is_empty() {
+        let mut guard = chain_state.write().await;
+        if let Some(snap) = guard.current_mut() {
+            for (key, utxo) in to_cache {
+                snap.utxos.insert(key, utxo);
+            }
+        }
+    }
+
     for tx in txs {
         for inp in &mut tx.inputs {
             let key = (hex::decode(&inp.tx_hash).unwrap_or_default(), inp.index);

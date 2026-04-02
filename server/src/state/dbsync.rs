@@ -87,18 +87,23 @@ impl DbSync {
         Ok(Some((row.address, row.value, assets)))
     }
 
+    /// Batch-resolve UTXOs. Returns (address, lovelace, asset_fingerprints, unspent).
+    /// `unspent` is true when consumed_by_tx_id IS NULL — callers can cache these.
     pub async fn resolve_utxos_batch(
         &self,
         inputs: &[(Vec<u8>, i16)],
-    ) -> Result<std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<String>)>, sqlx::Error>
-    {
+    ) -> Result<
+        std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<String>, bool)>,
+        sqlx::Error,
+    > {
         if inputs.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
         let hashes: Vec<Vec<u8>> = inputs.iter().map(|(h, _)| h.clone()).collect();
         let indices: Vec<i16> = inputs.iter().map(|(_, i)| *i).collect();
         let rows = sqlx::query!(
-            r#"SELECT tx.hash, tx_out.index AS "index!: i16", tx_out.id, tx_out.address, tx_out.value
+            r#"SELECT tx.hash, tx_out.index AS "index!: i16", tx_out.id,
+                    tx_out.address, tx_out.value, tx_out.consumed_by_tx_id
             FROM tx_out
             JOIN tx ON tx.id = tx_out.tx_id
             WHERE (tx.hash, tx_out.index) IN (SELECT * FROM UNNEST($1::bytea[], $2::smallint[]))"#,
@@ -111,16 +116,19 @@ impl DbSync {
         // Build id→key lookup and initial result map from first query
         let mut id_to_key: std::collections::HashMap<i64, (Vec<u8>, i16)> =
             std::collections::HashMap::with_capacity(rows.len());
-        let mut result: std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<String>)> =
-            std::collections::HashMap::with_capacity(rows.len());
+        let mut result: std::collections::HashMap<
+            (Vec<u8>, i16),
+            (String, u64, Vec<String>, bool),
+        > = std::collections::HashMap::with_capacity(rows.len());
         let mut tx_out_ids: Vec<i64> = Vec::with_capacity(rows.len());
 
         for r in rows {
             let lovelace: u64 = r.value.try_into().expect("lovelace must fit u64");
+            let unspent = r.consumed_by_tx_id.is_none();
             let key = (r.hash, r.index);
             id_to_key.insert(r.id, key.clone());
             tx_out_ids.push(r.id);
-            result.insert(key, (r.address, lovelace, vec![]));
+            result.insert(key, (r.address, lovelace, vec![], unspent));
         }
 
         // Fetch assets in two simple indexed lookups (no join for Postgres to misoptimize)
@@ -151,7 +159,7 @@ impl DbSync {
                     if let Some((policy, name)) = ma_info.get(&r.ident) {
                         if let Some(key) = id_to_key.get(&r.tx_out_id) {
                             if let Some(entry) = result.get_mut(key) {
-                                entry.2.push(asset_fingerprint(policy, name));
+                                entry.2.push(asset_fingerprint(policy, name)); // .2 = assets
                             }
                         }
                     }
