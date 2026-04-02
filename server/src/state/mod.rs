@@ -354,16 +354,50 @@ impl State {
         db.boundary_block(boundary_slot).await
     }
 
-    /// Batch-resolve input addresses and lovelace from db-sync.
+    /// Batch-resolve input addresses, lovelace, and asset fingerprints.
+    /// Checks in-memory UTXOs first, falls back to db-sync for the rest.
     pub async fn resolve_utxos_batch(
         &self,
         inputs: &[(Vec<u8>, i16)],
-    ) -> std::collections::HashMap<(Vec<u8>, i16), (String, u64)> {
-        if let Some(db) = self.db().await {
-            db.resolve_utxos_batch(inputs).await.unwrap_or_default()
+    ) -> std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<String>)> {
+        let mut result =
+            std::collections::HashMap::<(Vec<u8>, i16), (String, u64, Vec<String>)>::with_capacity(
+                inputs.len(),
+            );
+        let mut remaining = Vec::new();
+
+        if let Some(snap) = self.current() {
+            for (hash, index) in inputs {
+                if let Some(utxo) = snap.utxos.get(&(hash.clone(), *index)) {
+                    let addr = pallas::ledger::addresses::Address::from_bytes(&utxo.address)
+                        .ok()
+                        .map(|a| a.to_string())
+                        .unwrap_or_default();
+                    let lovelace: u64 = utxo
+                        .lovelaces
+                        .try_into()
+                        .expect("lovelace value must fit u64");
+                    result.insert(
+                        (hash.clone(), *index),
+                        (addr, lovelace, utxo.asset_fingerprints.clone()),
+                    );
+                } else {
+                    remaining.push((hash.clone(), *index));
+                }
+            }
         } else {
-            std::collections::HashMap::new()
+            remaining.extend_from_slice(inputs);
         }
+
+        if !remaining.is_empty() {
+            if let Some(db) = self.db().await {
+                if let Ok(db_result) = db.resolve_utxos_batch(&remaining).await {
+                    result.extend(db_result);
+                }
+            }
+        }
+
+        result
     }
 
     /// Fetch epoch reward deltas from db-sync for a new epoch.
@@ -439,8 +473,12 @@ impl State {
     }
 
     /// Resolve an input by (tx_hash, output_index): check in-memory UTXOs first,
-    /// then fall back to db-sync. Returns (address, lovelace).
-    pub async fn resolve_input(&self, tx_hash: &[u8], index: i16) -> (Option<String>, u64) {
+    /// then fall back to db-sync. Returns (address, lovelace, asset_fingerprints).
+    pub async fn resolve_input(
+        &self,
+        tx_hash: &[u8],
+        index: i16,
+    ) -> (Option<String>, u64, Vec<String>) {
         if let Some(utxo) = self
             .current()
             .and_then(|s| s.utxos.get(&(tx_hash.to_vec(), index)))
@@ -452,17 +490,19 @@ impl State {
                 utxo.lovelaces
                     .try_into()
                     .expect("lovelace value must fit u64"),
+                utxo.asset_fingerprints.clone(),
             );
         }
         if let Some(db) = self.db().await {
-            if let Ok(Some((address, value))) = db.resolve_utxo(tx_hash, index).await {
+            if let Ok(Some((address, value, assets))) = db.resolve_utxo(tx_hash, index).await {
                 return (
                     Some(address),
                     value.try_into().expect("lovelace value must fit u64"),
+                    assets,
                 );
             }
         }
-        (None, 0)
+        (None, 0, vec![])
     }
 }
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AssetInfo, DelegationInfo, FeedTx, TxOutputInfo } from '../types';
+  import type { AssetInfo, DelegationInfo, FeedTx, TxInput, TxOutputInfo } from '../types';
   import { config } from '../stores';
   import { poolColor, formatTicker } from '../layout';
   import { bech32Decode } from '../bech32';
@@ -84,56 +84,142 @@
     return asset.tk ? `${base}?tk=${asset.tk}&size=128` : `${base}?size=128`;
   }
 
-  // Total asset count across visible outputs → scale thumbnails
-  let totalAssets = $derived(nonChangeOutputs.reduce((sum, o) => sum + o.assets.length, 0));
-  let thumbSize = $derived(totalAssets <= 1 ? 64 : Math.max(16, Math.floor(64 / Math.sqrt(totalAssets))));
-
   let maxOutputs = $derived(compact ? 2 : 8);
   let maxInputs = $derived(compact ? 2 : 8);
   let maxAssets = $derived(compact ? 10 : 50);
   let maxAssetsPerOutput = $derived(compact ? 5 : 25);
 
-  // Detect change outputs: match by exact address or by stake credential + address type
+  // Detect change outputs: match by address/credential, then verify no new assets were received
   function bytesToHex(bytes: Uint8Array, start: number, end: number): string {
     return Array.from(bytes.slice(start, end))
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('');
   }
 
-  let inputCreds = $derived.by(() => {
-    const addresses = new Set<string>();
-    const paymentCreds = new Set<string>();
-    const stakeCreds = new Map<string, number>(); // hex → header byte
-    for (const input of tx.inputs) {
-      if (!input.address) continue;
-      addresses.add(input.address);
-      const bytes = bech32Decode(input.address);
-      if (!bytes || bytes.length < 29) continue;
-      paymentCreds.add(bytesToHex(bytes, 1, 29));
-      if (bytes.length >= 57) {
-        stakeCreds.set(bytesToHex(bytes, 29, 57), bytes[0]);
-      }
-    }
-    return { addresses, paymentCreds, stakeCreds };
-  });
-
-  function isChange(output: TxOutputInfo): boolean {
-    const { addresses, paymentCreds, stakeCreds } = inputCreds;
-    // Rule 1: exact address match
-    if (addresses.has(output.address)) return true;
-    const bytes = bech32Decode(output.address);
-    if (!bytes || bytes.length < 29) return false;
-    // Rule 2: same payment credential
-    if (paymentCreds.has(bytesToHex(bytes, 1, 29))) return true;
-    // Rule 3: same stake credential + same address type
-    if (bytes.length >= 57) {
-      const inputHeader = stakeCreds.get(bytesToHex(bytes, 29, 57));
-      if (inputHeader !== undefined && bytes[0] >> 4 === inputHeader >> 4) return true;
-    }
-    return false;
+  interface CredGroup {
+    assets: Set<string>;
+    inputLovelace: bigint;
   }
 
-  let nonChangeOutputs = $derived(tx.outputs.filter((o) => !isChange(o)));
+  let inputCreds = $derived.by(() => {
+    const byAddress = new Map<string, CredGroup>();
+    const byPayCred = new Map<string, CredGroup>();
+    const byStakeCred = new Map<string, CredGroup & { header: number }>();
+
+    function addTo<T extends CredGroup>(map: Map<string, T>, key: string, init: () => T, input: TxInput) {
+      let group = map.get(key);
+      if (!group) {
+        group = init();
+        map.set(key, group);
+      }
+      group.inputLovelace += BigInt(input.lovelace);
+      for (const fp of input.assets ?? []) group.assets.add(fp);
+    }
+
+    for (const input of tx.inputs) {
+      if (!input.address) continue;
+      addTo(byAddress, input.address, () => ({ assets: new Set(), inputLovelace: 0n }), input);
+
+      const bytes = bech32Decode(input.address);
+      if (!bytes || bytes.length < 29) continue;
+
+      addTo(byPayCred, bytesToHex(bytes, 1, 29), () => ({ assets: new Set(), inputLovelace: 0n }), input);
+
+      if (bytes.length >= 57) {
+        addTo(
+          byStakeCred,
+          bytesToHex(bytes, 29, 57),
+          () => ({ assets: new Set(), inputLovelace: 0n, header: bytes[0] }),
+          input,
+        );
+      }
+    }
+    return { byAddress, byPayCred, byStakeCred };
+  });
+
+  // Withdrawal amount: positive means outputs received extra ADA from reward withdrawals
+  let withdrawalAmount = $derived.by(() => {
+    let totalOut = 0n;
+    let totalIn = 0n;
+    for (const o of tx.outputs) totalOut += BigInt(o.lovelace);
+    for (const i of tx.inputs) totalIn += BigInt(i.lovelace);
+    const diff = totalOut + BigInt(tx.fee) - totalIn;
+    return diff > 0n ? diff : 0n;
+  });
+
+  // Compute non-change outputs, grouping by credential to compare lovelace sums
+  let nonChangeOutputs = $derived.by(() => {
+    if (withdrawalAmount === 0n) return tx.outputs.filter((o) => !isChange(o));
+
+    // With withdrawals: group outputs by matched credential, compare lovelace sums
+    const outputGroups = new Map<CredGroup, { outputs: TxOutputInfo[]; totalLovelace: bigint }>();
+    const unmatched: TxOutputInfo[] = [];
+
+    for (const output of tx.outputs) {
+      const group = matchGroup(output);
+      if (!group) {
+        unmatched.push(output);
+        continue;
+      }
+
+      // Asset check: output has assets not in matched inputs → not change
+      if (output.assets.some((a) => !group.assets.has(a.fingerprint))) {
+        unmatched.push(output);
+        continue;
+      }
+
+      let entry = outputGroups.get(group);
+      if (!entry) {
+        entry = { outputs: [], totalLovelace: 0n };
+        outputGroups.set(group, entry);
+      }
+      entry.outputs.push(output);
+      entry.totalLovelace += BigInt(output.lovelace);
+    }
+
+    // For each group: if output lovelace > input lovelace, the excess is from withdrawals.
+    // Keep outputs with lovelace > excess (they likely received the withdrawal).
+    const result = [...unmatched];
+    for (const [group, { outputs, totalLovelace }] of outputGroups) {
+      const excess = totalLovelace - group.inputLovelace;
+      if (excess > 0n) {
+        for (const o of outputs) {
+          if (BigInt(o.lovelace) > excess) result.push(o);
+        }
+      }
+    }
+    return result;
+  });
+
+  function matchGroup(output: TxOutputInfo): CredGroup | undefined {
+    const { byAddress, byPayCred, byStakeCred } = inputCreds;
+    const addrGroup = byAddress.get(output.address);
+    if (addrGroup) return addrGroup;
+
+    const bytes = bech32Decode(output.address);
+    if (!bytes || bytes.length < 29) return undefined;
+
+    const payGroup = byPayCred.get(bytesToHex(bytes, 1, 29));
+    if (payGroup) return payGroup;
+
+    if (bytes.length >= 57) {
+      const info = byStakeCred.get(bytesToHex(bytes, 29, 57));
+      if (info && bytes[0] >> 4 === info.header >> 4) return info;
+    }
+    return undefined;
+  }
+
+  function isChange(output: TxOutputInfo): boolean {
+    const group = matchGroup(output);
+    if (!group) return false;
+    for (const asset of output.assets) {
+      if (!group.assets.has(asset.fingerprint)) return false;
+    }
+    return true;
+  }
+  // Total asset count across visible outputs → scale thumbnails
+  let totalAssets = $derived(nonChangeOutputs.reduce((sum, o) => sum + o.assets.length, 0));
+  let thumbSize = $derived(totalAssets <= 1 ? 64 : Math.max(16, Math.floor(64 / Math.sqrt(totalAssets))));
   let sortedOutputs = $derived([...nonChangeOutputs].sort((a, b) => Number(BigInt(b.lovelace) - BigInt(a.lovelace))));
   let visibleOutputs = $derived.by(() => {
     let assets = 0;

@@ -41,12 +41,13 @@ pub async fn extract_tx(
         let input_tx_hash = input.hash().to_string();
         let input_index = input.index() as i16;
         let key = (input.hash().as_ref().to_vec(), input_index);
-        let (address, lovelace) = if let Some(utxo) = block_utxos.get(&key) {
+        let (address, lovelace, assets) = if let Some(utxo) = block_utxos.get(&key) {
             (
                 pallas::ledger::addresses::Address::from_bytes(&utxo.address)
                     .ok()
                     .map(|a| a.to_string()),
                 utxo.lovelaces.try_into().ok().unwrap_or(0),
+                utxo.asset_fingerprints.clone(),
             )
         } else {
             state
@@ -58,6 +59,7 @@ pub async fn extract_tx(
             index: input_index,
             address,
             lovelace,
+            assets,
         });
     }
 
@@ -127,6 +129,7 @@ pub async fn extract_tx(
                 index: -1,
                 address: stake_addr,
                 lovelace: amount,
+                assets: vec![],
             });
         }
     }

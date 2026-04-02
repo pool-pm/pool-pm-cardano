@@ -167,6 +167,7 @@ fn decode_block_txs(
                     index: input.index() as i16,
                     address: None,
                     lovelace: 0,
+                    assets: vec![],
                 })
                 .collect();
 
@@ -240,6 +241,7 @@ fn decode_block_txs(
                         index: -1,
                         address: stake_addr,
                         lovelace: amount,
+                        assets: vec![],
                     });
                 }
             }
@@ -285,9 +287,10 @@ async fn resolve_block_inputs(txs: &mut Vec<BlockTx>, chain_state: &RwLock<State
     for tx in txs {
         for inp in &mut tx.inputs {
             let key = (hex::decode(&inp.tx_hash).unwrap_or_default(), inp.index);
-            if let Some((addr, lovelace)) = resolved.get(&key) {
+            if let Some((addr, lovelace, assets)) = resolved.get(&key) {
                 inp.address = Some(addr.clone());
                 inp.lovelace = *lovelace;
+                inp.assets = assets.clone();
             }
         }
     }

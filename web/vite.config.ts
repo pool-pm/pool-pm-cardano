@@ -9,4 +9,9 @@ export default defineConfig({
 			$lib: fileURLToPath(new URL('./src/lib', import.meta.url)),
 		},
 	},
+	server: {
+		proxy: {
+			'/events': 'http://localhost:3000',
+		},
+	},
 });

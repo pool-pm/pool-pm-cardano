@@ -7,7 +7,7 @@ use sqlx::{
 use tokio::time::Duration;
 use url::Url;
 
-use crate::model::{DRep, Pool};
+use crate::model::{asset_fingerprint, DRep, Pool};
 
 pub struct DbSync {
     db: sqlx::Pool<sqlx::Postgres>,
@@ -15,7 +15,7 @@ pub struct DbSync {
 
 impl DbSync {
     pub async fn new(url: &Url) -> Result<Self, sqlx::Error> {
-        let options = PgConnectOptions::from_url(&url)?
+        let options = PgConnectOptions::from_url(url)?
             .log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(15));
 
         let db = PgPoolOptions::new()
@@ -45,9 +45,9 @@ impl DbSync {
         &self,
         tx_hash: &[u8],
         index: i16,
-    ) -> Result<Option<(String, sqlx::types::Decimal)>, sqlx::Error> {
+    ) -> Result<Option<(String, sqlx::types::Decimal, Vec<String>)>, sqlx::Error> {
         let row = sqlx::query!(
-            r#"SELECT tx_out.address, tx_out.value
+            r#"SELECT tx_out.id, tx_out.address, tx_out.value
             FROM tx_out
             JOIN tx ON tx.id = tx_out.tx_id
             WHERE tx.hash = $1 AND tx_out.index = $2"#,
@@ -57,20 +57,48 @@ impl DbSync {
         .fetch_optional(&self.db)
         .await?;
 
-        Ok(row.map(|r| (r.address, r.value)))
+        let Some(row) = row else { return Ok(None) };
+
+        let ma_rows = sqlx::query!("SELECT ident FROM ma_tx_out WHERE tx_out_id = $1", row.id)
+            .fetch_all(&self.db)
+            .await?;
+
+        let mut assets = Vec::new();
+        if !ma_rows.is_empty() {
+            let idents: Vec<i64> = ma_rows.iter().map(|r| r.ident).collect();
+            let ma_info = sqlx::query!(
+                r#"SELECT id, policy AS "policy!", name AS "name!"
+                FROM multi_asset WHERE id = ANY($1)"#,
+                &idents
+            )
+            .fetch_all(&self.db)
+            .await?;
+            let lookup: std::collections::HashMap<i64, _> = ma_info
+                .into_iter()
+                .map(|r| (r.id, (r.policy, r.name)))
+                .collect();
+            for r in &ma_rows {
+                if let Some((policy, name)) = lookup.get(&r.ident) {
+                    assets.push(asset_fingerprint(policy, name));
+                }
+            }
+        }
+
+        Ok(Some((row.address, row.value, assets)))
     }
 
     pub async fn resolve_utxos_batch(
         &self,
         inputs: &[(Vec<u8>, i16)],
-    ) -> Result<std::collections::HashMap<(Vec<u8>, i16), (String, u64)>, sqlx::Error> {
+    ) -> Result<std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<String>)>, sqlx::Error>
+    {
         if inputs.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
         let hashes: Vec<Vec<u8>> = inputs.iter().map(|(h, _)| h.clone()).collect();
         let indices: Vec<i16> = inputs.iter().map(|(_, i)| *i).collect();
         let rows = sqlx::query!(
-            r#"SELECT tx.hash, tx_out.index AS "index!: i16", tx_out.address, tx_out.value
+            r#"SELECT tx.hash, tx_out.index AS "index!: i16", tx_out.id, tx_out.address, tx_out.value
             FROM tx_out
             JOIN tx ON tx.id = tx_out.tx_id
             WHERE (tx.hash, tx_out.index) IN (SELECT * FROM UNNEST($1::bytea[], $2::smallint[]))"#,
@@ -80,13 +108,58 @@ impl DbSync {
         .fetch_all(&self.db)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                let lovelace: u64 = r.value.try_into().expect("lovelace must fit u64");
-                ((r.hash, r.index), (r.address, lovelace))
-            })
-            .collect())
+        // Build id→key lookup and initial result map from first query
+        let mut id_to_key: std::collections::HashMap<i64, (Vec<u8>, i16)> =
+            std::collections::HashMap::with_capacity(rows.len());
+        let mut result: std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<String>)> =
+            std::collections::HashMap::with_capacity(rows.len());
+        let mut tx_out_ids: Vec<i64> = Vec::with_capacity(rows.len());
+
+        for r in rows {
+            let lovelace: u64 = r.value.try_into().expect("lovelace must fit u64");
+            let key = (r.hash, r.index);
+            id_to_key.insert(r.id, key.clone());
+            tx_out_ids.push(r.id);
+            result.insert(key, (r.address, lovelace, vec![]));
+        }
+
+        // Fetch assets in two simple indexed lookups (no join for Postgres to misoptimize)
+        if !tx_out_ids.is_empty() {
+            // Step 1: ma_tx_out by tx_out_id → (tx_out_id, ident)
+            let ma_rows = sqlx::query!(
+                r#"SELECT tx_out_id, ident FROM ma_tx_out WHERE tx_out_id = ANY($1)"#,
+                &tx_out_ids
+            )
+            .fetch_all(&self.db)
+            .await?;
+
+            if !ma_rows.is_empty() {
+                // Step 2: multi_asset by id → (id, policy, name)
+                let idents: Vec<i64> = ma_rows.iter().map(|r| r.ident).collect();
+                let ma_info: std::collections::HashMap<i64, (Vec<u8>, Vec<u8>)> = sqlx::query!(
+                    r#"SELECT id, policy AS "policy!", name AS "name!"
+                    FROM multi_asset WHERE id = ANY($1)"#,
+                    &idents
+                )
+                .fetch_all(&self.db)
+                .await?
+                .into_iter()
+                .map(|r| (r.id, (r.policy, r.name)))
+                .collect();
+
+                for r in &ma_rows {
+                    if let Some((policy, name)) = ma_info.get(&r.ident) {
+                        if let Some(key) = id_to_key.get(&r.tx_out_id) {
+                            if let Some(entry) = result.get_mut(key) {
+                                entry.2.push(asset_fingerprint(policy, name));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     pub async fn pools(&self, last_tx_id: i64) -> Result<HashMap<String, Pool>, sqlx::Error> {

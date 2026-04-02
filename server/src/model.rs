@@ -56,6 +56,8 @@ pub fn drep_bech32_id(bytes: &[u8]) -> String {
 pub struct TxOutput {
     pub lovelaces: Decimal,
     pub address: Vec<u8>,
+    #[serde(default)]
+    pub asset_fingerprints: Vec<String>,
 }
 
 /// Compute CIP-14 asset fingerprint from policy_id and asset_name.

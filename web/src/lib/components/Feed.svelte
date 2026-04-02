@@ -3,7 +3,7 @@
   import { slide } from 'svelte/transition';
   import { sections, config, pool, drep, blockCount } from '../stores';
   import type { GenesisConfig, Section } from '../types';
-  import { TX_WIDTH, TX_GAP, FLIP_DURATION, poolColor, formatTicker, layoutGrid } from '../layout';
+  import { TX_WIDTH, FLIP_DURATION, poolColor, formatTicker, layoutGrid } from '../layout';
   import Transaction from './Transaction.svelte';
 
   const MAX_BLOCKS = 30;

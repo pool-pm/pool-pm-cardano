@@ -46,6 +46,10 @@ pub struct Args {
     #[clap(long, default_value = "8")]
     pub snapshot_depth: usize,
 
+    /// Clear cached UTXOs from snapshot on startup (forces re-resolution from db-sync)
+    #[clap(long)]
+    pub clear_utxos: bool,
+
     /// Verbose logs
     #[clap(short, long)]
     pub verbose: bool,

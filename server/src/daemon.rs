@@ -146,6 +146,12 @@ pub fn run(args: Args) -> Result<(), Error> {
         if let Some((snapshot, fi)) = State::load_snapshot(&snapshot_path, args.network.magic()) {
             let snap_slot = snapshot.slot;
             let snap_hash = snapshot.block_hash.clone().unwrap_or_default();
+            let mut snapshot = snapshot;
+            if args.clear_utxos {
+                let count = snapshot.utxos.len();
+                snapshot.utxos = Default::default();
+                info!(cleared = count, "cleared cached UTXOs from snapshot");
+            }
             state.restore_from_snapshot(snapshot);
             state.feed_index = fi;
 

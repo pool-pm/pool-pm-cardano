@@ -15,7 +15,7 @@ use crate::cip68;
 use crate::event::Event;
 use crate::event_bus::EventBus;
 use crate::mempool::extract_tx;
-use crate::model::{pool_bech32_id, TxOutput};
+use crate::model::{asset_fingerprint, pool_bech32_id, TxOutput};
 use crate::nftcdn::NftcdnConfig;
 use crate::pallas::{
     stake_credential_bytes, stake_credential_from_address_bytes, MultiEraTxExt, PoolUpdate,
@@ -126,7 +126,7 @@ impl Worker {
                     } else if let Some(utxo) = snap.and_then(|s| s.utxos.get(&key)) {
                         Some((utxo.address.clone(), utxo.lovelaces))
                     } else {
-                        let (addr_str, lovelace) = state
+                        let (addr_str, lovelace, _assets) = state
                             .resolve_input(input.hash().as_ref(), input.index() as i16)
                             .await;
                         addr_str
@@ -194,11 +194,19 @@ impl Worker {
                             }
                         }
                     }
+                    let mut asset_fingerprints = Vec::new();
+                    for pa in output.value().assets().iter() {
+                        let policy_id = pa.policy().as_ref();
+                        for a in pa.assets().iter() {
+                            asset_fingerprints.push(asset_fingerprint(policy_id, a.name()));
+                        }
+                    }
                     produced.insert(
                         (hash.as_ref().to_vec(), idx as i16),
                         TxOutput {
                             lovelaces,
                             address: addr,
+                            asset_fingerprints,
                         },
                     );
                 }
