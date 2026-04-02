@@ -18,7 +18,7 @@
   let feedWidth = $state(0);
   let feedHeight = $state(0);
   const LANDSCAPE_MARGIN = 16; // vertical breathing room in landscape
-  let landscape = $state(false);
+  let landscape = $state(typeof window !== 'undefined' && window.innerWidth > window.innerHeight);
   let actualGridWidths = $state<Record<string, number>>({});
 
   // Section positioning: absolute layout with smooth CSS transitions
@@ -436,6 +436,7 @@
         class="section"
         class:mempool={isMempool}
         class:animated
+        class:measured={canvasSize > 0}
         class:has-line={i > 0 && (layout?.spacing ?? 0) > 0}
         style:border-color={colors.border}
         style:background-color={colors.bg}
@@ -451,7 +452,7 @@
         }}
         use:trackSection={section.id}
         use:introScale
-        out:slide={{ duration: FLIP_DURATION, axis: landscape ? 'x' : 'y' }}
+        out:slide|local={{ duration: isMempool ? 0 : FLIP_DURATION, axis: landscape ? 'x' : 'y' }}
       >
         <div class="block-header">
           {#if isMempool && $config?.genesis}
@@ -637,6 +638,10 @@
     right: 0;
     top: 0;
     margin: 0;
+  }
+
+  .section:not(.measured) {
+    visibility: hidden;
   }
 
   .section.animated {
