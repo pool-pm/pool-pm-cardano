@@ -41,19 +41,35 @@ pub async fn extract_tx(
         let input_tx_hash = input.hash().to_string();
         let input_index = input.index() as i16;
         let key = (input.hash().as_ref().to_vec(), input_index);
-        let (address, lovelace, assets) = if let Some(utxo) = block_utxos.get(&key) {
+        let (address, lovelace, raw_assets) = if let Some(utxo) = block_utxos.get(&key) {
             (
                 pallas::ledger::addresses::Address::from_bytes(&utxo.address)
                     .ok()
                     .map(|a| a.to_string()),
                 utxo.lovelaces.try_into().ok().unwrap_or(0),
-                utxo.asset_fingerprints.clone(),
+                utxo.assets.clone(),
             )
         } else {
             state
                 .resolve_input(input.hash().as_ref(), input_index)
                 .await
         };
+        let assets = raw_assets
+            .iter()
+            .map(|(fp, raw)| {
+                let decimals = state
+                    .current()
+                    .and_then(|s| s.decimals.get(fp).copied())
+                    .unwrap_or(0);
+                let tk = nftcdn.compute_tk(fp, "preview", 128);
+                AssetInfo {
+                    fingerprint: fp.clone(),
+                    name: None,
+                    quantity: format_quantity(*raw, decimals),
+                    tk,
+                }
+            })
+            .collect();
         inputs.push(TxInput {
             tx_hash: input_tx_hash,
             index: input_index,

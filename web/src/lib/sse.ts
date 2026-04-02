@@ -14,6 +14,7 @@ function resolveInputs(txs: BlockTx[]): void {
         if (output) {
           input.address = output.address;
           input.lovelace = output.lovelace;
+          input.assets = output.assets;
         }
       }
     }

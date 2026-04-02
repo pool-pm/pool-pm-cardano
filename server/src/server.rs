@@ -268,7 +268,11 @@ fn decode_block_txs(
 }
 
 /// Resolve input addresses for a list of transactions via batch db-sync query.
-async fn resolve_block_inputs(txs: &mut Vec<BlockTx>, chain_state: &RwLock<State>) {
+async fn resolve_block_inputs(
+    txs: &mut Vec<BlockTx>,
+    chain_state: &RwLock<State>,
+    nftcdn: &NftcdnConfig,
+) {
     let input_keys: Vec<(Vec<u8>, i16)> = txs
         .iter()
         .flat_map(|tx| {
@@ -280,9 +284,14 @@ async fn resolve_block_inputs(txs: &mut Vec<BlockTx>, chain_state: &RwLock<State
     if input_keys.is_empty() {
         return;
     }
-    let (resolved, to_cache) = {
+    let (resolved, to_cache, decimals) = {
         let guard = chain_state.read().await;
-        guard.resolve_utxos_batch(&input_keys).await
+        let (resolved, to_cache) = guard.resolve_utxos_batch(&input_keys).await;
+        let decimals = guard
+            .current()
+            .map(|s| s.decimals.clone())
+            .unwrap_or_default();
+        (resolved, to_cache, decimals)
     };
 
     // Cache unspent UTXOs so subsequent feed loads skip db-sync
@@ -298,10 +307,22 @@ async fn resolve_block_inputs(txs: &mut Vec<BlockTx>, chain_state: &RwLock<State
     for tx in txs {
         for inp in &mut tx.inputs {
             let key = (hex::decode(&inp.tx_hash).unwrap_or_default(), inp.index);
-            if let Some((addr, lovelace, assets)) = resolved.get(&key) {
+            if let Some((addr, lovelace, raw_assets)) = resolved.get(&key) {
                 inp.address = Some(addr.clone());
                 inp.lovelace = *lovelace;
-                inp.assets = assets.clone();
+                inp.assets = raw_assets
+                    .iter()
+                    .map(|(fp, raw)| {
+                        let dec = decimals.get(fp).copied().unwrap_or(0);
+                        let tk = nftcdn.compute_tk(fp, "preview", 128);
+                        AssetInfo {
+                            fingerprint: fp.clone(),
+                            name: None,
+                            quantity: format_quantity(*raw, dec),
+                            tk,
+                        }
+                    })
+                    .collect();
             }
         }
     }
@@ -367,7 +388,7 @@ async fn send_replay_blocks(
                     !block.filter_by_delegators,
                 );
                 drop(state_guard);
-                resolve_block_inputs(&mut txs, chain_state).await;
+                resolve_block_inputs(&mut txs, chain_state, nftcdn).await;
                 for tx in &mut txs {
                     tx.stake_credentials = filter::extract_stake_credentials(tx);
                 }

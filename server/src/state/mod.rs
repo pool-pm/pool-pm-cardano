@@ -361,13 +361,13 @@ impl State {
         &self,
         inputs: &[(Vec<u8>, i16)],
     ) -> (
-        std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<String>)>,
+        std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<(String, u64)>)>,
         Vec<((Vec<u8>, i16), TxOutput)>,
     ) {
-        let mut result =
-            std::collections::HashMap::<(Vec<u8>, i16), (String, u64, Vec<String>)>::with_capacity(
-                inputs.len(),
-            );
+        let mut result = std::collections::HashMap::<
+            (Vec<u8>, i16),
+            (String, u64, Vec<(String, u64)>),
+        >::with_capacity(inputs.len());
         let mut remaining = Vec::new();
 
         if let Some(snap) = self.current() {
@@ -383,7 +383,7 @@ impl State {
                         .expect("lovelace value must fit u64");
                     result.insert(
                         (hash.clone(), *index),
-                        (addr, lovelace, utxo.asset_fingerprints.clone()),
+                        (addr, lovelace, utxo.assets.clone()),
                     );
                 } else {
                     remaining.push((hash.clone(), *index));
@@ -410,7 +410,7 @@ impl State {
                                 TxOutput {
                                     lovelaces: rust_decimal::Decimal::from(lovelace),
                                     address: address_bytes,
-                                    asset_fingerprints: assets.clone(),
+                                    assets: assets.clone(),
                                 },
                             ));
                         }
@@ -496,12 +496,12 @@ impl State {
     }
 
     /// Resolve an input by (tx_hash, output_index): check in-memory UTXOs first,
-    /// then fall back to db-sync. Returns (address, lovelace, asset_fingerprints).
+    /// then fall back to db-sync. Returns (address, lovelace, assets).
     pub async fn resolve_input(
         &self,
         tx_hash: &[u8],
         index: i16,
-    ) -> (Option<String>, u64, Vec<String>) {
+    ) -> (Option<String>, u64, Vec<(String, u64)>) {
         if let Some(utxo) = self
             .current()
             .and_then(|s| s.utxos.get(&(tx_hash.to_vec(), index)))
@@ -513,7 +513,7 @@ impl State {
                 utxo.lovelaces
                     .try_into()
                     .expect("lovelace value must fit u64"),
-                utxo.asset_fingerprints.clone(),
+                utxo.assets.clone(),
             );
         }
         if let Some(db) = self.db().await {

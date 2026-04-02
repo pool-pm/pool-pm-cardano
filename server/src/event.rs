@@ -108,7 +108,7 @@ pub struct TxInput {
     #[serde(with = "string")]
     pub lovelace: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub assets: Vec<String>,
+    pub assets: Vec<AssetInfo>,
 }
 
 #[derive(Clone, Serialize)]

@@ -17,7 +17,7 @@ export interface TxInput {
   index: number;
   address: string | null;
   lovelace: string;
-  assets?: string[];
+  assets?: AssetInfo[];
 }
 
 export interface TxOutputInfo {

@@ -45,7 +45,7 @@ impl DbSync {
         &self,
         tx_hash: &[u8],
         index: i16,
-    ) -> Result<Option<(String, sqlx::types::Decimal, Vec<String>)>, sqlx::Error> {
+    ) -> Result<Option<(String, sqlx::types::Decimal, Vec<(String, u64)>)>, sqlx::Error> {
         let row = sqlx::query!(
             r#"SELECT tx_out.id, tx_out.address, tx_out.value
             FROM tx_out
@@ -59,9 +59,12 @@ impl DbSync {
 
         let Some(row) = row else { return Ok(None) };
 
-        let ma_rows = sqlx::query!("SELECT ident FROM ma_tx_out WHERE tx_out_id = $1", row.id)
-            .fetch_all(&self.db)
-            .await?;
+        let ma_rows = sqlx::query!(
+            r#"SELECT ident, quantity AS "quantity!" FROM ma_tx_out WHERE tx_out_id = $1"#,
+            row.id,
+        )
+        .fetch_all(&self.db)
+        .await?;
 
         let mut assets = Vec::new();
         if !ma_rows.is_empty() {
@@ -79,7 +82,8 @@ impl DbSync {
                 .collect();
             for r in &ma_rows {
                 if let Some((policy, name)) = lookup.get(&r.ident) {
-                    assets.push(asset_fingerprint(policy, name));
+                    let qty: u64 = r.quantity.try_into().unwrap_or(0);
+                    assets.push((asset_fingerprint(policy, name), qty));
                 }
             }
         }
@@ -87,13 +91,13 @@ impl DbSync {
         Ok(Some((row.address, row.value, assets)))
     }
 
-    /// Batch-resolve UTXOs. Returns (address, lovelace, asset_fingerprints, unspent).
+    /// Batch-resolve UTXOs. Returns (address, lovelace, assets, unspent).
     /// `unspent` is true when consumed_by_tx_id IS NULL — callers can cache these.
     pub async fn resolve_utxos_batch(
         &self,
         inputs: &[(Vec<u8>, i16)],
     ) -> Result<
-        std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<String>, bool)>,
+        std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<(String, u64)>, bool)>,
         sqlx::Error,
     > {
         if inputs.is_empty() {
@@ -118,7 +122,7 @@ impl DbSync {
             std::collections::HashMap::with_capacity(rows.len());
         let mut result: std::collections::HashMap<
             (Vec<u8>, i16),
-            (String, u64, Vec<String>, bool),
+            (String, u64, Vec<(String, u64)>, bool),
         > = std::collections::HashMap::with_capacity(rows.len());
         let mut tx_out_ids: Vec<i64> = Vec::with_capacity(rows.len());
 
@@ -135,7 +139,7 @@ impl DbSync {
         if !tx_out_ids.is_empty() {
             // Step 1: ma_tx_out by tx_out_id → (tx_out_id, ident)
             let ma_rows = sqlx::query!(
-                r#"SELECT tx_out_id, ident FROM ma_tx_out WHERE tx_out_id = ANY($1)"#,
+                r#"SELECT tx_out_id, ident, quantity AS "quantity!" FROM ma_tx_out WHERE tx_out_id = ANY($1)"#,
                 &tx_out_ids
             )
             .fetch_all(&self.db)
@@ -159,7 +163,8 @@ impl DbSync {
                     if let Some((policy, name)) = ma_info.get(&r.ident) {
                         if let Some(key) = id_to_key.get(&r.tx_out_id) {
                             if let Some(entry) = result.get_mut(key) {
-                                entry.2.push(asset_fingerprint(policy, name)); // .2 = assets
+                                let qty: u64 = r.quantity.try_into().unwrap_or(0);
+                                entry.2.push((asset_fingerprint(policy, name), qty));
                             }
                         }
                     }

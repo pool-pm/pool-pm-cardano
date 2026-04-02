@@ -57,7 +57,7 @@ pub struct TxOutput {
     pub lovelaces: Decimal,
     pub address: Vec<u8>,
     #[serde(default)]
-    pub asset_fingerprints: Vec<String>,
+    pub assets: Vec<(String, u64)>,
 }
 
 /// Compute CIP-14 asset fingerprint from policy_id and asset_name.

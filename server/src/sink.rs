@@ -194,11 +194,13 @@ impl Worker {
                             }
                         }
                     }
-                    let mut asset_fingerprints = Vec::new();
+                    let mut assets = Vec::new();
                     for pa in output.value().assets().iter() {
                         let policy_id = pa.policy().as_ref();
                         for a in pa.assets().iter() {
-                            asset_fingerprints.push(asset_fingerprint(policy_id, a.name()));
+                            if let Some(raw) = a.output_coin() {
+                                assets.push((asset_fingerprint(policy_id, a.name()), raw));
+                            }
                         }
                     }
                     produced.insert(
@@ -206,7 +208,7 @@ impl Worker {
                         TxOutput {
                             lovelaces,
                             address: addr,
-                            asset_fingerprints,
+                            assets,
                         },
                     );
                 }
