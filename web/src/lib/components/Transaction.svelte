@@ -126,9 +126,13 @@
       addTo(byPayCred, bytesToHex(bytes, 1, 29), () => ({ assets: new Set(), inputLovelace: 0n }), input);
 
       if (bytes.length >= 57) {
+        // Key script-payment bit into the group so wallet addresses (key pay)
+        // and DEX/contract addresses (script pay) sharing the same stake
+        // credential form separate groups with separate asset sets.
+        const scriptBit = (bytes[0] >> 4) & 1;
         addTo(
           byStakeCred,
-          bytesToHex(bytes, 29, 57),
+          scriptBit + bytesToHex(bytes, 29, 57),
           () => ({ assets: new Set(), inputLovelace: 0n, header: bytes[0] }),
           input,
         );
@@ -203,7 +207,8 @@
     if (payGroup) return payGroup;
 
     if (bytes.length >= 57) {
-      const info = byStakeCred.get(bytesToHex(bytes, 29, 57));
+      const scriptBit = (bytes[0] >> 4) & 1;
+      const info = byStakeCred.get(scriptBit + bytesToHex(bytes, 29, 57));
       if (info && bytes[0] >> 4 === info.header >> 4) return info;
     }
     return undefined;
