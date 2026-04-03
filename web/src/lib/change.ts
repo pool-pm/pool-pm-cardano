@@ -110,13 +110,6 @@ export function matchGroup(output: TxOutputInfo, creds: InputCreds): CredGroup |
   return undefined;
 }
 
-/** True if the address has a script payment credential (DEX/contract). */
-function isScriptPayment(address: string): boolean {
-  const bytes = bech32Decode(address);
-  if (!bytes || bytes.length === 0) return false;
-  return ((bytes[0] >> 4) & 1) === 1;
-}
-
 /** Strip change assets from an output, keeping only assets that are new or
  *  whose quantity exceeds what the input group had. */
 function stripChangeAssets(output: TxOutputInfo, group: CredGroup): TxOutputInfo {
