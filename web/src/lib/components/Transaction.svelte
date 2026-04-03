@@ -34,12 +34,7 @@
   }
 
   let visibleDelegations: DelegationInfo[] = $derived(
-    (tx.delegations ?? []).filter(
-      (d) =>
-        (d.from_pool_id || d.to_pool_id || d.from_drep_id || d.to_drep_id) &&
-        !(d.from_pool_id && d.from_pool_id === d.to_pool_id) &&
-        !(d.from_drep_id && d.from_drep_id === d.to_drep_id),
-    ),
+    (tx.delegations ?? []).filter((d) => d.from_pool_id || d.to_pool_id || d.from_drep_id || d.to_drep_id),
   );
 
   function formatAda(lovelace: string, sign?: string): string {
