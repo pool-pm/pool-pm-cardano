@@ -336,11 +336,6 @@
     white-space: nowrap;
   }
 
-  .addr.handle {
-    color: rgb(255 255 255 / 0.7);
-    font-weight: 600;
-  }
-
   .arrow {
     color: var(--section-color, var(--accent));
     text-align: center;
