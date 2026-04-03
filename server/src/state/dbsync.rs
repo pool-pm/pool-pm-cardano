@@ -457,16 +457,17 @@ impl DbSync {
 
     /// Find the most recent block at or before the given slot.
     /// Used at startup to find a valid intersection point for backfill.
-    /// Fetch all current ADA Handle owners (classic handles, policy f0ff48...).
-    pub async fn handles(&self) -> Result<Vec<(String, String)>, sqlx::Error> {
+    /// Fetch all current ADA Handle owners for the given policy ID.
+    pub async fn handles(&self, policy: &[u8]) -> Result<Vec<(String, String)>, sqlx::Error> {
         let rows = sqlx::query!(
             r#"SELECT convert_from(ma.name, 'UTF8') AS "handle!", tx_out.address AS "address!"
             FROM tx_out
             JOIN ma_tx_out ON ma_tx_out.tx_out_id = tx_out.id
             JOIN multi_asset ma ON ma.id = ma_tx_out.ident
-            WHERE ma.policy = '\xf0ff48bbb7bbe9d59a40f1ce90e9e9d0ff5002ec48f232b49ca0fb9a'
+            WHERE ma.policy = $1
             AND tx_out.consumed_by_tx_id IS NULL
-            AND ma.name != '' AND ma.name IS NOT NULL"#
+            AND ma.name != '' AND ma.name IS NOT NULL"#,
+            policy
         )
         .fetch_all(&self.db)
         .await?;

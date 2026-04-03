@@ -60,6 +60,12 @@ pub struct TxOutput {
     pub assets: Vec<(String, u64)>,
 }
 
+/// ADA Handle classic policy ID (same on all networks).
+pub const HANDLE_POLICY: [u8; 28] = [
+    0xf0, 0xff, 0x48, 0xbb, 0xb7, 0xbb, 0xe9, 0xd5, 0x9a, 0x40, 0xf1, 0xce, 0x90, 0xe9, 0xe9, 0xd0,
+    0xff, 0x50, 0x02, 0xec, 0x48, 0xf2, 0x32, 0xb4, 0x9c, 0xa0, 0xfb, 0x9a,
+];
+
 /// Compute CIP-14 asset fingerprint from policy_id and asset_name.
 /// Returns bech32 string with "asset" HRP (e.g. "asset1...").
 pub fn asset_fingerprint(policy_id: &[u8], asset_name: &[u8]) -> String {

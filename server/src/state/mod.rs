@@ -7,7 +7,7 @@ use url::Url;
 
 use crate::cip26;
 use crate::cip68;
-use crate::model::{DRep, Pool, TxOutput};
+use crate::model::{DRep, Pool, TxOutput, HANDLE_POLICY};
 use crate::pallas::PoolUpdate;
 use dbsync::DbSync;
 pub use feed_index::FeedIndex;
@@ -74,7 +74,7 @@ impl State {
             return;
         }
         let rows = match self.db().await {
-            Some(db) => match db.handles().await {
+            Some(db) => match db.handles(&HANDLE_POLICY).await {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!("failed to fetch handles: {e}");
@@ -191,7 +191,7 @@ impl State {
         );
 
         tracing::info!("Fetching ADA Handle owners...");
-        let handle_rows = db.handles().await?;
+        let handle_rows = db.handles(&HANDLE_POLICY).await?;
         let mut handle_by_address: HashMap<String, Vec<String>> = HashMap::new();
         let mut address_by_handle: HashMap<String, String> = HashMap::new();
         for (handle, addr) in &handle_rows {

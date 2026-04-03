@@ -13,15 +13,10 @@ use pallas::crypto::hash::Hasher;
 
 use crate::cip68;
 
-/// ADA Handle classic policy ID (f0ff48bbb7bbe9d59a40f1ce90e9e9d0ff5002ec48f232b49ca0fb9a).
-const HANDLE_POLICY: [u8; 28] = [
-    0xf0, 0xff, 0x48, 0xbb, 0xb7, 0xbb, 0xe9, 0xd5, 0x9a, 0x40, 0xf1, 0xce, 0x90, 0xe9, 0xe9, 0xd0,
-    0xff, 0x50, 0x02, 0xec, 0x48, 0xf2, 0x32, 0xb4, 0x9c, 0xa0, 0xfb, 0x9a,
-];
 use crate::event::Event;
 use crate::event_bus::EventBus;
 use crate::mempool::extract_tx;
-use crate::model::{asset_fingerprint, pool_bech32_id, TxOutput};
+use crate::model::{asset_fingerprint, pool_bech32_id, TxOutput, HANDLE_POLICY};
 use crate::nftcdn::NftcdnConfig;
 use crate::pallas::{
     stake_credential_bytes, stake_credential_from_address_bytes, MultiEraTxExt, PoolUpdate,
