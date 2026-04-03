@@ -168,6 +168,7 @@ fn decode_block_txs(
                     address: None,
                     lovelace: 0,
                     assets: vec![],
+                    handle: None,
                 })
                 .collect();
 
@@ -213,10 +214,14 @@ fn decode_block_txs(
                         })
                         .collect();
 
+                    let handle = state
+                        .and_then(|s| s.current())
+                        .and_then(|s| s.handle_for(&address));
                     TxOutputInfo {
                         address,
                         lovelace,
                         assets,
+                        handle,
                     }
                 })
                 .collect();
@@ -242,6 +247,7 @@ fn decode_block_txs(
                         address: stake_addr,
                         lovelace: amount,
                         assets: vec![],
+                        handle: None,
                     });
                 }
             }
@@ -284,14 +290,15 @@ async fn resolve_block_inputs(
     if input_keys.is_empty() {
         return;
     }
-    let (resolved, to_cache, decimals) = {
+    let (resolved, to_cache, decimals, handle_by_address) = {
         let guard = chain_state.read().await;
         let (resolved, to_cache) = guard.resolve_utxos_batch(&input_keys).await;
-        let decimals = guard
-            .current()
-            .map(|s| s.decimals.clone())
+        let snap = guard.current();
+        let decimals = snap.map(|s| s.decimals.clone()).unwrap_or_default();
+        let handle_by_address = snap
+            .map(|s| s.handle_by_address.clone())
             .unwrap_or_default();
-        (resolved, to_cache, decimals)
+        (resolved, to_cache, decimals, handle_by_address)
     };
 
     // Cache unspent UTXOs so subsequent feed loads skip db-sync
@@ -310,6 +317,9 @@ async fn resolve_block_inputs(
             if let Some((addr, lovelace, raw_assets)) = resolved.get(&key) {
                 inp.address = Some(addr.clone());
                 inp.lovelace = *lovelace;
+                inp.handle = handle_by_address
+                    .get(addr)
+                    .and_then(|hs| hs.iter().min_by_key(|h| h.len()).cloned());
                 inp.assets = raw_assets
                     .iter()
                     .map(|(fp, raw)| {

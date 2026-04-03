@@ -50,6 +50,10 @@ pub struct Args {
     #[clap(long)]
     pub clear_utxos: bool,
 
+    /// Refresh ADA Handle cache from db-sync on startup
+    #[clap(long)]
+    pub refresh_handles: bool,
+
     /// Verbose logs
     #[clap(short, long)]
     pub verbose: bool,

@@ -212,7 +212,11 @@
                 <span class="more-outputs">+{totalHidden} asset{totalHidden > 1 ? 's' : ''}</span>
               {/if}
             {/if}
-            <span class="addr mono">{output.address}</span>
+            {#if output.handle}
+              <span class="addr mono handle">{'$'}{output.handle}</span>
+            {:else}
+              <span class="addr mono">{output.address}</span>
+            {/if}
           </div>
         {/each}
         {#if visibleOutputs.length === 0}
@@ -227,7 +231,11 @@
       <div class="addr-list">
         {#each visibleInputs as input}
           <div class="addr-item">
-            <span class="addr mono">{input.address ?? '???'}</span>
+            {#if input.handle}
+              <span class="addr mono handle">{'$'}{input.handle}</span>
+            {:else}
+              <span class="addr mono">{input.address ?? '???'}</span>
+            {/if}
           </div>
         {/each}
         {#if hiddenInputCount > 0}
@@ -326,6 +334,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .addr.handle {
+    color: rgb(255 255 255 / 0.7);
+    font-weight: 600;
   }
 
   .arrow {

@@ -18,12 +18,14 @@ export interface TxInput {
   address: string | null;
   lovelace: string;
   assets?: AssetInfo[];
+  handle?: string;
 }
 
 export interface TxOutputInfo {
   address: string;
   lovelace: string;
   assets: AssetInfo[];
+  handle?: string;
 }
 
 export interface AssetInfo {

@@ -70,12 +70,16 @@ pub async fn extract_tx(
                 }
             })
             .collect();
+        let handle = address
+            .as_ref()
+            .and_then(|a| state.current().and_then(|s| s.handle_for(a)));
         inputs.push(TxInput {
             tx_hash: input_tx_hash,
             index: input_index,
             address,
             lovelace,
             assets,
+            handle,
         });
     }
 
@@ -121,10 +125,12 @@ pub async fn extract_tx(
                 })
                 .collect();
 
+            let handle = state.current().and_then(|s| s.handle_for(&address));
             TxOutputInfo {
                 address,
                 lovelace,
                 assets,
+                handle,
             }
         })
         .collect();
@@ -146,6 +152,7 @@ pub async fn extract_tx(
                 address: stake_addr,
                 lovelace: amount,
                 assets: vec![],
+                handle: None,
             });
         }
     }

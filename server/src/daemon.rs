@@ -152,8 +152,21 @@ pub fn run(args: Args) -> Result<(), Error> {
                 snapshot.utxos = Default::default();
                 info!(cleared = count, "cleared cached UTXOs from snapshot");
             }
+            if args.refresh_handles {
+                let count = snapshot.address_by_handle.len();
+                snapshot.handle_by_address = Default::default();
+                snapshot.address_by_handle = Default::default();
+                info!(cleared = count, "cleared ADA Handle cache from snapshot");
+            }
             state.restore_from_snapshot(snapshot);
             state.feed_index = fi;
+            {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(state.populate_handles());
+            }
 
             if let Some(snap) = state.current() {
                 info!(

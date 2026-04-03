@@ -29,6 +29,21 @@ pub struct BlockSnapshot {
     pub dreps: HashMap<Vec<u8>, DRep>,
     /// Asset fingerprint → decimals (non-zero only, from CIP-26 + CIP-68)
     pub decimals: HashMap<String, u8>,
+    /// ADA Handle: address → list of handle names owned
+    #[serde(default)]
+    pub handle_by_address: HashMap<String, Vec<String>>,
+    /// ADA Handle: handle name → owner address
+    #[serde(default)]
+    pub address_by_handle: HashMap<String, String>,
+}
+
+impl BlockSnapshot {
+    /// Look up the shortest ADA Handle for an address, if any.
+    pub fn handle_for(&self, address: &str) -> Option<String> {
+        self.handle_by_address
+            .get(address)
+            .and_then(|handles| handles.iter().min_by_key(|h| h.len()).map(|h| h.clone()))
+    }
 }
 
 pub struct State {
@@ -45,6 +60,40 @@ impl State {
             db_url,
             db: tokio::sync::OnceCell::new(),
             feed_index: FeedIndex::new(),
+        }
+    }
+
+    /// Populate ADA Handle cache from db-sync if empty.
+    pub async fn populate_handles(&mut self) {
+        let is_empty = self
+            .history
+            .last()
+            .map(|s| s.address_by_handle.is_empty())
+            .unwrap_or(true);
+        if !is_empty {
+            return;
+        }
+        let rows = match self.db().await {
+            Some(db) => match db.handles().await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("failed to fetch handles: {e}");
+                    return;
+                }
+            },
+            None => return,
+        };
+        tracing::info!("Populating {} ADA Handles from db-sync", rows.len());
+        let snap = self.history.last_mut().unwrap();
+        for (handle, addr) in rows {
+            if handle.is_empty() {
+                continue;
+            }
+            snap.handle_by_address
+                .entry(addr.clone())
+                .or_default()
+                .push(handle.clone());
+            snap.address_by_handle.insert(handle, addr);
         }
     }
 
@@ -141,6 +190,19 @@ impl State {
             decimals.len()
         );
 
+        tracing::info!("Fetching ADA Handle owners...");
+        let handle_rows = db.handles().await?;
+        let mut handle_by_address: HashMap<String, Vec<String>> = HashMap::new();
+        let mut address_by_handle: HashMap<String, String> = HashMap::new();
+        for (handle, addr) in &handle_rows {
+            handle_by_address
+                .entry(addr.clone())
+                .or_default()
+                .push(handle.clone());
+            address_by_handle.insert(handle.clone(), addr.clone());
+        }
+        tracing::info!("{} ADA Handles resolved", handle_rows.len());
+
         self.history.clear();
         self.history.push(BlockSnapshot {
             slot,
@@ -156,6 +218,8 @@ impl State {
             stakes,
             rewards,
             decimals,
+            handle_by_address,
+            address_by_handle,
         });
         self.feed_index = FeedIndex::new();
 
@@ -248,6 +312,8 @@ impl State {
 
         let dreps = prev.dreps.clone();
         let decimals = prev.decimals.clone();
+        let handle_by_address = prev.handle_by_address.clone();
+        let address_by_handle = prev.address_by_handle.clone();
         self.history.push(BlockSnapshot {
             slot,
             block_hash: Some(block_hash),
@@ -262,6 +328,8 @@ impl State {
             stakes,
             rewards,
             decimals,
+            handle_by_address,
+            address_by_handle,
         });
 
         const MAX_HISTORY: usize = 2160;

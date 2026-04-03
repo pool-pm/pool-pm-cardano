@@ -12,6 +12,12 @@ use tracing::{info, warn};
 use pallas::crypto::hash::Hasher;
 
 use crate::cip68;
+
+/// ADA Handle classic policy ID (f0ff48bbb7bbe9d59a40f1ce90e9e9d0ff5002ec48f232b49ca0fb9a).
+const HANDLE_POLICY: [u8; 28] = [
+    0xf0, 0xff, 0x48, 0xbb, 0xb7, 0xbb, 0xe9, 0xd5, 0x9a, 0x40, 0xf1, 0xce, 0x90, 0xe9, 0xe9, 0xd0,
+    0xff, 0x50, 0x02, 0xec, 0x48, 0xf2, 0x32, 0xb4, 0x9c, 0xa0, 0xfb, 0x9a,
+];
 use crate::event::Event;
 use crate::event_bus::EventBus;
 use crate::mempool::extract_tx;
@@ -76,6 +82,7 @@ impl Worker {
             feed_delegations,
             drep_feed_delegations,
             new_decimals,
+            handle_changes,
         ) = {
             let state = stage.state.read().await;
             let snap = state.current();
@@ -97,6 +104,9 @@ impl Worker {
 
             // CIP-68: collect decimals from reference token datums in this block
             let mut new_decimals: Vec<(String, u8)> = Vec::new();
+
+            // ADA Handle: collect (handle_name, owner_address) for this block
+            let mut handle_changes: Vec<(String, String)> = Vec::new();
 
             // Feed index: collect raw delegation certs for building DelegationEntry
             struct RawDelegCert {
@@ -200,6 +210,21 @@ impl Worker {
                         for a in pa.assets().iter() {
                             if let Some(raw) = a.output_coin() {
                                 assets.push((asset_fingerprint(policy_id, a.name()), raw));
+                            }
+                            // Detect ADA Handle tokens
+                            if policy_id == HANDLE_POLICY {
+                                if let Ok(handle) = std::str::from_utf8(a.name()) {
+                                    if !handle.is_empty() {
+                                        let owner =
+                                            pallas::ledger::addresses::Address::from_bytes(&addr)
+                                                .ok()
+                                                .map(|a| a.to_string())
+                                                .unwrap_or_default();
+                                        if !owner.is_empty() {
+                                            handle_changes.push((handle.to_string(), owner));
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -334,6 +359,7 @@ impl Worker {
                 feed_delegations,
                 drep_feed_delegations,
                 new_decimals,
+                handle_changes,
             )
         };
 
@@ -403,6 +429,33 @@ impl Worker {
                 epoch,
                 reward_deltas.as_ref(),
             );
+
+            // ADA Handle: update handle cache in the latest snapshot
+            if !handle_changes.is_empty() {
+                if let Some(snap) = state.current_mut() {
+                    for (handle, new_addr) in handle_changes {
+                        let old_addr = snap.address_by_handle.get(&handle).cloned();
+                        if old_addr.as_ref() == Some(&new_addr) {
+                            continue; // no change
+                        }
+                        // Remove from old owner
+                        if let Some(old) = old_addr {
+                            if let Some(list) = snap.handle_by_address.get_mut(&old) {
+                                list.retain(|h| h != &handle);
+                                if list.is_empty() {
+                                    snap.handle_by_address.remove(&old);
+                                }
+                            }
+                        }
+                        // Add to new owner
+                        snap.handle_by_address
+                            .entry(new_addr.clone())
+                            .or_default()
+                            .push(handle.clone());
+                        snap.address_by_handle.insert(handle, new_addr);
+                    }
+                }
+            }
 
             // CIP-68: update decimals in the latest snapshot
             if !new_decimals.is_empty() {

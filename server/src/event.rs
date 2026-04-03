@@ -109,6 +109,8 @@ pub struct TxInput {
     pub lovelace: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assets: Vec<AssetInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handle: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -117,6 +119,8 @@ pub struct TxOutputInfo {
     #[serde(with = "string")]
     pub lovelace: u64,
     pub assets: Vec<AssetInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handle: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
