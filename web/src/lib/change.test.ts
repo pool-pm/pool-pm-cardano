@@ -376,6 +376,31 @@ describe('nonChangeOutputs', () => {
       expect(result).toEqual([outs[0]]);
     });
 
+    it('hides change when withdrawal adds extra ADA to same-address output', () => {
+      // Real case: wallet has 7.2 ADA input + 0.17 ADA withdrawal, output is 7.2 ADA to same addr
+      // Without withdrawal accounting, output lovelace > input lovelace → falsely shown
+      const STAKE_ADDR = 'stake1u9uq0xasw98mnr9u9c2ptp0fwsphwwnu0774t35tkyfhfsseqmky2';
+      const ins = [
+        input(WALLET_ADDR_A, '7242625'),
+        input(STAKE_ADDR, '176891'), // withdrawal pseudo-input
+      ];
+      const outs = [
+        output(WALLET_ADDR_A, '7244643'), // 7242625 + 176891 - 174873 fee = 7244643
+      ];
+      const result = nonChangeOutputs(ins, outs);
+      expect(result.length).toBe(0);
+    });
+
+    it('shows output when withdrawal + input still less than output', () => {
+      const STAKE_ADDR = 'stake1u9uq0xasw98mnr9u9c2ptp0fwsphwwnu0774t35tkyfhfsseqmky2';
+      const ins = [input(WALLET_ADDR_A, '5000000'), input(STAKE_ADDR, '100000'), input(EXTERNAL_ADDR, '10000000')];
+      const outs = [
+        output(WALLET_ADDR_B, '14000000'), // 14M > 5M + 0.1M wallet input
+      ];
+      const result = nonChangeOutputs(ins, outs);
+      expect(result.length).toBe(1);
+    });
+
     it('handles zero-quantity assets', () => {
       const NIGHT = 'asset1wd3llgkhsw6etxf2yca6cgk9ssrpva3wf0pq9a';
       const ins = [input(WALLET_ADDR_A, '5000000', [asset(NIGHT, '0')])];

@@ -77,10 +77,15 @@ export function buildInputCreds(inputs: TxInput[]): InputCreds {
     const bytes = bech32Decode(input.address);
     if (!bytes || bytes.length < 29) continue;
 
+    const headerType = bytes[0] >> 4;
+
+    // Stake/reward addresses (type 14/15): defer to second pass
+    if (headerType >= 14) continue;
+
     addToGroup(byPayCred, bytesToHex(bytes, 1, 29), () => ({ assets: new Map(), inputLovelace: 0n }), input);
 
     if (bytes.length >= 57) {
-      const scriptBit = (bytes[0] >> 4) & 1;
+      const scriptBit = headerType & 1;
       addToGroup(
         byStakeCred,
         scriptBit + bytesToHex(bytes, 29, 57),
@@ -89,6 +94,34 @@ export function buildInputCreds(inputs: TxInput[]): InputCreds {
       );
     }
   }
+  // Second pass: add withdrawal lovelace to all groups sharing the stake credential.
+  for (const input of inputs) {
+    if (!input.address) continue;
+    const bytes = bech32Decode(input.address);
+    if (!bytes || bytes.length < 29) continue;
+    if (bytes[0] >> 4 < 14) continue;
+
+    const stakeCred = bytesToHex(bytes, 1, 29);
+    const amount = BigInt(input.lovelace);
+    if (amount === 0n) continue;
+
+    // Add to every byAddress group whose address contains this stake credential
+    for (const [addr, group] of byAddress) {
+      const addrBytes = bech32Decode(addr);
+      if (addrBytes && addrBytes.length >= 57 && bytesToHex(addrBytes, 29, 57) === stakeCred) {
+        group.inputLovelace += amount;
+      }
+    }
+    // Add to every byPayCred group that has a corresponding stake-cred entry
+    // (not possible to match directly — skip, byAddress covers the common case)
+
+    // Add to matching byStakeCred groups (both script bit 0 and 1)
+    for (const bit of [0, 1]) {
+      const group = byStakeCred.get(bit + stakeCred);
+      if (group) group.inputLovelace += amount;
+    }
+  }
+
   return { byAddress, byPayCred, byStakeCred };
 }
 
