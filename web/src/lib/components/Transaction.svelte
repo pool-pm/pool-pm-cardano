@@ -22,13 +22,17 @@
       preview = document.createElement('img');
       preview.id = 'asset-preview';
       preview.style.cssText =
-        'position:fixed;width:128px;height:128px;object-fit:contain;border-radius:6px;z-index:1000;pointer-events:none;display:none';
+        'position:fixed;width:256px;height:256px;object-fit:contain;border-radius:6px;z-index:1000;pointer-events:none;display:none';
       document.body.appendChild(preview);
     }
     preview.src = thumb.src;
     const rect = thumb.getBoundingClientRect();
-    preview.style.left = `${rect.left + rect.width / 2 - 64}px`;
-    preview.style.top = `${rect.top - 132}px`;
+    let left = rect.left + rect.width / 2 - 128;
+    let top = rect.top - 264;
+    left = Math.max(4, Math.min(left, window.innerWidth - 260));
+    top = Math.max(4, Math.min(top, window.innerHeight - 260));
+    preview.style.left = `${left}px`;
+    preview.style.top = `${top}px`;
     preview.style.display = 'block';
   }
 
@@ -89,7 +93,7 @@
 
   function nftcdnUrl(asset: AssetInfo): string {
     const base = `https://${asset.fingerprint}.${$config!.nftcdn}/preview`;
-    return asset.tk ? `${base}?tk=${asset.tk}&size=128` : `${base}?size=128`;
+    return asset.tk ? `${base}?tk=${asset.tk}&size=256` : `${base}?size=256`;
   }
 
   let maxOutputs = $derived(compact ? 2 : 8);
@@ -101,7 +105,7 @@
 
   // Total asset count across visible outputs → scale thumbnails
   let totalAssets = $derived(nonChangeOutputs.reduce((sum, o) => sum + o.assets.length, 0));
-  let thumbSize = $derived(totalAssets <= 1 ? 64 : Math.max(16, Math.floor(64 / Math.sqrt(totalAssets))));
+  let thumbSize = $derived(totalAssets <= 1 ? 128 : Math.max(16, Math.floor(128 / Math.sqrt(totalAssets))));
   let sortedOutputs = $derived([...nonChangeOutputs].sort((a, b) => Number(BigInt(b.lovelace) - BigInt(a.lovelace))));
   let visibleOutputs = $derived.by(() => {
     let assets = 0;
@@ -221,7 +225,7 @@
               {/if}
             {/if}
             {#if addressLabel(output.address, output.handle)}
-              <span class="addr mono">{addressLabel(output.address, output.handle)}</span>
+              <span class="addr mono label">{addressLabel(output.address, output.handle)}</span>
             {:else}
               <span class="addr mono">{output.address}</span>
             {/if}
@@ -240,7 +244,7 @@
         {#each visibleInputs as input}
           <div class="addr-item">
             {#if addressLabel(input.address ?? '', input.handle)}
-              <span class="addr mono">{addressLabel(input.address ?? '', input.handle)}</span>
+              <span class="addr mono label">{addressLabel(input.address ?? '', input.handle)}</span>
             {:else}
               <span class="addr mono">{input.address ?? '???'}</span>
             {/if}
@@ -344,6 +348,10 @@
     white-space: nowrap;
   }
 
+  .addr.label {
+    color: white;
+  }
+
   .arrow {
     color: var(--section-color, var(--accent));
     text-align: center;
@@ -404,8 +412,8 @@
   }
 
   .asset-thumb {
-    max-width: var(--thumb-size, 64px);
-    max-height: var(--thumb-size, 64px);
+    max-width: var(--thumb-size, 128px);
+    max-height: var(--thumb-size, 128px);
     align-self: center;
     border-radius: 3px;
     background: transparent;

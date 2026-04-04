@@ -735,7 +735,7 @@
 
   .tx-grid-item {
     position: absolute;
-    width: 108px;
+    width: 148px;
     transition: transform var(--flip-duration) ease;
     will-change: transform;
   }

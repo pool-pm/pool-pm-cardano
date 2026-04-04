@@ -202,7 +202,7 @@ fn decode_block_txs(
                                         .ok()
                                         .filter(|s| !s.is_empty())
                                         .map(String::from);
-                                    let tk = nftcdn.compute_tk(&fp, "preview", 128);
+                                    let tk = nftcdn.compute_tk(&fp, "preview", 256);
                                     Some(AssetInfo {
                                         fingerprint: fp,
                                         name,
@@ -324,7 +324,7 @@ async fn resolve_block_inputs(
                     .iter()
                     .map(|(fp, raw)| {
                         let dec = decimals.get(fp).copied().unwrap_or(0);
-                        let tk = nftcdn.compute_tk(fp, "preview", 128);
+                        let tk = nftcdn.compute_tk(fp, "preview", 256);
                         AssetInfo {
                             fingerprint: fp.clone(),
                             name: None,
