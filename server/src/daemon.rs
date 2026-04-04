@@ -186,6 +186,7 @@ pub fn run(args: Args) -> Result<(), Error> {
                         .sum::<usize>(),
                     utxos = snap.utxos.len(),
                     decimals = snap.decimals.len(),
+                    handles = snap.address_by_handle.len(),
                     "loaded snapshot, resuming"
                 );
             }
