@@ -106,12 +106,15 @@ pub fn parse_handle_name(asset_name: &[u8]) -> Option<(String, bool)> {
         None
     } else if asset_name.is_empty() {
         None
-    } else {
+    } else if let Ok(s) = std::str::from_utf8(asset_name) {
         // Classic handle: plain UTF-8, no CIP-67 prefix
-        std::str::from_utf8(asset_name)
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(|s| (s.to_string(), false))
+        Some((s.to_string(), false))
+    } else {
+        tracing::warn!(
+            name_hex = hex::encode(asset_name),
+            "unexpected handle asset name"
+        );
+        None
     }
 }
 
