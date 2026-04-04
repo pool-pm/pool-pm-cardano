@@ -3,6 +3,14 @@
   import { config } from '../stores';
   import { poolColor, formatTicker } from '../layout';
   import { nonChangeOutputs as computeNonChangeOutputs } from '../change';
+  import dappAddresses from '../dapp_addresses.json';
+
+  const dappLookup: Record<string, string> = dappAddresses;
+
+  function addressLabel(address: string, handle?: string): string | null {
+    if (handle) return '$' + handle;
+    return dappLookup[address] ?? null;
+  }
 
   let { tx, compact = false }: { tx: FeedTx; compact?: boolean } = $props();
   let failedAssets = $state<Record<number, number>>({});
@@ -212,8 +220,8 @@
                 <span class="more-outputs">+{totalHidden} asset{totalHidden > 1 ? 's' : ''}</span>
               {/if}
             {/if}
-            {#if output.handle}
-              <span class="addr mono handle">{'$'}{output.handle}</span>
+            {#if addressLabel(output.address, output.handle)}
+              <span class="addr mono">{addressLabel(output.address, output.handle)}</span>
             {:else}
               <span class="addr mono">{output.address}</span>
             {/if}
@@ -231,8 +239,8 @@
       <div class="addr-list">
         {#each visibleInputs as input}
           <div class="addr-item">
-            {#if input.handle}
-              <span class="addr mono handle">{'$'}{input.handle}</span>
+            {#if addressLabel(input.address ?? '', input.handle)}
+              <span class="addr mono">{addressLabel(input.address ?? '', input.handle)}</span>
             {:else}
               <span class="addr mono">{input.address ?? '???'}</span>
             {/if}
