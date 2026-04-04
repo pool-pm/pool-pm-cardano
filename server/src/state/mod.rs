@@ -84,14 +84,21 @@ impl State {
             },
             None => return,
         };
+        let total = rows.len();
         let snap = self.history.last_mut().unwrap();
-        let mut count = 0usize;
+        let mut virtual_ok = 0usize;
+        let mut virtual_fail = 0usize;
         for (handle, addr, datum) in rows {
             let resolved_addr = if datum.is_some() {
-                // Virtual handle: parse address from datum
                 match datum.and_then(|d| parse_virtual_handle_address(&d)) {
-                    Some(a) => a,
-                    None => continue,
+                    Some(a) => {
+                        virtual_ok += 1;
+                        a
+                    }
+                    None => {
+                        virtual_fail += 1;
+                        continue;
+                    }
                 }
             } else {
                 addr
@@ -101,9 +108,15 @@ impl State {
                 .or_default()
                 .push(handle.clone());
             snap.address_by_handle.insert(handle, resolved_addr);
-            count += 1;
         }
-        tracing::info!("{count} ADA Handles populated from db-sync");
+        let resolved = snap.address_by_handle.len();
+        tracing::info!(
+            total,
+            resolved,
+            virtual_ok,
+            virtual_fail,
+            "ADA Handles populated from db-sync"
+        );
     }
 
     async fn db(&self) -> Option<&DbSync> {

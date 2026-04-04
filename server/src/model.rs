@@ -74,9 +74,11 @@ pub const HANDLE_POLICIES: [[u8; 28]; 2] = [
     ],
 ];
 
-/// CIP-68 label prefixes.
-const CIP68_222_PREFIX: &[u8] = &[0x00, 0x0d, 0xe1, 0x40]; // NFT/SubHandle (222)
-const CIP67_000_PREFIX: &[u8] = &[0x00, 0x00, 0x00, 0x00]; // Virtual SubHandle (000)
+/// CIP-67 label prefixes (4 bytes each).
+pub const CIP67_LABEL_000: &[u8] = &[0x00, 0x00, 0x00, 0x00]; // (000) Virtual SubHandle
+pub const CIP67_LABEL_001: &[u8] = &[0x00, 0x00, 0x10, 0x70]; // (001) SubHandle root
+pub const CIP67_LABEL_100: &[u8] = &[0x00, 0x06, 0x43, 0xb0]; // (100) CIP-68 reference NFT
+pub const CIP67_LABEL_222: &[u8] = &[0x00, 0x0d, 0xe1, 0x40]; // (222) CIP-68 user NFT
 
 /// Check if a policy ID is an ADA Handle policy.
 pub fn is_handle_policy(policy_id: &[u8]) -> bool {
@@ -85,28 +87,39 @@ pub fn is_handle_policy(policy_id: &[u8]) -> bool {
 
 /// Extract handle name from an asset name, if it's a handle token.
 /// Returns Some((handle_name, is_virtual)) or None.
+///
+/// Known asset name formats under handle policies:
+/// - Classic: plain UTF-8 handle name (no prefix)
+/// - CIP-67 label 222: user NFT, prefix 000de140 + UTF-8 name → resolve to holder
+/// - CIP-67 label 000: virtual subhandle, prefix 00000000 + UTF-8 name → resolve from datum
+/// - CIP-67 label 001: subhandle root, prefix 00001070 → not a user handle, skip
+/// - CIP-67 label 100: reference NFT, prefix 000643b0 → metadata only, skip
 pub fn parse_handle_name(asset_name: &[u8]) -> Option<(String, bool)> {
-    if asset_name.starts_with(CIP68_222_PREFIX) {
-        // CIP-68 (222): strip prefix
-        std::str::from_utf8(&asset_name[4..])
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(|s| (s.to_string(), false))
-    } else if asset_name.starts_with(CIP67_000_PREFIX) {
-        // Virtual (000): strip prefix, needs datum resolution
-        std::str::from_utf8(&asset_name[4..])
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(|s| (s.to_string(), true))
-    } else if !asset_name.is_empty() && !asset_name.contains(&0u8) {
-        // Classic: plain UTF-8
+    if asset_name.starts_with(CIP67_LABEL_222) {
+        // CIP-68 user NFT (222): strip prefix, resolve to token holder
+        parse_name_after_prefix(asset_name, false)
+    } else if asset_name.starts_with(CIP67_LABEL_000) {
+        // Virtual subhandle (000): strip prefix, needs datum resolution
+        parse_name_after_prefix(asset_name, true)
+    } else if asset_name.starts_with(CIP67_LABEL_001) || asset_name.starts_with(CIP67_LABEL_100) {
+        // Subhandle root (001) or reference NFT (100): not user-facing
+        None
+    } else if asset_name.is_empty() {
+        None
+    } else {
+        // Classic handle: plain UTF-8, no CIP-67 prefix
         std::str::from_utf8(asset_name)
             .ok()
             .filter(|s| !s.is_empty())
             .map(|s| (s.to_string(), false))
-    } else {
-        None
     }
+}
+
+fn parse_name_after_prefix(asset_name: &[u8], is_virtual: bool) -> Option<(String, bool)> {
+    std::str::from_utf8(&asset_name[4..])
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| (s.to_string(), is_virtual))
 }
 
 /// Parse the `resolved_addresses.ada` field from a virtual handle's inline datum bytes.
@@ -217,13 +230,18 @@ mod handle_tests {
     }
 
     #[test]
-    fn test_cip68_reference_token_rejected() {
-        // 000643b0 prefix (label 100, reference token) — not a handle
+    fn test_reference_token_rejected() {
+        // CIP-67 label 100 (000643b0): reference NFT, metadata only
         let mut asset_name = vec![0x00, 0x06, 0x43, 0xb0];
         asset_name.extend_from_slice(b"my.handle");
-        // This has a null byte (0x06, 0x43 etc are fine but the prefix starts with 0x00)
-        // parse_handle_name doesn't match 000643b0 — it would fall through to classic
-        // but classic rejects names with null bytes
+        assert!(parse_handle_name(&asset_name).is_none());
+    }
+
+    #[test]
+    fn test_subhandle_root_rejected() {
+        // CIP-67 label 1 (00001070): subhandle root, not user-facing
+        let mut asset_name = vec![0x00, 0x00, 0x10, 0x70];
+        asset_name.extend_from_slice(b"adaprotocol");
         assert!(parse_handle_name(&asset_name).is_none());
     }
 

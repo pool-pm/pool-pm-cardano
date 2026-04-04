@@ -7,7 +7,7 @@ use sqlx::{
 use tokio::time::Duration;
 use url::Url;
 
-use crate::model::{asset_fingerprint, DRep, Pool};
+use crate::model::{asset_fingerprint, parse_handle_name, DRep, Pool, CIP67_LABEL_222};
 
 pub struct DbSync {
     db: sqlx::Pool<sqlx::Postgres>,
@@ -466,6 +466,10 @@ impl DbSync {
         policies: &[&[u8]],
     ) -> Result<Vec<(String, String, Option<Vec<u8>>)>, sqlx::Error> {
         let mut results = Vec::new();
+        let mut classic = 0usize;
+        let mut cip68 = 0usize;
+        let mut virtual_count = 0usize;
+        let mut skipped = 0usize;
         for policy in policies {
             let rows = sqlx::query!(
                 r#"SELECT ma.name AS "name!", tx_out.address AS "address!",
@@ -483,29 +487,34 @@ impl DbSync {
             .fetch_all(&self.db)
             .await?;
             for r in rows {
-                let name = &r.name;
-                let (handle, datum) = if name.starts_with(b"\x00\x0d\xe1\x40") {
-                    // CIP-68 (222 label): strip 4-byte prefix
-                    match std::str::from_utf8(&name[4..]) {
-                        Ok(h) if !h.is_empty() => (h.to_string(), None),
-                        _ => continue,
+                let (handle, is_virtual) = match parse_handle_name(&r.name) {
+                    Some(parsed) => parsed,
+                    None => {
+                        skipped += 1;
+                        continue;
                     }
-                } else if name.starts_with(b"\x00\x00\x00\x00") {
-                    // Virtual (000 label): strip 4-byte prefix, need datum
-                    match std::str::from_utf8(&name[4..]) {
-                        Ok(h) if !h.is_empty() => (h.to_string(), r.datum),
-                        _ => continue,
-                    }
+                };
+                let datum = if is_virtual {
+                    virtual_count += 1;
+                    r.datum
+                } else if r.name.starts_with(CIP67_LABEL_222) {
+                    cip68 += 1;
+                    None
                 } else {
-                    // Classic: plain UTF-8 name
-                    match std::str::from_utf8(name) {
-                        Ok(h) if !h.is_empty() => (h.to_string(), None),
-                        _ => continue,
-                    }
+                    classic += 1;
+                    None
                 };
                 results.push((handle, r.address, datum));
             }
         }
+        tracing::info!(
+            classic,
+            cip68,
+            virtual_count,
+            skipped,
+            total = results.len(),
+            "fetched ADA Handles from db-sync"
+        );
         Ok(results)
     }
 
