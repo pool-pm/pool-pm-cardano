@@ -16,7 +16,9 @@ use crate::cip68;
 use crate::event::Event;
 use crate::event_bus::EventBus;
 use crate::mempool::extract_tx;
-use crate::model::{asset_fingerprint, pool_bech32_id, TxOutput, HANDLE_POLICY};
+use crate::model::{
+    asset_fingerprint, is_handle_policy, parse_handle_name, pool_bech32_id, TxOutput,
+};
 use crate::nftcdn::NftcdnConfig;
 use crate::pallas::{
     stake_credential_bytes, stake_credential_from_address_bytes, MultiEraTxExt, PoolUpdate,
@@ -206,18 +208,29 @@ impl Worker {
                             if let Some(raw) = a.output_coin() {
                                 assets.push((asset_fingerprint(policy_id, a.name()), raw));
                             }
-                            // Detect ADA Handle tokens
-                            if policy_id == HANDLE_POLICY {
-                                if let Ok(handle) = std::str::from_utf8(a.name()) {
-                                    if !handle.is_empty() {
-                                        let owner =
-                                            pallas::ledger::addresses::Address::from_bytes(&addr)
-                                                .ok()
-                                                .map(|a| a.to_string())
-                                                .unwrap_or_default();
-                                        if !owner.is_empty() {
-                                            handle_changes.push((handle.to_string(), owner));
-                                        }
+                            // Detect ADA Handle tokens (classic, CIP-68, virtual)
+                            if is_handle_policy(policy_id) {
+                                if let Some((handle, is_virtual)) = parse_handle_name(a.name()) {
+                                    let owner = if is_virtual {
+                                        // Virtual: resolve from inline datum
+                                        output.datum().and_then(|d| {
+                                            use pallas::ledger::primitives::conway::DatumOption;
+                                            match d.into() {
+                                                DatumOption::Data(data) => {
+                                                    crate::model::parse_virtual_handle_address_from_datum(
+                                                        &data.0,
+                                                    )
+                                                }
+                                                _ => None,
+                                            }
+                                        })
+                                    } else {
+                                        pallas::ledger::addresses::Address::from_bytes(&addr)
+                                            .ok()
+                                            .map(|a| a.to_string())
+                                    };
+                                    if let Some(owner) = owner {
+                                        handle_changes.push((handle, owner));
                                     }
                                 }
                             }

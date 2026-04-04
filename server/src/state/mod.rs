@@ -7,7 +7,7 @@ use url::Url;
 
 use crate::cip26;
 use crate::cip68;
-use crate::model::{DRep, Pool, TxOutput, HANDLE_POLICY};
+use crate::model::{parse_virtual_handle_address, DRep, Pool, TxOutput, HANDLE_POLICIES};
 use crate::pallas::PoolUpdate;
 use dbsync::DbSync;
 pub use feed_index::FeedIndex;
@@ -73,8 +73,9 @@ impl State {
         if !is_empty {
             return;
         }
+        let policies: Vec<&[u8]> = HANDLE_POLICIES.iter().map(|p| p.as_slice()).collect();
         let rows = match self.db().await {
-            Some(db) => match db.handles(&HANDLE_POLICY).await {
+            Some(db) => match db.handles(&policies).await {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!("failed to fetch handles: {e}");
@@ -83,18 +84,26 @@ impl State {
             },
             None => return,
         };
-        tracing::info!("Populating {} ADA Handles from db-sync", rows.len());
         let snap = self.history.last_mut().unwrap();
-        for (handle, addr) in rows {
-            if handle.is_empty() {
-                continue;
-            }
+        let mut count = 0usize;
+        for (handle, addr, datum) in rows {
+            let resolved_addr = if datum.is_some() {
+                // Virtual handle: parse address from datum
+                match datum.and_then(|d| parse_virtual_handle_address(&d)) {
+                    Some(a) => a,
+                    None => continue,
+                }
+            } else {
+                addr
+            };
             snap.handle_by_address
-                .entry(addr.clone())
+                .entry(resolved_addr.clone())
                 .or_default()
                 .push(handle.clone());
-            snap.address_by_handle.insert(handle, addr);
+            snap.address_by_handle.insert(handle, resolved_addr);
+            count += 1;
         }
+        tracing::info!("{count} ADA Handles populated from db-sync");
     }
 
     async fn db(&self) -> Option<&DbSync> {
@@ -191,17 +200,26 @@ impl State {
         );
 
         tracing::info!("Fetching ADA Handle owners...");
-        let handle_rows = db.handles(&HANDLE_POLICY).await?;
+        let policies: Vec<&[u8]> = HANDLE_POLICIES.iter().map(|p| p.as_slice()).collect();
+        let handle_rows = db.handles(&policies).await?;
         let mut handle_by_address: HashMap<String, Vec<String>> = HashMap::new();
         let mut address_by_handle: HashMap<String, String> = HashMap::new();
-        for (handle, addr) in &handle_rows {
+        for (handle, addr, datum) in &handle_rows {
+            let resolved_addr = if datum.is_some() {
+                match datum.as_ref().and_then(|d| parse_virtual_handle_address(d)) {
+                    Some(a) => a,
+                    None => continue,
+                }
+            } else {
+                addr.clone()
+            };
             handle_by_address
-                .entry(addr.clone())
+                .entry(resolved_addr.clone())
                 .or_default()
                 .push(handle.clone());
-            address_by_handle.insert(handle.clone(), addr.clone());
+            address_by_handle.insert(handle.clone(), resolved_addr);
         }
-        tracing::info!("{} ADA Handles resolved", handle_rows.len());
+        tracing::info!("{} ADA Handles resolved", handle_by_address.len());
 
         self.history.clear();
         self.history.push(BlockSnapshot {

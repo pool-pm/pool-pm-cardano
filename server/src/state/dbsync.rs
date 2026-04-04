@@ -457,25 +457,56 @@ impl DbSync {
 
     /// Find the most recent block at or before the given slot.
     /// Used at startup to find a valid intersection point for backfill.
-    /// Fetch all current ADA Handle owners for the given policy ID.
-    pub async fn handles(&self, policy: &[u8]) -> Result<Vec<(String, String)>, sqlx::Error> {
-        let rows = sqlx::query!(
-            r#"SELECT convert_from(ma.name, 'UTF8') AS "handle!", tx_out.address AS "address!"
-            FROM tx_out
-            JOIN ma_tx_out ON ma_tx_out.tx_out_id = tx_out.id
-            JOIN multi_asset ma ON ma.id = ma_tx_out.ident
-            WHERE ma.policy = $1
-            AND tx_out.consumed_by_tx_id IS NULL
-            AND ma.name != '' AND ma.name IS NOT NULL"#,
-            policy
-        )
-        .fetch_all(&self.db)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .filter(|r| !r.handle.is_empty())
-            .map(|r| (r.handle, r.address))
-            .collect())
+    /// Fetch all current ADA Handle owners for the given policy IDs.
+    /// Returns (handle_name, address, optional_datum_bytes) tuples.
+    /// For classic and CIP-68 (222) handles, address is the token holder.
+    /// For virtual (000) handles, datum_bytes contains the inline datum to parse.
+    pub async fn handles(
+        &self,
+        policies: &[&[u8]],
+    ) -> Result<Vec<(String, String, Option<Vec<u8>>)>, sqlx::Error> {
+        let mut results = Vec::new();
+        for policy in policies {
+            let rows = sqlx::query!(
+                r#"SELECT ma.name AS "name!", tx_out.address AS "address!",
+                    d.bytes AS "datum?"
+                FROM tx_out
+                JOIN ma_tx_out ON ma_tx_out.tx_out_id = tx_out.id
+                JOIN multi_asset ma ON ma.id = ma_tx_out.ident
+                LEFT JOIN datum d ON d.id = tx_out.inline_datum_id
+                WHERE ma.policy = $1
+                AND tx_out.consumed_by_tx_id IS NULL
+                AND ma.name != '' AND ma.name IS NOT NULL
+                AND substring(ma.name from 1 for 4) != '\x000643b0'"#,
+                *policy as &[u8]
+            )
+            .fetch_all(&self.db)
+            .await?;
+            for r in rows {
+                let name = &r.name;
+                let (handle, datum) = if name.starts_with(b"\x00\x0d\xe1\x40") {
+                    // CIP-68 (222 label): strip 4-byte prefix
+                    match std::str::from_utf8(&name[4..]) {
+                        Ok(h) if !h.is_empty() => (h.to_string(), None),
+                        _ => continue,
+                    }
+                } else if name.starts_with(b"\x00\x00\x00\x00") {
+                    // Virtual (000 label): strip 4-byte prefix, need datum
+                    match std::str::from_utf8(&name[4..]) {
+                        Ok(h) if !h.is_empty() => (h.to_string(), r.datum),
+                        _ => continue,
+                    }
+                } else {
+                    // Classic: plain UTF-8 name
+                    match std::str::from_utf8(name) {
+                        Ok(h) if !h.is_empty() => (h.to_string(), None),
+                        _ => continue,
+                    }
+                };
+                results.push((handle, r.address, datum));
+            }
+        }
+        Ok(results)
     }
 
     pub async fn boundary_block(&self, boundary_slot: u64) -> Option<(u64, String)> {
