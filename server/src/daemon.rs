@@ -224,6 +224,8 @@ pub fn run(args: Args) -> Result<(), Error> {
         breadcrumbs: Breadcrumbs::new(0),
     };
 
+    let catching_up = Arc::new(std::sync::atomic::AtomicBool::new(catchup_target.is_some()));
+
     let source = source_config.bootstrapper(&ctx)?;
     let sink = sink::bootstrapper(
         &ctx,
@@ -233,6 +235,7 @@ pub fn run(args: Args) -> Result<(), Error> {
         snapshot_path,
         snapshot_depth,
         catchup_target,
+        catching_up.clone(),
     )?;
     let cursor = cursor::Bootstrapper::File(cursor_config.bootstrapper(&ctx)?);
     let mempool = mempool::bootstrapper(
@@ -268,6 +271,7 @@ pub fn run(args: Args) -> Result<(), Error> {
             args.n2n,
             args.network.magic(),
             mainnet,
+            catching_up,
         ));
     }
 

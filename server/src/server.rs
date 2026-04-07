@@ -425,7 +425,7 @@ async fn send_replay_blocks(
                                 .map_or(false, |sc| sc.unsigned_abs() > stake_threshold)
                     });
                 }
-                if txs.is_empty() {
+                if txs.is_empty() && block.filter_by_delegators {
                     continue;
                 }
 
@@ -981,7 +981,17 @@ pub async fn serve(
     n2n_addr: SocketAddr,
     magic: u64,
     mainnet: bool,
+    catching_up: Arc<std::sync::atomic::AtomicBool>,
 ) {
+    // Wait for catch-up to complete before accepting SSE connections
+    if catching_up.load(std::sync::atomic::Ordering::Relaxed) {
+        info!("waiting for catch-up before starting SSE server");
+        while catching_up.load(std::sync::atomic::Ordering::Relaxed) {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        info!("catch-up complete, starting SSE server");
+    }
+
     let state = AppState {
         bus,
         chain_state,

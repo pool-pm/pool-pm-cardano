@@ -498,6 +498,7 @@ impl Worker {
         if catchup > 0 {
             if slot >= catchup {
                 stage.catchup_target.store(0, Ordering::Relaxed);
+                stage.catching_up.store(false, Ordering::Relaxed);
                 info!(slot, height, "catch-up complete");
             } else if height % 1000 == 0 {
                 let remaining = (catchup - slot) / 20;
@@ -572,6 +573,8 @@ pub struct Stage {
     snapshot_path: PathBuf,
     snapshot_depth: usize,
     catchup_target: AtomicU64,
+    /// Shared flag: set to false once catch-up is complete. SSE server waits on this.
+    pub catching_up: Arc<std::sync::atomic::AtomicBool>,
 
     pub input: MapperInputPort,
     pub cursor: SinkCursorPort,
@@ -591,6 +594,7 @@ pub fn bootstrapper(
     snapshot_path: PathBuf,
     snapshot_depth: usize,
     catchup_target: Option<u64>,
+    catching_up: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Stage, Error> {
     let genesis = GenesisValues::from(context.chain.clone());
     let mainnet = genesis.magic == 764824073;
@@ -603,6 +607,7 @@ pub fn bootstrapper(
         snapshot_path,
         snapshot_depth,
         catchup_target: AtomicU64::new(catchup_target.unwrap_or(0)),
+        catching_up,
         ops_count: Default::default(),
         latest_block: Default::default(),
         input: Default::default(),
