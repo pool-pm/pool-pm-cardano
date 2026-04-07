@@ -39,6 +39,8 @@ pub struct BlockTx {
     pub expiry: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub delegations: Vec<DelegationInfo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub votes: Vec<VoteInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<Vec<String>>,
     /// Net stake change in lovelace for pool feed stake-change blocks.
@@ -75,6 +77,19 @@ pub struct DelegationInfo {
     pub to_drep_name: Option<String>,
     #[serde(with = "string_i64")]
     pub live_stake: i64,
+}
+
+#[derive(Clone, Serialize)]
+pub struct VoteInfo {
+    pub voter_role: String,
+    pub voter_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voter_name: Option<String>,
+    pub vote: String,
+    pub action_tx_hash: String,
+    pub action_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_title: Option<String>,
 }
 
 #[derive(Clone, Serialize)]

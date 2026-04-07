@@ -1,11 +1,15 @@
 <script lang="ts">
-  import type { AssetInfo, DelegationInfo, FeedTx, TxInput, TxOutputInfo } from '../types';
+  import type { AssetInfo, DelegationInfo, FeedTx, TxInput, TxOutputInfo, VoteInfo } from '../types';
   import { config } from '../stores';
   import { poolColor, formatTicker } from '../layout';
   import { nonChangeOutputs as computeNonChangeOutputs } from '../change';
-  import dappAddresses from '../dapp_addresses.json';
+  import dappRegistry from '../dapp_addresses.json';
 
-  const dappLookup: Record<string, string> = dappAddresses;
+  const dappLookup: Record<string, string> = Object.fromEntries(
+    Object.entries(dappRegistry as Record<string, string[]>).flatMap(([name, addrs]) =>
+      addrs.map((addr) => [addr, name]),
+    ),
+  );
 
   function addressLabel(address: string, handle?: string): string | null {
     if (handle) return '$' + handle;
@@ -137,6 +141,25 @@
     <div class="msg-section">
       {#each tx.message as line}
         <span class="msg-line">{line}</span>
+      {/each}
+    </div>
+  {/if}
+  {#if tx.votes?.length}
+    <div class="vote-section">
+      {#each tx.votes as vote}
+        <div class="vote-item">
+          <span class="vote-voter">{vote.voter_name ?? vote.voter_id.slice(0, 12)}</span>
+          voted
+          <span
+            class="vote-badge"
+            class:yes={vote.vote === 'Yes'}
+            class:no={vote.vote === 'No'}
+            class:abstain={vote.vote === 'Abstain'}>{vote.vote}</span
+          >
+          {#if vote.action_title}
+            to <span class="vote-action">{vote.action_title}</span>
+          {/if}
+        </div>
       {/each}
     </div>
   {/if}
@@ -286,6 +309,61 @@
     font-size: 10px;
     color: rgb(255 255 255 / 0.8);
     word-break: break-word;
+  }
+
+  .vote-section {
+    background: rgb(0 0 0 / 0.6);
+    border-radius: 6px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .vote-item {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 10px;
+    flex-wrap: wrap;
+  }
+
+  .vote-badge {
+    font-weight: 700;
+    font-size: 9px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+
+  .vote-badge.yes {
+    color: #111;
+    background: oklch(0.7 0.25 145);
+  }
+
+  .vote-badge.no {
+    color: #111;
+    background: oklch(0.7 0.25 25);
+  }
+
+  .vote-badge.abstain {
+    color: #111;
+    background: rgb(255 255 255 / 0.5);
+  }
+
+  .vote-voter {
+    color: rgb(255 255 255 / 0.7);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .vote-action {
+    color: rgb(255 255 255 / 0.4);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .deleg-section {

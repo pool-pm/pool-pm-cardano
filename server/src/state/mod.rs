@@ -35,6 +35,9 @@ pub struct BlockSnapshot {
     /// ADA Handle: handle name → owner address
     #[serde(default)]
     pub address_by_handle: HashMap<String, String>,
+    /// Governance action titles: "tx_hash#index" → title
+    #[serde(default)]
+    pub gov_action_titles: HashMap<String, String>,
 }
 
 impl BlockSnapshot {
@@ -117,6 +120,36 @@ impl State {
             virtual_fail,
             "ADA Handles populated from db-sync"
         );
+    }
+
+    /// Populate governance action titles from db-sync if empty.
+    pub async fn populate_gov_titles(&mut self) {
+        let is_empty = self
+            .history
+            .last()
+            .map(|s| s.gov_action_titles.is_empty())
+            .unwrap_or(true);
+        if !is_empty {
+            return;
+        }
+        let titles = match self.db().await {
+            Some(db) => match db.gov_action_titles().await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!("failed to fetch gov action titles: {e}");
+                    return;
+                }
+            },
+            None => return,
+        };
+        tracing::info!(
+            "{} governance action titles populated from db-sync",
+            titles.len()
+        );
+        let snap = self.history.last_mut().unwrap();
+        for (key, title) in titles {
+            snap.gov_action_titles.insert(key, title);
+        }
     }
 
     async fn db(&self) -> Option<&DbSync> {
@@ -234,6 +267,10 @@ impl State {
         }
         tracing::info!("{} ADA Handles resolved", handle_by_address.len());
 
+        tracing::info!("Fetching governance action titles...");
+        let gov_action_titles = db.gov_action_titles().await?.into();
+        tracing::info!("governance action titles fetched");
+
         self.history.clear();
         self.history.push(BlockSnapshot {
             slot,
@@ -251,6 +288,7 @@ impl State {
             decimals,
             handle_by_address,
             address_by_handle,
+            gov_action_titles,
         });
         self.feed_index = FeedIndex::new();
 
@@ -345,6 +383,7 @@ impl State {
         let decimals = prev.decimals.clone();
         let handle_by_address = prev.handle_by_address.clone();
         let address_by_handle = prev.address_by_handle.clone();
+        let gov_action_titles = prev.gov_action_titles.clone();
         self.history.push(BlockSnapshot {
             slot,
             block_hash: Some(block_hash),
@@ -361,6 +400,7 @@ impl State {
             decimals,
             handle_by_address,
             address_by_handle,
+            gov_action_titles,
         });
 
         const MAX_HISTORY: usize = 2160;

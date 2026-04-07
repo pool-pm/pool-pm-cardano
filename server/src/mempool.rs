@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::event::{
-    format_quantity, AssetInfo, BlockTx, DelegationInfo, Event, TxInput, TxOutputInfo,
+    format_quantity, AssetInfo, BlockTx, DelegationInfo, Event, TxInput, TxOutputInfo, VoteInfo,
 };
 use crate::event_bus::EventBus;
 use crate::filter;
@@ -158,6 +158,7 @@ pub async fn extract_tx(
     }
 
     let message = extract_cip20_message(tx);
+    let votes = extract_votes(tx, state);
 
     let mut block_tx = BlockTx {
         hash,
@@ -167,6 +168,7 @@ pub async fn extract_tx(
         outputs,
         expiry,
         delegations,
+        votes,
         message,
         stake_change: None,
         stake_credentials: Vec::new(),
@@ -188,6 +190,63 @@ fn resolve_drep(
         _ => snap.dreps.get(bytes).and_then(|d| d.given_name.clone()),
     };
     (Some(id), name)
+}
+
+pub fn extract_votes(tx: &MultiEraTx<'_>, state: &State) -> Vec<VoteInfo> {
+    use pallas::ledger::primitives::conway::{Vote, Voter};
+
+    let snap = match state.current() {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+
+    tx.voting_procedures()
+        .into_iter()
+        .map(|(voter, action_id, vote)| {
+            let (voter_role, voter_id, voter_name) = match &voter {
+                Voter::ConstitutionalCommitteeKey(h) | Voter::ConstitutionalCommitteeScript(h) => {
+                    ("CC".to_string(), hex::encode(h.as_ref()), None)
+                }
+                Voter::DRepKey(h) | Voter::DRepScript(h) => {
+                    let bytes = if matches!(voter, Voter::DRepScript(_)) {
+                        [&[0x01], h.as_ref()].concat()
+                    } else {
+                        [&[0x00], h.as_ref()].concat()
+                    };
+                    let (id, name) = resolve_drep(&bytes, snap);
+                    ("DRep".to_string(), id.unwrap_or_default(), name)
+                }
+                Voter::StakePoolKey(h) => {
+                    let pool_id = pool_bech32_id(h.as_ref());
+                    let ticker = snap
+                        .pools
+                        .get(&hex::encode(h.as_ref()))
+                        .and_then(|p| p.ticker.clone());
+                    ("SPO".to_string(), pool_id, ticker)
+                }
+            };
+
+            let action_tx_hash = hex::encode(action_id.transaction_id.as_ref());
+            let action_key = format!("{}#{}", action_tx_hash, action_id.action_index);
+            let action_title = snap.gov_action_titles.get(&action_key).cloned();
+
+            let vote_str = match vote {
+                Vote::Yes => "Yes",
+                Vote::No => "No",
+                Vote::Abstain => "Abstain",
+            };
+
+            VoteInfo {
+                voter_role,
+                voter_id,
+                voter_name,
+                vote: vote_str.to_string(),
+                action_tx_hash,
+                action_index: action_id.action_index,
+                action_title,
+            }
+        })
+        .collect()
 }
 
 pub fn extract_delegations(

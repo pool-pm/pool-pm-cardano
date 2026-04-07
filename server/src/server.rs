@@ -254,6 +254,10 @@ fn decode_block_txs(
 
             let message = crate::pallas::extract_cip20_message(tx);
 
+            let votes = state
+                .map(|s| crate::mempool::extract_votes(tx, s))
+                .unwrap_or_default();
+
             BlockTx {
                 hash: tx.hash().to_string(),
                 fee: tx.fee().unwrap_or(0),
@@ -262,6 +266,7 @@ fn decode_block_txs(
                 outputs,
                 expiry: None,
                 delegations,
+                votes,
                 message,
                 stake_change: None,
                 stake_credentials: vec![],

@@ -518,6 +518,32 @@ impl DbSync {
         Ok(results)
     }
 
+    /// Fetch governance action titles: "tx_hash#index" → title (or type as fallback).
+    pub async fn gov_action_titles(
+        &self,
+    ) -> Result<std::collections::HashMap<String, String>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT encode(tx.hash, 'hex') AS "tx_hash!",
+                    gap.index AS "index!",
+                    gap.type AS "type!: String",
+                    ovgad.title AS "title?"
+            FROM gov_action_proposal gap
+            JOIN tx ON tx.id = gap.tx_id
+            LEFT JOIN voting_anchor va ON va.id = gap.voting_anchor_id
+            LEFT JOIN off_chain_vote_data ovd ON ovd.voting_anchor_id = va.id
+            LEFT JOIN off_chain_vote_gov_action_data ovgad ON ovgad.off_chain_vote_data_id = ovd.id"#
+        )
+        .fetch_all(&self.db)
+        .await?;
+        let mut map = std::collections::HashMap::new();
+        for r in rows {
+            let key = format!("{}#{}", r.tx_hash, r.index);
+            let title = r.title.unwrap_or_else(|| r.r#type.clone());
+            map.insert(key, title);
+        }
+        Ok(map)
+    }
+
     pub async fn boundary_block(&self, boundary_slot: u64) -> Option<(u64, String)> {
         let row = sqlx::query!(
             r#"SELECT slot_no AS "slot!", encode(hash, 'hex') AS "hash!"

@@ -420,8 +420,9 @@ impl Worker {
                 state.feed_index.add_drep_delegation_event(entry);
             }
 
-            // Prune entries older than one epoch
-            let prune_boundary = slot.saturating_sub(stage.genesis.shelley_epoch_length as u64);
+            // Prune feed index entries older than 5 days
+            const FEED_INDEX_WINDOW: u64 = 5 * 86400;
+            let prune_boundary = slot.saturating_sub(FEED_INDEX_WINDOW);
             state.feed_index.prune(prune_boundary);
 
             state.apply_block(

@@ -104,6 +104,9 @@ pub fn drep_to_bytes(drep: &conway::DRep) -> Vec<u8> {
     }
 }
 
+/// Extracted voting procedure: (voter, gov_action_id, vote).
+pub type ExtractedVote = (conway::Voter, conway::GovActionId, conway::Vote);
+
 pub trait MultiEraTxExt {
     /// Pool delegation certificates with full StakeCredential preserved.
     fn pool_delegation_certs(&self) -> Vec<PoolDelegationCert>;
@@ -112,6 +115,9 @@ pub trait MultiEraTxExt {
 
     /// Pool registration certificates (used for both new pools and parameter updates).
     fn pool_updates(&self) -> Vec<PoolUpdate>;
+
+    /// Governance voting procedures from Conway-era transactions.
+    fn voting_procedures(&self) -> Vec<ExtractedVote>;
 }
 
 impl MultiEraTxExt for MultiEraTx<'_> {
@@ -205,5 +211,19 @@ impl MultiEraTxExt for MultiEraTx<'_> {
                 )
             })
             .collect()
+    }
+
+    fn voting_procedures(&self) -> Vec<ExtractedVote> {
+        let mut votes = Vec::new();
+        if let MultiEraTx::Conway(tx) = self {
+            if let Some(ref procedures) = tx.transaction_body.voting_procedures {
+                for (voter, actions) in procedures.iter() {
+                    for (action_id, procedure) in actions.iter() {
+                        votes.push((voter.clone(), action_id.clone(), procedure.vote.clone()));
+                    }
+                }
+            }
+        }
+        votes
     }
 }

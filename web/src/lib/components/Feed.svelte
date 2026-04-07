@@ -168,6 +168,7 @@
     function handleWheel(e: WheelEvent) {
       if (!landscape) return;
       if (e.deltaX !== 0) return; // native horizontal scroll, don't remap
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
       e.preventDefault();
       feedEl.scrollLeft -= e.deltaY;
     }

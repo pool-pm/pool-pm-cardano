@@ -79,12 +79,9 @@ async fn serve_prometheus(daemon: Arc<Daemon>, metrics: Option<Metrics>) -> Resu
     Ok(())
 }
 
-fn start_from_boundary(
-    db_url: &Url,
-    tip_slot: u64,
-    epoch_length: u64,
-) -> (IntersectConfig, Option<u64>) {
-    let boundary_slot = tip_slot.saturating_sub(epoch_length);
+fn start_from_boundary(db_url: &Url, tip_slot: u64) -> (IntersectConfig, Option<u64>) {
+    const FEED_INDEX_WINDOW: u64 = 5 * 86400;
+    let boundary_slot = tip_slot.saturating_sub(FEED_INDEX_WINDOW);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -123,7 +120,6 @@ pub fn run(args: Args) -> Result<(), Error> {
     });
     let mainnet = args.network.magic() == 764824073;
     let genesis = GenesisValues::from(args.network.config().clone());
-    let epoch_length = genesis.shelley_epoch_length as u64;
     let genesis_config = server::GenesisConfig {
         shelley_known_slot: genesis.shelley_known_slot,
         shelley_known_time: genesis.shelley_known_time,
@@ -166,6 +162,7 @@ pub fn run(args: Args) -> Result<(), Error> {
                     .build()
                     .unwrap();
                 rt.block_on(state.populate_handles());
+                rt.block_on(state.populate_gov_titles());
             }
 
             if let Some(snap) = state.current() {
@@ -187,6 +184,7 @@ pub fn run(args: Args) -> Result<(), Error> {
                     utxos = snap.utxos.len(),
                     decimals = snap.decimals.len(),
                     handles = snap.address_by_handle.len(),
+                    gov_actions = snap.gov_action_titles.len(),
                     "loaded snapshot, resuming"
                 );
             }
@@ -207,7 +205,7 @@ pub fn run(args: Args) -> Result<(), Error> {
                 warn!("no blocks in db-sync, starting from tip");
                 (IntersectConfig::Tip, None)
             } else {
-                start_from_boundary(&db_url, tip_slot, epoch_length)
+                start_from_boundary(&db_url, tip_slot)
             }
         };
 

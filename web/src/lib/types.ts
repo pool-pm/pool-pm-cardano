@@ -48,6 +48,16 @@ export interface DelegationInfo {
   live_stake: string;
 }
 
+export interface VoteInfo {
+  voter_role: string;
+  voter_id: string;
+  voter_name?: string;
+  vote: string;
+  action_tx_hash: string;
+  action_index: number;
+  action_title?: string;
+}
+
 export interface BlockTx {
   hash: string;
   fee: string;
@@ -56,6 +66,7 @@ export interface BlockTx {
   outputs: TxOutputInfo[];
   expiry?: number;
   delegations?: DelegationInfo[];
+  votes?: VoteInfo[];
   message?: string[];
   stake_change?: string;
 }
