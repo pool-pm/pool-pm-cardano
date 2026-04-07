@@ -1,7 +1,9 @@
 import { sections, newSection, config, pool, drep, blockCount } from './stores';
-import type { BlockEvent, BlockTx, Config, DRepInfo, Event, MempoolTxEvent, PoolInfo, Section } from './types';
+import type { BlockTx, Config, DRepInfo, Event, MempoolTxEvent, PoolInfo, Section } from './types';
 
 let source: EventSource | null = null;
+let currentUrl: string | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingPrune = new Set<string>();
 
 /** Resolve unresolved input addresses from other txs' outputs in the same set */
@@ -23,17 +25,14 @@ function resolveInputs(txs: BlockTx[]): void {
 
 function handleSnapshot(events: Event[]): void {
   const now = Date.now();
-  const blockEvents: BlockEvent[] = [];
-  const mempoolTxEvents: MempoolTxEvent[] = [];
 
+  // Collect snapshot data
+  const mempoolTxs: MempoolTxEvent[] = [];
+  const blocks: Section[] = [];
   for (const event of events) {
-    if (event.type === 'Block') blockEvents.push(event);
-    else if (event.type === 'MempoolTx') mempoolTxEvents.push(event);
-  }
-
-  // Build block sections (snapshot arrives oldest-first, sections are newest-first)
-  const blockSections: Section[] = blockEvents
-    .map((event) => {
+    if (event.type === 'MempoolTx') {
+      mempoolTxs.push(event);
+    } else if (event.type === 'Block') {
       const section = newSection();
       section.block = {
         slot: event.slot,
@@ -44,16 +43,19 @@ function handleSnapshot(events: Event[]): void {
         pool_ticker: event.pool_ticker,
       };
       section.txs = event.txs.map((tx) => ({ ...tx, receivedAt: now }));
-      return section;
-    })
-    .reverse();
+      blocks.push(section);
+    }
+  }
+  blocks.reverse(); // oldest-first → newest-first
 
-  // Build mempool
-  const mempool = newSection();
-  mempool.txs = mempoolTxEvents.map((tx) => ({ ...tx, receivedAt: now }));
-  resolveInputs(mempool.txs);
-
-  sections.set([mempool, ...blockSections]);
+  // Update existing mempool (sections[0]) and replace blocks
+  sections.update((s) => {
+    const mempool = s[0];
+    const feedTxs = mempoolTxs.map((tx) => ({ ...tx, receivedAt: now }));
+    resolveInputs(feedTxs);
+    mempool.txs = feedTxs;
+    return [mempool, ...blocks];
+  });
 }
 
 function handleEvent(event: Event): void {
@@ -73,13 +75,12 @@ function handleEvent(event: Event): void {
     case 'Block': {
       const now = Date.now();
       sections.update((s) => {
-        // Deduplicate: skip if this block is already in sections
         if (s.some((sec, i) => i > 0 && sec.block?.slot === event.slot)) return s;
 
         const newestBlockSlot = s[1]?.block?.slot ?? 0;
 
         if (event.slot >= newestBlockSlot) {
-          // Live/newest block: finalize mempool
+          // Live block: finalize mempool
           const mempool = s[0];
           const mempoolByHash = new Map(mempool.txs.map((tx) => [tx.hash, tx]));
           const blockByHash = new Map(event.txs.map((tx) => [tx.hash, tx]));
@@ -106,7 +107,7 @@ function handleEvent(event: Event): void {
 
           return [next, ...s];
         } else {
-          // Historical block: insert at correct slot position (descending)
+          // Historical block: insert at correct slot position
           const section = newSection();
           section.block = {
             slot: event.slot,
@@ -145,18 +146,31 @@ function handleEvent(event: Event): void {
 }
 
 export function connectSSE(url: string): void {
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
   if (source) source.close();
 
-  // Reset stores immediately so stale data from previous feed doesn't linger
-  sections.set([newSection()]);
-  config.set(null);
-  pool.set(null);
-  drep.set(null);
+  // Reset only when switching feeds — on reconnect, handleSnapshot refreshes data
+  if (url !== currentUrl) {
+    sections.update((s) => {
+      s[0].txs = [];
+      s[0].block = undefined;
+      return [s[0]]; // keep mempool identity, clear blocks
+    });
+    config.set(null);
+    pool.set(null);
+    drep.set(null);
+    currentUrl = url;
+  }
   pendingPrune.clear();
 
-  source = new EventSource(url);
+  const es = new EventSource(url);
+  source = es;
 
-  source.onmessage = (e: MessageEvent) => {
+  es.onmessage = (e: MessageEvent) => {
+    if (source !== es) return;
     try {
       const data = JSON.parse(e.data);
 
@@ -176,14 +190,19 @@ export function connectSSE(url: string): void {
     }
   };
 
-  source.onerror = () => {
-    source?.close();
+  es.onerror = () => {
+    if (source !== es) return;
+    es.close();
     source = null;
-    setTimeout(() => connectSSE(url), 3000);
+    retryTimer = setTimeout(() => connectSSE(url), 3000);
   };
 }
 
 export function disconnectSSE(): void {
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
   source?.close();
   source = null;
 }

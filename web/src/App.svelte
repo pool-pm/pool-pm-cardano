@@ -11,8 +11,19 @@
   }
 
   $effect(() => {
-    connectSSE(sseUrl());
-    return () => disconnectSSE();
+    const url = sseUrl();
+    connectSSE(url);
+
+    // Browsers silently drop SSE in background tabs. Reconnect on focus.
+    function onVisibilityChange() {
+      if (document.visibilityState === 'visible') connectSSE(url);
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      disconnectSSE();
+    };
   });
 </script>
 
