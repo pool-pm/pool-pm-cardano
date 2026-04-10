@@ -207,16 +207,28 @@
 
   let now = $state(Date.now());
 
+  const MAINNET_MAGIC = 764824073;
+  const PREVIEW_MAGIC = 2;
+  const PREPROD_MAGIC = 1;
+
+  function networkName(magic: number): string | null {
+    if (magic === PREVIEW_MAGIC) return 'preview';
+    if (magic === PREPROD_MAGIC) return 'preprod';
+    return null;
+  }
+
   // Set page title from pool ticker or DRep name
   $effect(() => {
     const p = $pool;
     const d = $drep;
+    const net = $config ? networkName($config.magic) : null;
+    const site = net ? `${net}.pool.pm` : 'pool.pm';
     if (d) {
-      document.title = `${d.given_name ?? d.drep_id.slice(5, 13)} - pool.pm`;
+      document.title = `${d.given_name ?? d.drep_id.slice(5, 13)} - ${site}`;
     } else if (p) {
-      document.title = `${formatTicker(p.ticker ?? p.pool_id.slice(5, 10))} - pool.pm`;
+      document.title = `${formatTicker(p.ticker ?? p.pool_id.slice(5, 10))} - ${site}`;
     } else {
-      document.title = 'pool.pm';
+      document.title = site;
     }
   });
 

@@ -64,11 +64,15 @@ const STAKE_CHANGE_DIVISOR: u64 = 1_000; // 0.1%
 
 // --- SSE event builders ---
 
-fn config_event(nftcdn_subdomain: &str, genesis: &GenesisConfig) -> Result<SseEvent, Infallible> {
+fn config_event(
+    nftcdn_subdomain: &str,
+    genesis: &GenesisConfig,
+    magic: u64,
+) -> Result<SseEvent, Infallible> {
     let genesis_json = serde_json::to_string(genesis).unwrap();
     Ok(SseEvent::default().data(format!(
-        "{{\"type\":\"Config\",\"nftcdn\":\"{}\",\"genesis\":{}}}",
-        nftcdn_subdomain, genesis_json
+        "{{\"type\":\"Config\",\"nftcdn\":\"{}\",\"magic\":{},\"genesis\":{}}}",
+        nftcdn_subdomain, magic, genesis_json
     )))
 }
 
@@ -624,7 +628,11 @@ async fn events(
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let (snapshot, rx) = state.bus.subscribe().await;
 
-    let config = Some(config_event(state.nftcdn.subdomain, &state.genesis));
+    let config = Some(config_event(
+        state.nftcdn.subdomain,
+        &state.genesis,
+        state.magic,
+    ));
 
     let init = if snapshot.is_empty() {
         None
@@ -670,6 +678,7 @@ async fn filtered_events(
             .send(config_event(
                 replay_state.nftcdn.subdomain,
                 &replay_state.genesis,
+                replay_state.magic,
             ))
             .await;
 

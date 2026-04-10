@@ -14,9 +14,11 @@
     const url = sseUrl();
     connectSSE(url);
 
-    // Browsers silently drop SSE in background tabs. Reconnect on focus.
+    // Reload page when returning from background to get a clean state.
     function onVisibilityChange() {
-      if (document.visibilityState === 'visible') connectSSE(url);
+      if (document.visibilityState === 'visible') {
+        location.reload();
+      }
     }
     document.addEventListener('visibilitychange', onVisibilityChange);
 

@@ -9,6 +9,7 @@ export interface GenesisConfig {
 
 export interface Config {
   nftcdn: string;
+  magic: number;
   genesis: GenesisConfig;
 }
 
