@@ -14,10 +14,13 @@
     const url = sseUrl();
     connectSSE(url);
 
-    // Reload page when returning from background to get a clean state.
+    // Disconnect SSE when backgrounded to prevent event accumulation,
+    // reload on return for a clean state.
     function onVisibilityChange() {
       if (document.visibilityState === 'visible') {
         location.reload();
+      } else {
+        disconnectSSE();
       }
     }
     document.addEventListener('visibilitychange', onVisibilityChange);
