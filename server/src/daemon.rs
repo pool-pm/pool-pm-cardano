@@ -189,7 +189,21 @@ pub fn run(args: Args) -> Result<(), Error> {
                 );
             }
 
-            (IntersectConfig::Point(snap_slot, snap_hash), None)
+            // Estimate current tip from wall clock. If snapshot is >60s behind,
+            // set a catchup target so SSE waits before accepting connections.
+            let now_slot = genesis_config.shelley_known_slot
+                + (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    .saturating_sub(genesis_config.shelley_known_time))
+                    / genesis_config.shelley_slot_length as u64;
+            let catchup_target = if now_slot > snap_slot + 60 {
+                Some(now_slot)
+            } else {
+                None
+            };
+            (IntersectConfig::Point(snap_slot, snap_hash), catchup_target)
         } else {
             // No snapshot — query tip from db-sync and start from 5 days ago
             info!("no snapshot, starting from 5 days ago");
