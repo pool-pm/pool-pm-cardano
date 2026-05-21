@@ -7,7 +7,11 @@
 
   function sseUrl(): string {
     const path = window.location.pathname.replace(/^\/+/, '');
-    return path ? `${SSE_BASE}/${path}` : SSE_BASE;
+    const base = path ? `${SSE_BASE}/${path}` : SSE_BASE;
+    // Negotiate thumbnail resolution: the server picks the power-of-2 nftcdn
+    // size rung matching this device's pixel ratio.
+    const sep = base.includes('?') ? '&' : '?';
+    return `${base}${sep}dpr=${window.devicePixelRatio}`;
   }
 
   $effect(() => {

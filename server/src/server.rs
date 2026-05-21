@@ -24,7 +24,7 @@ use crate::event::{format_quantity, AssetInfo, BlockTx, DelegationInfo, TxInput,
 use crate::event_bus::EventBus;
 use crate::filter;
 use crate::model::{asset_fingerprint, drep_bech32_id, pool_bech32_id, Pool};
-use crate::nftcdn::NftcdnConfig;
+use crate::nftcdn::{rung_for_dpr, NftcdnConfig};
 use crate::state::feed_index::BlockRef;
 use crate::state::{BlockSnapshot, State};
 
@@ -123,7 +123,48 @@ fn drep_sse_event(drep_bytes: &[u8], snap: Option<&BlockSnapshot>) -> Result<Sse
     )))
 }
 
-fn serialize_event(event: crate::event::Event) -> Option<Result<SseEvent, Infallible>> {
+/// Query string for SSE endpoints. `dpr` is the client's
+/// `window.devicePixelRatio`, used to negotiate the thumbnail image size.
+#[derive(serde::Deserialize)]
+struct SseQuery {
+    dpr: Option<f64>,
+}
+
+/// Collapse every `AssetInfo`'s precomputed token ladder down to the single
+/// `tk` + `size` matching this client's negotiated rung, dropping the rest so
+/// it never hits the wire. Idempotent and cheap (a slice scan, no crypto).
+fn resolve_event_assets(event: &mut crate::event::Event, size: u16) {
+    fn resolve(assets: &mut [AssetInfo], size: u16) {
+        for a in assets {
+            a.tk = a
+                .tks
+                .iter()
+                .find(|(s, _)| *s == size)
+                .map(|(_, t)| t.clone());
+            a.tks = Vec::new();
+            a.size = size;
+        }
+    }
+    let txs: &mut [BlockTx] = match event {
+        crate::event::Event::MempoolTx(tx) => std::slice::from_mut(tx),
+        crate::event::Event::Block { txs, .. } => txs.as_mut_slice(),
+        crate::event::Event::Rollback { .. } | crate::event::Event::MempoolPrune { .. } => return,
+    };
+    for tx in txs {
+        for inp in &mut tx.inputs {
+            resolve(&mut inp.assets, size);
+        }
+        for out in &mut tx.outputs {
+            resolve(&mut out.assets, size);
+        }
+    }
+}
+
+fn serialize_event(
+    mut event: crate::event::Event,
+    size: u16,
+) -> Option<Result<SseEvent, Infallible>> {
+    resolve_event_assets(&mut event, size);
     serde_json::to_string(&event)
         .ok()
         .map(|json| Ok(SseEvent::default().data(json)))
@@ -206,12 +247,14 @@ fn decode_block_txs(
                                         .ok()
                                         .filter(|s| !s.is_empty())
                                         .map(String::from);
-                                    let tk = nftcdn.compute_tk(&fp, "preview", 256);
+                                    let tks = nftcdn.compute_ladder(&fp, "preview");
                                     Some(AssetInfo {
                                         fingerprint: fp,
                                         name,
                                         quantity: format_quantity(raw, decimals),
-                                        tk,
+                                        tks,
+                                        tk: None,
+                                        size: 0,
                                     })
                                 })
                                 .collect::<Vec<_>>()
@@ -333,12 +376,14 @@ async fn resolve_block_inputs(
                     .iter()
                     .map(|(fp, raw)| {
                         let dec = decimals.get(fp).copied().unwrap_or(0);
-                        let tk = nftcdn.compute_tk(fp, "preview", 256);
+                        let tks = nftcdn.compute_ladder(fp, "preview");
                         AssetInfo {
                             fingerprint: fp.clone(),
                             name: None,
                             quantity: format_quantity(*raw, dec),
-                            tk,
+                            tks,
+                            tk: None,
+                            size: 0,
                         }
                     })
                     .collect();
@@ -375,6 +420,7 @@ async fn send_replay_blocks(
     n2n_addr: SocketAddr,
     magic: u64,
     mainnet: bool,
+    size: u16,
 ) {
     if blocks.is_empty() {
         return;
@@ -445,7 +491,7 @@ async fn send_replay_blocks(
                     pool_ticker,
                     txs,
                 };
-                if let Some(sse) = serialize_event(event) {
+                if let Some(sse) = serialize_event(event, size) {
                     let _ = sender.send(sse).await;
                     sent += 1;
                     if sent >= MAX_REPLAY_BLOCKS {
@@ -468,6 +514,7 @@ async fn send_filtered_snapshot(
     filter: &filter::FeedFilter,
     delegators: &imbl::hashset::HashSet<Vec<u8>>,
     exclude_slots: &HashSet<u64>,
+    size: u16,
 ) {
     for event in snapshot {
         if let Some(filtered) = filter.filter_event(&event, delegators) {
@@ -476,7 +523,7 @@ async fn send_filtered_snapshot(
                     continue;
                 }
             }
-            if let Some(sse) = serialize_event(filtered) {
+            if let Some(sse) = serialize_event(filtered, size) {
                 let _ = sender.send(sse).await;
             }
         }
@@ -539,6 +586,7 @@ fn build_live_stream(
     chain_state: Arc<RwLock<State>>,
     last_pool: Option<Pool>,
     last_live_stake: Option<i64>,
+    size: u16,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> {
     futures::stream::unfold(
         (
@@ -548,13 +596,22 @@ fn build_live_stream(
             last_pool,
             last_live_stake,
             std::collections::VecDeque::<Result<SseEvent, Infallible>>::new(),
+            size,
         ),
-        |(mut rx, filter, chain_state, mut last_pool, mut last_live_stake, mut buf)| async move {
+        |(mut rx, filter, chain_state, mut last_pool, mut last_live_stake, mut buf, size)| async move {
             loop {
                 if let Some(sse) = buf.pop_front() {
                     return Some((
                         sse,
-                        (rx, filter, chain_state, last_pool, last_live_stake, buf),
+                        (
+                            rx,
+                            filter,
+                            chain_state,
+                            last_pool,
+                            last_live_stake,
+                            buf,
+                            size,
+                        ),
                     ));
                 }
 
@@ -609,11 +666,19 @@ fn build_live_stream(
                 };
                 if let Some(sse) = filter
                     .filter_event(&event, &delegators)
-                    .and_then(serialize_event)
+                    .and_then(|e| serialize_event(e, size))
                 {
                     return Some((
                         sse,
-                        (rx, filter, chain_state, last_pool, last_live_stake, buf),
+                        (
+                            rx,
+                            filter,
+                            chain_state,
+                            last_pool,
+                            last_live_stake,
+                            buf,
+                            size,
+                        ),
                     ));
                 }
             }
@@ -625,8 +690,10 @@ fn build_live_stream(
 
 async fn events(
     axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<SseQuery>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let (snapshot, rx) = state.bus.subscribe().await;
+    let size = rung_for_dpr(query.dpr.unwrap_or(1.0));
+    let (mut snapshot, rx) = state.bus.subscribe().await;
 
     let config = Some(config_event(
         state.nftcdn.subdomain,
@@ -637,12 +704,16 @@ async fn events(
     let init = if snapshot.is_empty() {
         None
     } else {
+        for event in &mut snapshot {
+            resolve_event_assets(event, size);
+        }
         serde_json::to_string(&snapshot)
             .ok()
             .map(|json| Ok(SseEvent::default().data(json)))
     };
     let replay = futures::stream::iter(config.into_iter().chain(init));
-    let live = BroadcastStream::new(rx).filter_map(|result| result.ok().and_then(serialize_event));
+    let live = BroadcastStream::new(rx)
+        .filter_map(move |result| result.ok().and_then(|e| serialize_event(e, size)));
     let stream = replay.chain(live);
 
     Sse::new(stream).keep_alive(KeepAlive::default())
@@ -651,8 +722,10 @@ async fn events(
 async fn filtered_events(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(feed_id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<SseQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, StatusCode> {
     info!("/events/{feed_id}");
+    let size = rung_for_dpr(query.dpr.unwrap_or(1.0));
     let filter = filter::FeedFilter::from_path(&feed_id).ok_or(StatusCode::BAD_REQUEST)?;
     let (snapshot, rx) = state.bus.subscribe().await;
 
@@ -814,6 +887,7 @@ async fn filtered_events(
                 replay_state.n2n_addr,
                 replay_state.magic,
                 replay_state.mainnet,
+                size,
             )
             .await;
 
@@ -939,6 +1013,7 @@ async fn filtered_events(
                 replay_state.n2n_addr,
                 replay_state.magic,
                 replay_state.mainnet,
+                size,
             )
             .await;
 
@@ -953,6 +1028,7 @@ async fn filtered_events(
             &replay_filter,
             &replay_delegators,
             &exclude_slots,
+            size,
         )
         .await;
     });
@@ -976,7 +1052,7 @@ async fn filtered_events(
     };
 
     let replay = tokio_stream::wrappers::ReceiverStream::new(receiver);
-    let live = build_live_stream(rx, filter, chain_state, last_pool, last_live_stake);
+    let live = build_live_stream(rx, filter, chain_state, last_pool, last_live_stake, size);
     let stream = replay.chain(live);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }

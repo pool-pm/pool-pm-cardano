@@ -11,6 +11,35 @@ type HmacSha256 = Hmac<Sha256>;
 /// Public test key for preprod (from https://nftcdn.io/doc)
 const PREPROD_KEY: &str = "7FoxfBgV2k+RSz6UUts3/fG1edG7oIGXxdtIVCdalaI=";
 
+/// Asset thumbnail display cap in CSS px. Must match the `--thumb-size`
+/// default / `thumbSize` base in `web/src/lib/components/Transaction.svelte`.
+const THUMB_DISPLAY_MAX_PX: f64 = 96.0;
+
+/// nftcdn.io only serves power-of-two image sizes — this keeps its CDN cache
+/// hot (few keys per asset) and yields GPU-friendly POT textures. This ladder
+/// covers the realistic `devicePixelRatio` range for a THUMB_DISPLAY_MAX_PX
+/// thumbnail: 1x desktop (128), 2x retina / fractional scaling (256),
+/// 3x phones / zoom (512). Tokens are precomputed once per asset upstream;
+/// each client is served just the rung matching its DPR.
+pub const SIZE_LADDER: [u16; 3] = [128, 256, 512];
+
+/// Map a client `devicePixelRatio` to the smallest [`SIZE_LADDER`] rung that
+/// fully covers a THUMB_DISPLAY_MAX_PX display at that ratio, clamped to the
+/// top rung. Bogus ratios (≤0, NaN, non-finite) fall back to 1x.
+pub fn rung_for_dpr(dpr: f64) -> u16 {
+    let dpr = if dpr.is_finite() && dpr >= 1.0 {
+        dpr
+    } else {
+        1.0
+    };
+    let needed = (THUMB_DISPLAY_MAX_PX * dpr).ceil() as u32;
+    SIZE_LADDER
+        .iter()
+        .copied()
+        .find(|&s| s as u32 >= needed)
+        .unwrap_or_else(|| *SIZE_LADDER.last().unwrap())
+}
+
 #[derive(Clone)]
 pub struct NftcdnConfig {
     pub subdomain: &'static str,
@@ -49,6 +78,18 @@ impl NftcdnConfig {
         let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key size");
         mac.update(url.as_bytes());
         Some(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+    }
+
+    /// Precompute signed tokens for every rung of [`SIZE_LADDER`]. Returns an
+    /// empty vec when no signing key is configured (URLs are then unsigned).
+    pub fn compute_ladder(&self, fingerprint: &str, path: &str) -> Vec<(u16, String)> {
+        SIZE_LADDER
+            .iter()
+            .filter_map(|&size| {
+                self.compute_tk(fingerprint, path, size)
+                    .map(|tk| (size, tk))
+            })
+            .collect()
     }
 }
 

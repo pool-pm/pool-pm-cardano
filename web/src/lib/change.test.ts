@@ -25,7 +25,7 @@ const EXTERNAL_ADDR =
 // --- Helpers ---
 
 function asset(fingerprint: string, quantity: string): AssetInfo {
-  return { fingerprint, quantity };
+  return { fingerprint, quantity, size: 256 };
 }
 
 function input(address: string, lovelace: string, assets: AssetInfo[] = []): TxInput {

@@ -34,6 +34,8 @@ export interface AssetInfo {
   name?: string;
   quantity: string;
   tk?: string;
+  /** Server-negotiated image size (nftcdn power-of-2 rung for this client's DPR). */
+  size: number;
 }
 
 export interface DelegationInfo {

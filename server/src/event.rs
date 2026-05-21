@@ -144,8 +144,17 @@ pub struct AssetInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub quantity: String,
+    /// Precomputed signed-token ladder `(size, tk)`, one entry per power-of-two
+    /// rung (see `nftcdn::SIZE_LADDER`). Internal only: collapsed to `tk`/`size`
+    /// per client during DPR negotiation, so it never reaches the wire.
+    #[serde(skip)]
+    pub tks: Vec<(u16, String)>,
+    /// Per-client resolved token for the negotiated `size` (when signing is on).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tk: Option<String>,
+    /// Per-client resolved image size — the `SIZE_LADDER` rung matching the
+    /// client's `devicePixelRatio`. Filled before serialization.
+    pub size: u16,
 }
 
 /// Format a raw on-chain quantity with the given number of decimals.

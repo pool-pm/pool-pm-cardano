@@ -61,12 +61,14 @@ pub async fn extract_tx(
                     .current()
                     .and_then(|s| s.decimals.get(fp).copied())
                     .unwrap_or(0);
-                let tk = nftcdn.compute_tk(fp, "preview", 256);
+                let tks = nftcdn.compute_ladder(fp, "preview");
                 AssetInfo {
                     fingerprint: fp.clone(),
                     name: None,
                     quantity: format_quantity(*raw, decimals),
-                    tk,
+                    tks,
+                    tk: None,
+                    size: 0,
                 }
             })
             .collect();
@@ -113,12 +115,14 @@ pub async fn extract_tx(
                                 .ok()
                                 .filter(|s| !s.is_empty())
                                 .map(String::from);
-                            let tk = nftcdn.compute_tk(&fingerprint, "preview", 256);
+                            let tks = nftcdn.compute_ladder(&fingerprint, "preview");
                             Some(AssetInfo {
                                 fingerprint,
                                 name,
                                 quantity: format_quantity(raw, decimals),
-                                tk,
+                                tks,
+                                tk: None,
+                                size: 0,
                             })
                         })
                         .collect::<Vec<_>>()
