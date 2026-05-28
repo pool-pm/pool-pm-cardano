@@ -91,6 +91,44 @@ impl DbSync {
         Ok(Some((row.address, row.value, assets)))
     }
 
+    /// All assets of a policy, newest-first-minted first, keyset-paginated on
+    /// `multi_asset.id` (a bigserial assigned at first sighting, so a higher id
+    /// means more recently first minted). `cursor` is the last id of the previous
+    /// page (None for the first page). Querying `multi_asset` alone (unique on
+    /// (policy, name)) yields each asset exactly once — no `ma_tx_mint` join, so
+    /// re-mints/burns cannot produce duplicate rows. Returns (id, fingerprint,
+    /// name); `fingerprint` is db-sync's canonical CIP-14 value.
+    ///
+    /// Robust to concurrent mints: new assets always get ids above the current
+    /// max and we page strictly downward (`id < cursor`), so a mint during an
+    /// in-progress paging session can never shift, skip, or duplicate a page — it
+    /// only appears on reload. "Most recently minted" therefore means most
+    /// recently *first* minted: a burned-then-reminted asset keeps its original
+    /// id ordering.
+    pub async fn assets_by_policy(
+        &self,
+        policy: &[u8],
+        cursor: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT id, fingerprint AS "fingerprint!", name AS "name!"
+            FROM multi_asset
+            WHERE policy = $1 AND ($2::bigint IS NULL OR id < $2)
+            ORDER BY id DESC
+            LIMIT $3"#,
+            policy,
+            cursor,
+            limit
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.id, r.fingerprint, r.name))
+            .collect())
+    }
+
     /// Batch-resolve UTXOs. Returns (address, lovelace, assets, unspent).
     /// `unspent` is true when consumed_by_tx_id IS NULL — callers can cache these.
     pub async fn resolve_utxos_batch(

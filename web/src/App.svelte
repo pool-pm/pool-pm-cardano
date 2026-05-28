@@ -2,14 +2,17 @@
   import { connectSSE, disconnectSSE } from './lib/sse';
   import Feed from './lib/components/Feed.svelte';
   import AssetPage from './lib/components/AssetPage.svelte';
+  import PolicyPage from './lib/components/PolicyPage.svelte';
   import './app.css';
 
   const SSE_BASE = import.meta.env.VITE_SSE_URL || `${window.location.origin}/events`;
 
   const path = window.location.pathname.replace(/^\/+/, '');
-  // A bare CIP-14 fingerprint path renders the standalone asset page; everything
-  // else is a feed (root, pool id, or drep id).
+  // A bare CIP-14 fingerprint path renders the standalone asset page;
+  // `/policy/<28-byte hex>` renders the policy asset grid; everything else is a
+  // feed (root, pool id, or drep id).
   const assetFingerprint = /^asset1[a-z0-9]+$/.test(path) ? path : null;
+  const policyId = /^policy\/([0-9a-f]{56})$/.exec(path)?.[1] ?? null;
 
   function sseUrl(): string {
     const base = path ? `${SSE_BASE}/${path}` : SSE_BASE;
@@ -20,7 +23,8 @@
   }
 
   $effect(() => {
-    if (assetFingerprint) return;
+    // The asset and policy pages are stateless HTTP views — no SSE connection.
+    if (assetFingerprint || policyId) return;
 
     const url = sseUrl();
     connectSSE(url);
@@ -46,6 +50,8 @@
 <main>
   {#if assetFingerprint}
     <AssetPage fingerprint={assetFingerprint} />
+  {:else if policyId}
+    <PolicyPage {policyId} />
   {:else}
     <Feed />
   {/if}

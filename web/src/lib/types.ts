@@ -50,6 +50,23 @@ export interface AssetMediaResponse {
   media: AssetMedia[];
 }
 
+export interface PolicyAsset {
+  fingerprint: string;
+  name?: string;
+  /** Ready-signed nftcdn preview URL (128px rung); use as the img fallback src. */
+  src: string;
+  /** Multi-rung srcset ("url 1x, url 2x, url 4x"); empty when only one rung. */
+  srcset: string;
+}
+
+export interface PolicyResponse {
+  policy_id: string;
+  assets: PolicyAsset[];
+  /** Last asset id of this page; pass back as `?cursor=` for the next page. */
+  cursor?: number;
+  has_more: boolean;
+}
+
 export interface DelegationInfo {
   stake_address: string;
   from_pool_id?: string;

@@ -568,6 +568,18 @@ impl State {
         db.epoch_reward_delta(epoch).await.ok()
     }
 
+    /// Fetch a page of a policy's assets (newest-first-minted) from db-sync.
+    /// `cursor` is the last id of the previous page (None for the first page).
+    pub async fn assets_by_policy(
+        &self,
+        policy: &[u8],
+        cursor: Option<i64>,
+        limit: i64,
+    ) -> Option<Vec<(i64, String, Vec<u8>)>> {
+        let db = self.db().await?;
+        db.assets_by_policy(policy, cursor, limit).await.ok()
+    }
+
     /// Rollback to the given slot: drop all snapshots after it.
     /// Returns false if history is empty after truncation (snapshot was too old).
     pub fn rollback(&mut self, slot: u64) -> bool {

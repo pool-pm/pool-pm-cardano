@@ -24,7 +24,7 @@ use crate::event::{format_quantity, AssetInfo, BlockTx, DelegationInfo, TxInput,
 use crate::event_bus::EventBus;
 use crate::filter;
 use crate::model::{asset_fingerprint, drep_bech32_id, pool_bech32_id, Pool};
-use crate::nftcdn::{rung_for_dpr, NftcdnConfig};
+use crate::nftcdn::{rung_for_dpr, NftcdnConfig, SIZE_LADDER};
 use crate::state::feed_index::BlockRef;
 use crate::state::{BlockSnapshot, State};
 
@@ -1150,6 +1150,121 @@ async fn asset_media(
     }))
 }
 
+/// True for a syntactically valid Cardano policy id: exactly 56 lowercase hex
+/// chars (28 bytes). Like `is_valid_fingerprint`, this rejects garbage before it
+/// reaches the DB; the policy id itself never enters an NFTCDN host (only the
+/// DB-sourced fingerprints do).
+fn is_valid_policy_id(p: &str) -> bool {
+    p.len() == 56
+        && p.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+#[derive(serde::Deserialize)]
+struct PolicyQuery {
+    cursor: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+struct PolicyAsset {
+    fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    src: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    srcset: String,
+}
+
+#[derive(serde::Serialize)]
+struct PolicyResponse {
+    policy_id: String,
+    assets: Vec<PolicyAsset>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cursor: Option<i64>,
+    has_more: bool,
+}
+
+/// Assets returned per `/api/policy` page; the frontend keyset-paginates with
+/// `?cursor=<last id>`.
+const POLICY_PAGE_SIZE: i64 = 60;
+
+/// CSS px the policy-grid thumbnail is displayed at. The srcset density
+/// descriptor for each nftcdn rung is `rung_size / POLICY_THUMB_PX`.
+const POLICY_THUMB_PX: u16 = 128;
+
+/// List a policy's assets, most-recently-first-minted first, keyset-paginated on
+/// `multi_asset.id` (see `DbSync::assets_by_policy`). Returns ready-signed nftcdn
+/// preview URLs — a `src` plus a multi-rung `srcset` so the browser picks the DPR
+/// rung — meaning the frontend needs no signing key or subdomain. Stateless
+/// db-sync read: no SSE, no in-memory state, no rollback path.
+async fn policy_assets(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(policy_id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<PolicyQuery>,
+) -> Result<axum::Json<PolicyResponse>, StatusCode> {
+    if !is_valid_policy_id(&policy_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let policy = hex::decode(&policy_id).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let rows = {
+        let guard = state.chain_state.read().await;
+        guard
+            .assets_by_policy(&policy, query.cursor, POLICY_PAGE_SIZE)
+            .await
+    }
+    .ok_or(StatusCode::BAD_GATEWAY)?;
+
+    let has_more = rows.len() as i64 == POLICY_PAGE_SIZE;
+    let cursor = rows.last().map(|(id, ..)| *id);
+
+    let assets = rows
+        .into_iter()
+        .map(|(_, fingerprint, name_bytes)| {
+            let name = std::str::from_utf8(&name_bytes)
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let rungs: Vec<(u16, String)> = SIZE_LADDER
+                .iter()
+                .map(|&size| {
+                    let url =
+                        state
+                            .nftcdn
+                            .signed_url(&fingerprint, "preview", &format!("size={size}"));
+                    (size, url)
+                })
+                .collect();
+            let src = rungs
+                .first()
+                .map(|(_, url)| url.clone())
+                .unwrap_or_default();
+            let srcset = if rungs.len() > 1 {
+                rungs
+                    .iter()
+                    .map(|(size, url)| format!("{url} {}x", *size as f64 / POLICY_THUMB_PX as f64))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else {
+                String::new()
+            };
+            PolicyAsset {
+                fingerprint,
+                name,
+                src,
+                srcset,
+            }
+        })
+        .collect();
+
+    Ok(axum::Json(PolicyResponse {
+        policy_id,
+        assets,
+        cursor,
+        has_more,
+    }))
+}
+
 pub async fn serve(
     addr: SocketAddr,
     bus: Arc<EventBus>,
@@ -1184,6 +1299,7 @@ pub async fn serve(
         .route("/events", get(events))
         .route("/events/{feed_id}", get(filtered_events))
         .route("/api/asset/{fingerprint}", get(asset_media))
+        .route("/api/policy/{policy_id}", get(policy_assets))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
