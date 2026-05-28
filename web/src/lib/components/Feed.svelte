@@ -580,12 +580,6 @@
     color: var(--text-muted);
   }
 
-  .pool-info {
-    font-size: 10px;
-    color: var(--text-muted);
-    white-space: nowrap;
-  }
-
   .pool-params {
     display: flex;
     gap: 0;
