@@ -26,6 +26,10 @@ use crate::pallas::{
 use crate::state::feed_index::{BlockRef, DelegationEntry};
 use crate::state::State;
 
+/// During normal operation, persist a snapshot every this many blocks. Skipped
+/// while catching up (initial sync), where periodic saves only slow it down.
+const SNAPSHOT_INTERVAL: u64 = 50;
+
 pub struct Worker;
 
 impl Worker {
@@ -495,10 +499,12 @@ impl Worker {
             .await;
 
         let catchup = stage.catchup_target.load(Ordering::Relaxed);
+        let mut catchup_complete = false;
         if catchup > 0 {
             if slot >= catchup {
                 stage.catchup_target.store(0, Ordering::Relaxed);
                 stage.catching_up.store(false, Ordering::Relaxed);
+                catchup_complete = true;
                 info!(slot, height, "catch-up complete");
             } else if height % 1000 == 0 {
                 let remaining = (catchup - slot) / 20;
@@ -508,7 +514,10 @@ impl Worker {
             info!(slot, height, tx_count, "apply block");
         }
 
-        if height % 50 == 0 {
+        // Skip periodic snapshots while catching up — they only slow the sync.
+        // Save once when catch-up completes (so a restart doesn't repeat it),
+        // then every SNAPSHOT_INTERVAL blocks during normal operation.
+        if catchup_complete || (catchup == 0 && height % SNAPSHOT_INTERVAL == 0) {
             let state = stage.state.read().await;
             match state.save_snapshot(
                 &stage.snapshot_path,
