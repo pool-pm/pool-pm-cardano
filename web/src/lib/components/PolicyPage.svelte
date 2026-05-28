@@ -121,14 +121,7 @@
       <div class="window" style="transform:translateY({offsetY}px); --cols:{cols}">
         {#each slice as a (a.fingerprint)}
           {@const label = a.name ?? a.fingerprint}
-          <a
-            class="cell"
-            href={'/' + a.fingerprint}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label={label}
-            title={label}
-          >
+          <a class="cell" href={'/' + a.fingerprint} aria-label={label} title={label}>
             <!-- No loading="lazy": windowing already keeps only near-viewport
                  rows mounted, so lazy just delays cached images from repainting
                  when a row is scrolled back into view. New rows are deferred while

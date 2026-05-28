@@ -226,7 +226,7 @@
               <div class="assets">
                 {#each output.assets.slice(0, visibleAssetCount) as asset}
                   <div class="asset">
-                    <a class="asset-link" href="/{asset.fingerprint}" target="_blank" rel="noopener noreferrer">
+                    <a class="asset-link" href="/{asset.fingerprint}">
                       <img
                         class="asset-thumb"
                         src={nftcdnUrl(asset)}
