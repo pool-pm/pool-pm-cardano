@@ -11,6 +11,9 @@
   const ROW = CELL + GAP;
   const BUFFER_ROWS = 4; // extra rows rendered above/below the viewport
   const PREFETCH_ROWS = 6; // fetch the next page once the buffer gets this close to the end
+  const VPAD = 16; // breathing room above the first row / below the last
+  const FAST_SCROLL_PX_PER_MS = 3; // above this fling speed, defer image loads
+  const SCROLL_SETTLE_MS = 120; // load the settled view this long after scrolling stops
 
   let assets = $state<PolicyAsset[]>([]);
   let cursor = $state<number | undefined>(undefined);
@@ -23,18 +26,30 @@
   let viewportH = $state(0);
   let scrollTop = $state(0);
 
+  // While flinging fast, don't mount <img> for rows we pass: each thumbnail is its
+  // own nftcdn subdomain, so loading rows we never stop on floods the browser's
+  // request/decode pipeline and starves the row we actually land on. Images load
+  // once scrolling settles.
+  let suppressImages = $state(false);
+  let lastScrollTop = 0;
+  let lastScrollTime = 0;
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+
   const cols = $derived(Math.max(1, Math.floor((containerW + GAP) / ROW)));
   const loadedRows = $derived(Math.ceil(assets.length / cols));
-  // Content height: rows are ROW apart, the last row adds only its cell height.
+  // Content height: rows are ROW apart, the last row adds only its cell height;
+  // VPAD is reserved above the first row and below the last.
   const totalHeight = $derived(loadedRows > 0 ? (loadedRows - 1) * ROW + CELL : 0);
+  const spacerHeight = $derived(totalHeight + VPAD * 2);
 
-  const firstRow = $derived(Math.floor(scrollTop / ROW));
+  // Rows live at y = VPAD + row*ROW, so the scroll math offsets by VPAD too.
+  const firstRow = $derived(Math.floor(Math.max(0, scrollTop - VPAD) / ROW));
   const renderFrom = $derived(Math.max(0, firstRow - BUFFER_ROWS));
   const renderTo = $derived(firstRow + Math.ceil(viewportH / ROW) + BUFFER_ROWS);
   const startIndex = $derived(renderFrom * cols);
   const endIndex = $derived(Math.min(assets.length, renderTo * cols));
   const slice = $derived(assets.slice(startIndex, endIndex));
-  const offsetY = $derived(renderFrom * ROW);
+  const offsetY = $derived(VPAD + renderFrom * ROW);
 
   async function loadMore() {
     if (loading || !hasMore) return;
@@ -67,10 +82,21 @@
 
   onMount(() => {
     document.title = `${policyId.slice(0, 12)}…`;
+    return () => clearTimeout(settleTimer);
   });
 
   function onScroll(e: Event) {
-    scrollTop = (e.currentTarget as HTMLElement).scrollTop;
+    const el = e.currentTarget as HTMLElement;
+    const now = performance.now();
+    const dt = now - lastScrollTime;
+    const velocity = dt > 0 ? Math.abs(el.scrollTop - lastScrollTop) / dt : 0;
+    lastScrollTop = el.scrollTop;
+    lastScrollTime = now;
+    scrollTop = el.scrollTop;
+
+    if (velocity > FAST_SCROLL_PX_PER_MS) suppressImages = true;
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => (suppressImages = false), SCROLL_SETTLE_MS);
   }
 </script>
 
@@ -80,20 +106,32 @@
   {:else if !loading && assets.length === 0}
     <div class="status">No assets for this policy.</div>
   {:else}
-    <div class="spacer" style="height:{totalHeight}px">
+    <div class="spacer" style="height:{spacerHeight}px">
       <div class="window" style="transform:translateY({offsetY}px); --cols:{cols}">
         {#each slice as a (a.fingerprint)}
-          <a class="cell" href={'/' + a.fingerprint} title={a.name ?? a.fingerprint}>
-            <img
-              class="thumb"
-              src={a.src}
-              srcset={a.srcset}
-              loading="lazy"
-              alt={a.name ?? a.fingerprint}
-              onerror={(e: Event) => {
-                (e.currentTarget as HTMLElement).style.visibility = 'hidden';
-              }}
-            />
+          <a
+            class="cell"
+            href={'/' + a.fingerprint}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={a.name ?? a.fingerprint}
+          >
+            <!-- No loading="lazy": windowing already keeps only near-viewport
+                 rows mounted, so lazy just delays cached images from repainting
+                 when a row is scrolled back into view. Skipped entirely while
+                 flinging (suppressImages) so we don't queue loads we fly past. -->
+            {#if !suppressImages}
+              <img
+                class="thumb"
+                src={a.src}
+                srcset={a.srcset}
+                decoding="async"
+                alt={a.name ?? a.fingerprint}
+                onerror={(e: Event) => {
+                  (e.currentTarget as HTMLElement).style.visibility = 'hidden';
+                }}
+              />
+            {/if}
           </a>
         {/each}
       </div>
@@ -130,6 +168,10 @@
     width: 128px;
     height: 128px;
     display: block;
+    /* Faint placeholder so a tile whose image hasn't decoded yet reads as
+       "loading" rather than as the black page background. */
+    background: rgb(255 255 255 / 0.04);
+    border-radius: 3px;
   }
 
   .thumb {
