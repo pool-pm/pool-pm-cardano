@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import type { PolicyAsset, PolicyResponse } from '../types';
 
   let { policyId }: { policyId: string } = $props();
@@ -26,17 +27,27 @@
   let viewportH = $state(0);
   let scrollTop = $state(0);
 
-  // While flinging fast, don't mount <img> for rows we pass: each thumbnail is its
-  // own nftcdn subdomain, so loading rows we never stop on floods the browser's
-  // request/decode pipeline and starves the row we actually land on. Images load
-  // once scrolling settles.
+  // While flinging fast, defer loading thumbnails for rows we haven't seen yet, so
+  // we don't queue a burst of requests for rows we only pass through. Rows whose
+  // image already loaded keep showing (served from cache), so the grid never
+  // blanks out what was on screen — only brand-new rows wait for the scroll to
+  // settle.
   let suppressImages = $state(false);
+  const loaded = new SvelteSet<string>();
+  // Fingerprints whose thumbnail 404'd (no preview on nftcdn): hide the tile and
+  // remember it so a recycled cell doesn't re-request the same 404.
+  const broken = new SvelteSet<string>();
   let lastScrollTop = 0;
   let lastScrollTime = 0;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
 
+  // Broken (404) assets are dropped from layout so the grid reflows and later
+  // assets fill the gap, rather than leaving holes. All windowing math is over
+  // `visible`, not the raw fetched `assets`.
+  const visible = $derived(assets.filter((a) => !broken.has(a.fingerprint)));
+
   const cols = $derived(Math.max(1, Math.floor((containerW + GAP) / ROW)));
-  const loadedRows = $derived(Math.ceil(assets.length / cols));
+  const loadedRows = $derived(Math.ceil(visible.length / cols));
   // Content height: rows are ROW apart, the last row adds only its cell height;
   // VPAD is reserved above the first row and below the last.
   const totalHeight = $derived(loadedRows > 0 ? (loadedRows - 1) * ROW + CELL : 0);
@@ -47,8 +58,8 @@
   const renderFrom = $derived(Math.max(0, firstRow - BUFFER_ROWS));
   const renderTo = $derived(firstRow + Math.ceil(viewportH / ROW) + BUFFER_ROWS);
   const startIndex = $derived(renderFrom * cols);
-  const endIndex = $derived(Math.min(assets.length, renderTo * cols));
-  const slice = $derived(assets.slice(startIndex, endIndex));
+  const endIndex = $derived(Math.min(visible.length, renderTo * cols));
+  const slice = $derived(visible.slice(startIndex, endIndex));
   const offsetY = $derived(VPAD + renderFrom * ROW);
 
   async function loadMore() {
@@ -109,27 +120,33 @@
     <div class="spacer" style="height:{spacerHeight}px">
       <div class="window" style="transform:translateY({offsetY}px); --cols:{cols}">
         {#each slice as a (a.fingerprint)}
+          {@const label = a.name ?? a.fingerprint}
           <a
             class="cell"
             href={'/' + a.fingerprint}
             target="_blank"
             rel="noopener noreferrer"
-            title={a.name ?? a.fingerprint}
+            aria-label={label}
+            title={label}
           >
             <!-- No loading="lazy": windowing already keeps only near-viewport
                  rows mounted, so lazy just delays cached images from repainting
-                 when a row is scrolled back into view. Skipped entirely while
-                 flinging (suppressImages) so we don't queue loads we fly past. -->
-            {#if !suppressImages}
+                 when a row is scrolled back into view. New rows are deferred while
+                 flinging (suppressImages); rows already loaded keep showing so the
+                 grid never blanks out what was on screen. alt="" keeps Firefox from
+                 painting the name over a still-loading tile (the link is labelled
+                 via aria-label instead). -->
+            {#if !suppressImages || loaded.has(a.fingerprint)}
+              <!-- onerror records a 404; the asset then drops out of `visible`,
+                   collapsing its cell instead of leaving a hole. -->
               <img
                 class="thumb"
                 src={a.src}
                 srcset={a.srcset}
                 decoding="async"
-                alt={a.name ?? a.fingerprint}
-                onerror={(e: Event) => {
-                  (e.currentTarget as HTMLElement).style.visibility = 'hidden';
-                }}
+                alt=""
+                onload={() => loaded.add(a.fingerprint)}
+                onerror={() => broken.add(a.fingerprint)}
               />
             {/if}
           </a>
@@ -168,9 +185,7 @@
     width: 128px;
     height: 128px;
     display: block;
-    /* Faint placeholder so a tile whose image hasn't decoded yet reads as
-       "loading" rather than as the black page background. */
-    background: rgb(255 255 255 / 0.04);
+    background: var(--bg);
     border-radius: 3px;
   }
 
