@@ -41,6 +41,43 @@ impl DbSync {
         Ok((row.id, hex::encode(row.hash)))
     }
 
+    /// Recent blocks containing a transaction that touches the given stake address
+    /// (`hash_raw` is the full 29-byte reward address = db-sync
+    /// `stake_address.hash_raw`): either an output paid to it, or one of its
+    /// outputs being consumed. Newest-first, capped at `limit`. Returns
+    /// (slot_no, block_hash_hex, block_no). Used to drive feed replay; an unknown
+    /// address yields an empty result.
+    pub async fn stake_recent_blocks(
+        &self,
+        hash_raw: &[u8],
+        limit: i64,
+    ) -> Result<Vec<(u64, String, u64)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT b.slot_no AS "slot_no!", b.hash, b.block_no AS "block_no!"
+            FROM (
+                SELECT tx_id FROM tx_out
+                  WHERE stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+                UNION
+                SELECT consumed_by_tx_id AS tx_id FROM tx_out
+                  WHERE stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+                    AND consumed_by_tx_id IS NOT NULL
+            ) t
+            JOIN tx ON tx.id = t.tx_id
+            JOIN block b ON b.id = tx.block_id
+            GROUP BY b.id, b.slot_no, b.hash, b.block_no
+            ORDER BY b.slot_no DESC
+            LIMIT $2"#,
+            hash_raw,
+            limit
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.slot_no as u64, hex::encode(r.hash), r.block_no as u64))
+            .collect())
+    }
+
     pub async fn resolve_utxo(
         &self,
         tx_hash: &[u8],

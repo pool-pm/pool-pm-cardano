@@ -147,6 +147,16 @@ export interface PoolInfo {
   delegators?: number;
 }
 
+export interface StakeInfo {
+  stake_address: string;
+  balance?: string;
+  rewards?: string;
+  pool_id?: string;
+  pool_ticker?: string | null;
+  drep_id?: string;
+  drep_name?: string | null;
+}
+
 export interface FeedTx extends BlockTx {
   receivedAt: number;
 }

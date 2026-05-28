@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { sections, config, pool, drep, blockCount } from '../stores';
+  import { sections, config, pool, drep, stake, blockCount } from '../stores';
   import type { GenesisConfig, Section } from '../types';
   import { TX_WIDTH, FLIP_DURATION, poolColor, formatTicker, layoutGrid } from '../layout';
   import Transaction from './Transaction.svelte';
@@ -20,6 +20,10 @@
   const LANDSCAPE_MARGIN = 16; // vertical breathing room in landscape
   let landscape = $state(typeof window !== 'undefined' && window.innerWidth > window.innerHeight);
   let actualGridWidths = $state<Record<string, number>>({});
+
+  // A subject feed (pool/drep/stake) vs the global homepage feed. Drives block
+  // spacing, coloring, and whether the per-block minting-pool ticker is shown.
+  const isSubjectFeed = $derived(!!($pool || $drep || $stake));
 
   // Section positioning: absolute layout with smooth CSS transitions
   let sectionRefs = new Map<string, HTMLElement>();
@@ -101,7 +105,7 @@
         const maxSpacing = Math.round((landscape ? feedWidth : feedHeight) / 2);
         spacing = Math.min(
           maxSpacing,
-          Math.max(2, Math.round($pool || $drep ? logGap(timeDelta) : PX_PER_SECOND * timeDelta)),
+          Math.max(2, Math.round(isSubjectFeed ? logGap(timeDelta) : PX_PER_SECOND * timeDelta)),
         );
         pos += spacing;
       }
@@ -217,16 +221,19 @@
     return null;
   }
 
-  // Set page title from pool ticker or DRep name
+  // Set page title from pool ticker, DRep name, or stake address
   $effect(() => {
     const p = $pool;
     const d = $drep;
+    const s = $stake;
     const net = $config ? networkName($config.magic) : null;
     const site = net ? `${net}.pool.pm` : 'pool.pm';
     if (d) {
       document.title = `${d.given_name ?? d.drep_id.slice(5, 13)} - ${site}`;
     } else if (p) {
       document.title = `${formatTicker(p.ticker ?? p.pool_id.slice(5, 10))} - ${site}`;
+    } else if (s) {
+      document.title = `${s.stake_address.slice(0, 12)}… - ${site}`;
     } else {
       document.title = site;
     }
@@ -303,7 +310,7 @@
 
   function sectionColors(section: Section): { bg: string; border: string; accent: string } {
     if (!section.block) return { bg: '#222', border: '#222', accent: 'rgb(255 255 255 / 0.4)' };
-    if (!$pool && !$drep) {
+    if (!isSubjectFeed) {
       const c = poolColor(section.block.pool_id);
       return { bg: c, border: c, accent: c };
     }
@@ -338,7 +345,8 @@
     const sec = Math.floor((now - timestamp * 1000) / 1000);
     if (sec < 60) return `${sec}s ago`;
     if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
-    return `${Math.floor(sec / 3600)}h ago`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+    return `${Math.floor(sec / 86400)}d ago`;
   }
 
   function formatAda(lovelace: string): string {
@@ -438,6 +446,34 @@
         <span class="pool-stake">{formatAda($drep.live_stake)}</span>
       {/if}
     </div>
+  {:else if $stake}
+    {@const color = poolColor($stake.stake_address)}
+    {@const total = (BigInt($stake.balance ?? '0') + BigInt($stake.rewards ?? '0')).toString()}
+    <div class="pool-circle" style:border-color={color}>
+      <span class="pool-stake">{formatAda(total)}</span>
+      {#if $stake.rewards && $stake.rewards !== '0'}
+        <span class="pool-delegators">incl. {formatAda($stake.rewards)} rewards</span>
+      {/if}
+      <span class="stake-address" style:color title={$stake.stake_address}>{$stake.stake_address}</span>
+      <div class="pool-params">
+        {#if $stake.pool_id}
+          <div class="pool-param">
+            <span class="pool-param-label">pool</span>
+            <span class="pool-param-value" title={$stake.pool_ticker ?? $stake.pool_id}
+              >{$stake.pool_ticker ? formatTicker($stake.pool_ticker) : $stake.pool_id}</span
+            >
+          </div>
+        {/if}
+        {#if $stake.drep_id}
+          <div class="pool-param">
+            <span class="pool-param-label">drep</span>
+            <span class="pool-param-value" title={$stake.drep_name ?? $stake.drep_id}
+              >{$stake.drep_name ?? $stake.drep_id}</span
+            >
+          </div>
+        {/if}
+      </div>
+    </div>
   {/if}
   <div class="canvas" style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}>
     {#each $sections as section, i (section.id)}
@@ -479,7 +515,7 @@
             </span>
           {/if}
         </div>
-        {#if section.block && !$drep && (!$pool || section.block.pool_id === $pool.pool_id)}
+        {#if section.block && (!isSubjectFeed || ($pool && section.block.pool_id === $pool.pool_id))}
           <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
             >{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</a
           >
@@ -568,6 +604,18 @@
     -webkit-box-orient: vertical;
   }
 
+  /* Full address stays in the DOM (copyable / select-all), clipped to one line. */
+  .stake-address {
+    font-weight: 600;
+    font-size: 13px;
+    line-height: 1.2;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    user-select: all;
+  }
+
   .pool-stake {
     font-weight: 600;
     font-size: 24px;
@@ -595,6 +643,7 @@
     flex-direction: column;
     align-items: center;
     padding: 0 6px;
+    min-width: 0; /* allow the value to shrink + ellipsize in a flex row */
   }
 
   .pool-params .pool-param + .pool-param {
@@ -613,6 +662,9 @@
     font-weight: 600;
     color: var(--text);
     white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .canvas {

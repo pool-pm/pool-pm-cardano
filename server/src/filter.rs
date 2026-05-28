@@ -9,6 +9,10 @@ use crate::state::BlockSnapshot;
 pub enum FeedFilter {
     Pool(Vec<u8>),
     DRep(Vec<u8>),
+    /// Full 29-byte reward-address payload (network/type header + 28-byte
+    /// credential). The credential is `payload[1..]`; the 29 bytes double as
+    /// db-sync `stake_address.hash_raw`.
+    Stake(Vec<u8>),
 }
 
 impl FeedFilter {
@@ -31,6 +35,8 @@ impl FeedFilter {
             "drep_script" if data.len() == 28 => {
                 Some(FeedFilter::DRep([&[0x01u8][..], &data].concat()))
             }
+            // Reward address: 1 header byte + 28-byte credential
+            "stake" | "stake_test" if data.len() == 29 => Some(FeedFilter::Stake(data)),
             _ => None,
         }
     }
@@ -39,6 +45,16 @@ impl FeedFilter {
         match self {
             FeedFilter::Pool(hash) => pool_bech32_id(hash),
             FeedFilter::DRep(bytes) => drep_bech32_id(bytes),
+            FeedFilter::Stake(payload) => {
+                // Reward-address header low nibble is the network id (1 = mainnet).
+                let hrp = if payload.first().is_some_and(|b| b & 0x0f == 1) {
+                    "stake"
+                } else {
+                    "stake_test"
+                };
+                bech32::encode::<bech32::Bech32>(bech32::Hrp::parse(hrp).unwrap(), payload)
+                    .unwrap_or_default()
+            }
         }
     }
 
@@ -49,10 +65,23 @@ impl FeedFilter {
         }
     }
 
-    pub fn delegators<'a>(&self, snap: &'a BlockSnapshot) -> Option<&'a HashSet<Vec<u8>>> {
+    /// The full 29-byte reward-address payload for a stake feed (also db-sync
+    /// `stake_address.hash_raw`); `None` for pool/drep feeds.
+    pub fn stake_payload(&self) -> Option<&Vec<u8>> {
         match self {
-            FeedFilter::Pool(hash) => snap.pool_delegators.get(hash),
-            FeedFilter::DRep(bytes) => snap.drep_delegators.get(bytes),
+            FeedFilter::Stake(payload) => Some(payload),
+            _ => None,
+        }
+    }
+
+    /// The set of stake credentials whose transactions belong to this feed,
+    /// resolved against the current snapshot. Pool/drep feeds use their delegator
+    /// set; a stake feed is just its own single credential.
+    pub fn current_delegators(&self, snap: &BlockSnapshot) -> HashSet<Vec<u8>> {
+        match self {
+            FeedFilter::Pool(hash) => snap.pool_delegators.get(hash).cloned().unwrap_or_default(),
+            FeedFilter::DRep(bytes) => snap.drep_delegators.get(bytes).cloned().unwrap_or_default(),
+            FeedFilter::Stake(payload) => HashSet::unit(payload[1..].to_vec()),
         }
     }
 }
@@ -168,17 +197,27 @@ pub fn apply_stake_change(tx: &mut BlockTx, delegators: &HashSet<Vec<u8>>, filte
             net -= *amount as i64;
         }
     }
-    // Add delegation impact: live_stake gained/lost from delegation certificates
-    let feed_id = filter.feed_id();
-    for deleg in &tx.delegations {
-        let (to_id, from_id) = match filter {
-            FeedFilter::Pool(_) => (deleg.to_pool_id.as_deref(), deleg.from_pool_id.as_deref()),
-            FeedFilter::DRep(_) => (deleg.to_drep_id.as_deref(), deleg.from_drep_id.as_deref()),
-        };
-        if to_id == Some(feed_id.as_str()) && from_id != Some(feed_id.as_str()) {
-            net += deleg.live_stake;
-        } else if from_id == Some(feed_id.as_str()) && to_id != Some(feed_id.as_str()) {
-            net -= deleg.live_stake;
+    // Delegation impact (live_stake gained/lost from delegation certificates)
+    // applies only to pool/drep feeds. A stake address's own balance doesn't
+    // change when it re-delegates, so skip it for stake feeds.
+    let pool_or_drep = match filter {
+        FeedFilter::Pool(_) => Some(false),
+        FeedFilter::DRep(_) => Some(true),
+        FeedFilter::Stake(_) => None,
+    };
+    if let Some(is_drep) = pool_or_drep {
+        let feed_id = filter.feed_id();
+        for deleg in &tx.delegations {
+            let (to_id, from_id) = if is_drep {
+                (deleg.to_drep_id.as_deref(), deleg.from_drep_id.as_deref())
+            } else {
+                (deleg.to_pool_id.as_deref(), deleg.from_pool_id.as_deref())
+            };
+            if to_id == Some(feed_id.as_str()) && from_id != Some(feed_id.as_str()) {
+                net += deleg.live_stake;
+            } else if from_id == Some(feed_id.as_str()) && to_id != Some(feed_id.as_str()) {
+                net -= deleg.live_stake;
+            }
         }
     }
     if net != 0 {

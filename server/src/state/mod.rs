@@ -580,6 +580,17 @@ impl State {
         db.assets_by_policy(policy, cursor, limit).await.ok()
     }
 
+    /// Fetch recent blocks touching a stake address (29-byte `hash_raw`) from
+    /// db-sync, newest-first, for feed replay.
+    pub async fn stake_recent_blocks(
+        &self,
+        hash_raw: &[u8],
+        limit: i64,
+    ) -> Option<Vec<(u64, String, u64)>> {
+        let db = self.db().await?;
+        db.stake_recent_blocks(hash_raw, limit).await.ok()
+    }
+
     /// Rollback to the given slot: drop all snapshots after it.
     /// Returns false if history is empty after truncation (snapshot was too old).
     pub fn rollback(&mut self, slot: u64) -> bool {

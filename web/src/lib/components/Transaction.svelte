@@ -1,9 +1,20 @@
 <script lang="ts">
   import type { AssetInfo, DelegationInfo, FeedTx, TxInput, TxOutputInfo, VoteInfo } from '../types';
-  import { config } from '../stores';
+  import { config, stake } from '../stores';
   import { poolColor, formatTicker } from '../layout';
   import { nonChangeOutputs as computeNonChangeOutputs } from '../change';
+  import { stakeCredential, rewardCredential } from '../bech32';
   import dappRegistry from '../dapp_addresses.json';
+
+  // On a stake feed, highlight inputs/outputs belonging to the feed's stake
+  // address (any address sharing its credential — incl. ones shown as handles)
+  // with the same color as the info circle.
+  const feedStakeCred = $derived($stake ? rewardCredential($stake.stake_address) : null);
+  const ownedColor = $derived($stake ? poolColor($stake.stake_address) : null);
+  function ownedAddressColor(address: string | null | undefined): string | null {
+    if (!feedStakeCred || !address) return null;
+    return stakeCredential(address) === feedStakeCred ? ownedColor : null;
+  }
 
   const dappLookup: Record<string, string> = Object.fromEntries(
     Object.entries(dappRegistry as Record<string, string[]>).flatMap(([name, addrs]) =>
@@ -246,9 +257,11 @@
               {/if}
             {/if}
             {#if addressLabel(output.address, output.handle)}
-              <span class="addr mono label">{addressLabel(output.address, output.handle)}</span>
+              <span class="addr mono label" style:color={ownedAddressColor(output.address)}
+                >{addressLabel(output.address, output.handle)}</span
+              >
             {:else}
-              <span class="addr mono">{output.address}</span>
+              <span class="addr mono" style:color={ownedAddressColor(output.address)}>{output.address}</span>
             {/if}
           </div>
         {/each}
@@ -265,9 +278,11 @@
         {#each visibleInputs as input}
           <div class="addr-item">
             {#if addressLabel(input.address ?? '', input.handle)}
-              <span class="addr mono label">{addressLabel(input.address ?? '', input.handle)}</span>
+              <span class="addr mono label" style:color={ownedAddressColor(input.address)}
+                >{addressLabel(input.address ?? '', input.handle)}</span
+              >
             {:else}
-              <span class="addr mono">{input.address ?? '???'}</span>
+              <span class="addr mono" style:color={ownedAddressColor(input.address)}>{input.address ?? '???'}</span>
             {/if}
           </div>
         {/each}

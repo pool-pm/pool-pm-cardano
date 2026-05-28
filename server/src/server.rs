@@ -63,6 +63,10 @@ const MAX_REPLAY_BLOCKS: usize = 30;
 /// replay. Must match `STAKE_CHANGE_PRUNE_DIVISOR` in Feed.svelte.
 const STAKE_CHANGE_DIVISOR: u64 = 1_000; // 0.1%
 
+/// Recent blocks to replay on a stake-address feed connection (fetched from
+/// db-sync, since stake addresses are not pre-indexed in memory).
+const STAKE_REPLAY_BLOCKS: i64 = 30;
+
 // --- SSE event builders ---
 
 fn config_event(
@@ -122,6 +126,83 @@ fn drep_sse_event(drep_bytes: &[u8], snap: Option<&BlockSnapshot>) -> Result<Sse
         live_stake,
         delegators
     )))
+}
+
+#[derive(serde::Serialize)]
+struct StakeEvent<'a> {
+    #[serde(rename = "type")]
+    kind: &'a str,
+    stake_address: &'a str,
+    /// String-encoded (can exceed JS Number.MAX_SAFE_INTEGER).
+    balance: String,
+    rewards: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pool_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pool_ticker: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    drep_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    drep_name: Option<String>,
+}
+
+/// Build a `Stake` info event for a stake feed: ADA balance, available rewards,
+/// and current pool/drep delegation — all read from the snapshot by the 28-byte
+/// credential (`cred`).
+fn stake_sse_event(
+    stake_address: &str,
+    cred: &[u8],
+    snap: Option<&BlockSnapshot>,
+) -> Result<SseEvent, Infallible> {
+    let balance = snap.and_then(|s| s.stakes.get(cred).copied()).unwrap_or(0);
+    let rewards = snap.and_then(|s| s.rewards.get(cred).copied()).unwrap_or(0);
+    let (pool_id, pool_ticker) = match snap.and_then(|s| s.pool_delegations.get(cred)) {
+        Some(hash) => {
+            let ticker = snap
+                .and_then(|s| s.pools.get(&hex::encode(hash)))
+                .and_then(|p| p.ticker.clone());
+            (Some(pool_bech32_id(hash)), ticker)
+        }
+        None => (None, None),
+    };
+    let (drep_id, drep_name) = match snap.and_then(|s| s.drep_delegations.get(cred)) {
+        Some(bytes) => {
+            let name = match bytes.first() {
+                Some(0x02) => Some("Always Abstain".to_string()),
+                Some(0x03) => Some("Always No Confidence".to_string()),
+                _ => snap
+                    .and_then(|s| s.dreps.get(bytes))
+                    .and_then(|d| d.given_name.clone()),
+            };
+            (Some(drep_bech32_id(bytes)), name)
+        }
+        None => (None, None),
+    };
+    let json = serde_json::to_string(&StakeEvent {
+        kind: "Stake",
+        stake_address,
+        balance: balance.to_string(),
+        rewards: rewards.to_string(),
+        pool_id,
+        pool_ticker,
+        drep_id,
+        drep_name,
+    })
+    .unwrap();
+    Ok(SseEvent::default().data(json))
+}
+
+/// Send current stake-address info as an SSE event.
+async fn send_stake_info(
+    sender: &Sender<Result<SseEvent, Infallible>>,
+    chain_state: &RwLock<State>,
+    stake_address: &str,
+    cred: &[u8],
+) {
+    let guard = chain_state.read().await;
+    let _ = sender
+        .send(stake_sse_event(stake_address, cred, guard.current()))
+        .await;
 }
 
 /// Query string for SSE endpoints. `dpr` is the client's
@@ -469,11 +550,18 @@ async fn send_replay_blocks(
                 if block.filter_by_delegators {
                     // Computes UTXO changes + delegation impact in one pass
                     filter::apply_stake_changes(&mut txs, delegators, feed_filter);
+                    let is_stake = matches!(feed_filter, filter::FeedFilter::Stake(_));
                     txs.retain(|tx| {
-                        !tx.delegations.is_empty()
-                            || tx
-                                .stake_change
-                                .map_or(false, |sc| sc.unsigned_abs() > stake_threshold)
+                        if is_stake {
+                            // Single address: show every tx that touches it, like the
+                            // live path — not the pool/drep stake-change threshold.
+                            tx.stake_credentials.iter().any(|c| delegators.contains(c))
+                        } else {
+                            !tx.delegations.is_empty()
+                                || tx
+                                    .stake_change
+                                    .map_or(false, |sc| sc.unsigned_abs() > stake_threshold)
+                        }
                     });
                 }
                 if txs.is_empty() && block.filter_by_delegators {
@@ -654,6 +742,23 @@ fn build_live_stream(
                                 last_live_stake = current_live_stake;
                             }
                         }
+                        filter::FeedFilter::Stake(ref payload) => {
+                            let cred = &payload[1..];
+                            let current_balance = {
+                                let guard = chain_state.read().await;
+                                guard.current().and_then(|s| s.stakes.get(cred).copied())
+                            };
+                            if current_balance != last_live_stake {
+                                let stake_address = filter.feed_id();
+                                let guard = chain_state.read().await;
+                                buf.push_back(stake_sse_event(
+                                    &stake_address,
+                                    cred,
+                                    guard.current(),
+                                ));
+                                last_live_stake = current_balance;
+                            }
+                        }
                     }
                 }
 
@@ -661,8 +766,7 @@ fn build_live_stream(
                     let guard = chain_state.read().await;
                     guard
                         .current()
-                        .and_then(|snap| filter.delegators(snap))
-                        .cloned()
+                        .map(|snap| filter.current_delegators(snap))
                         .unwrap_or_default()
                 };
                 if let Some(sse) = filter
@@ -734,8 +838,7 @@ async fn filtered_events(
         let guard = state.chain_state.read().await;
         let delegators = guard
             .current()
-            .and_then(|snap| filter.delegators(snap))
-            .cloned()
+            .map(|snap| filter.current_delegators(snap))
             .unwrap_or_default();
         let (pool_id, pool_ticker, pool_hash) = extract_pool_meta(guard.current(), &filter);
         (delegators, pool_id, pool_ticker, pool_hash)
@@ -1019,6 +1122,51 @@ async fn filtered_events(
             .await;
 
             exclude_slots
+        } else if let Some(payload) = replay_filter.stake_payload().cloned() {
+            let cred = payload[1..].to_vec();
+            let stake_address = replay_filter.feed_id();
+            send_stake_info(&sender, &replay_state.chain_state, &stake_address, &cred).await;
+
+            let blocks = {
+                let guard = replay_state.chain_state.read().await;
+                guard
+                    .stake_recent_blocks(&payload, STAKE_REPLAY_BLOCKS)
+                    .await
+            }
+            .unwrap_or_default();
+
+            let exclude_slots: HashSet<u64> = blocks.iter().map(|(slot, _, _)| *slot).collect();
+
+            let mut replay_blocks: Vec<ReplayBlock> = blocks
+                .into_iter()
+                .map(|(slot, hash, number)| ReplayBlock {
+                    slot,
+                    hash,
+                    number,
+                    pool_id: None,
+                    pool_ticker: None,
+                    filter_by_delegators: true,
+                })
+                .collect();
+
+            send_replay_blocks(
+                &sender,
+                &mut replay_blocks,
+                &replay_delegators,
+                &replay_filter,
+                &HashMap::new(),
+                0,
+                &replay_state.nftcdn,
+                &replay_state.genesis,
+                &replay_state.chain_state,
+                replay_state.n2n_addr,
+                replay_state.magic,
+                replay_state.mainnet,
+                size,
+            )
+            .await;
+
+            exclude_slots
         } else {
             HashSet::new()
         };
@@ -1049,6 +1197,13 @@ async fn filtered_events(
             let snap = guard.current();
             let live_stake = snap.and_then(|s| State::drep_live_stake(s, bytes));
             (None, live_stake)
+        }
+        filter::FeedFilter::Stake(ref payload) => {
+            let guard = state.chain_state.read().await;
+            let balance = guard
+                .current()
+                .and_then(|s| s.stakes.get(&payload[1..]).copied());
+            (None, balance)
         }
     };
 

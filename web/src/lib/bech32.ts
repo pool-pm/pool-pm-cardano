@@ -50,3 +50,13 @@ export function stakeCredential(addr: string): string | null {
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
 }
+
+// Extract the stake credential (28 bytes after the header) from a reward
+// (stake1…) address as hex — comparable to stakeCredential() of a payment address.
+export function rewardCredential(stakeAddr: string): string | null {
+  const bytes = bech32Decode(stakeAddr);
+  if (!bytes || bytes.length < 29) return null;
+  return Array.from(bytes.slice(1, 29))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
