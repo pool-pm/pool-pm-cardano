@@ -80,6 +80,36 @@ impl NftcdnConfig {
         Some(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
     }
 
+    /// Build a fully signed NFTCDN URL. `path` is the endpoint including any
+    /// trailing slash (e.g. `"metadata"`, `"files/0/"`, `"preview"`). `query` is
+    /// extra params without a leading `&` (e.g. `"size=512"`) or `""` for none.
+    /// `tk` is always the first query param and is signed with an empty value, as
+    /// nftcdn.io requires (query-param order is significant). When no signing key
+    /// is configured (preview network), the URL is returned unsigned.
+    pub fn signed_url(&self, fingerprint: &str, path: &str, query: &str) -> String {
+        let base = format!("https://{}.{}/{}", fingerprint, self.subdomain, path);
+        let Some(key) = self.key.as_ref() else {
+            return if query.is_empty() {
+                base
+            } else {
+                format!("{}?{}", base, query)
+            };
+        };
+        let to_sign = if query.is_empty() {
+            format!("{}?tk=", base)
+        } else {
+            format!("{}?tk=&{}", base, query)
+        };
+        let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key size");
+        mac.update(to_sign.as_bytes());
+        let tk = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+        if query.is_empty() {
+            format!("{}?tk={}", base, tk)
+        } else {
+            format!("{}?tk={}&{}", base, tk, query)
+        }
+    }
+
     /// Precompute signed tokens for every rung of [`SIZE_LADDER`]. Returns an
     /// empty vec when no signing key is configured (URLs are then unsigned).
     pub fn compute_ladder(&self, fingerprint: &str, path: &str) -> Vec<(u16, String)> {
@@ -108,6 +138,41 @@ mod tests {
             .compute_tk("asset1cpfcfxay6s73xez8srvhf0pydtd9yqs8hyfawv", "image", 128)
             .unwrap();
         assert_eq!(tk, "ZZ388CZwJhhLzm2djfRwaaPb8I_w7luNh5hOHJ2Ev4I");
+    }
+
+    #[test]
+    fn test_signed_url_matches_known_token() {
+        // Same fingerprint/size as test_compute_tk_preprod_image_example, so the
+        // embedded tk must match that known-good token.
+        let config = NftcdnConfig {
+            subdomain: "preprod.nftcdn.io",
+            key: Some(decode_key(PREPROD_KEY)),
+        };
+        let url = config.signed_url(
+            "asset1cpfcfxay6s73xez8srvhf0pydtd9yqs8hyfawv",
+            "image",
+            "size=128",
+        );
+        assert_eq!(
+            url,
+            "https://asset1cpfcfxay6s73xez8srvhf0pydtd9yqs8hyfawv.preprod.nftcdn.io/image?tk=ZZ388CZwJhhLzm2djfRwaaPb8I_w7luNh5hOHJ2Ev4I&size=128"
+        );
+    }
+
+    #[test]
+    fn test_signed_url_unsigned_without_key() {
+        let config = NftcdnConfig {
+            subdomain: "preview.nftcdn.io",
+            key: None,
+        };
+        assert_eq!(
+            config.signed_url("asset1xyz", "metadata", ""),
+            "https://asset1xyz.preview.nftcdn.io/metadata"
+        );
+        assert_eq!(
+            config.signed_url("asset1xyz", "preview", "size=512"),
+            "https://asset1xyz.preview.nftcdn.io/preview?size=512"
+        );
     }
 
     #[test]

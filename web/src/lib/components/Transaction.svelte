@@ -215,23 +215,25 @@
               <div class="assets">
                 {#each output.assets.slice(0, visibleAssetCount) as asset}
                   <div class="asset">
-                    <img
-                      class="asset-thumb"
-                      src={nftcdnUrl(asset)}
-                      alt={asset.fingerprint}
-                      loading="lazy"
-                      onload={(e: Event) => {
-                        (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
-                      }}
-                      onerror={(e: Event) => {
-                        const el = (e.target as HTMLElement).parentElement!;
-                        el.style.display = 'none';
-                        el.dispatchEvent(new Event('remeasure', { bubbles: true }));
-                        failedAssets = { ...failedAssets, [oi]: (failedAssets[oi] ?? 0) + 1 };
-                      }}
-                      onmouseenter={showPreview}
-                      onmouseleave={hidePreview}
-                    />
+                    <a class="asset-link" href="/{asset.fingerprint}" target="_blank" rel="noopener noreferrer">
+                      <img
+                        class="asset-thumb"
+                        src={nftcdnUrl(asset)}
+                        alt={asset.fingerprint}
+                        loading="lazy"
+                        onload={(e: Event) => {
+                          (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
+                        }}
+                        onerror={(e: Event) => {
+                          const el = (e.target as HTMLElement).closest('.asset') as HTMLElement;
+                          el.style.display = 'none';
+                          el.dispatchEvent(new Event('remeasure', { bubbles: true }));
+                          failedAssets = { ...failedAssets, [oi]: (failedAssets[oi] ?? 0) + 1 };
+                        }}
+                        onmouseenter={showPreview}
+                        onmouseleave={hidePreview}
+                      />
+                    </a>
                     {#if thumbSize >= 32 && asset.quantity !== '1'}
                       <span class="asset-label">{formatAssetQuantity(asset.quantity)}</span>
                     {/if}
@@ -476,6 +478,12 @@
     display: flex;
     flex-direction: column;
     align-items: center;
+  }
+
+  /* Transparent wrapper: links the thumbnail to its asset page without
+     affecting the .asset flex layout. */
+  .asset-link {
+    display: contents;
   }
 
   .asset-label {

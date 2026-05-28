@@ -38,6 +38,18 @@ export interface AssetInfo {
   size: number;
 }
 
+export interface AssetMedia {
+  src: string;
+  type?: string;
+  name: string;
+}
+
+export interface AssetMediaResponse {
+  fingerprint: string;
+  name?: string;
+  media: AssetMedia[];
+}
+
 export interface DelegationInfo {
   stake_address: string;
   from_pool_id?: string;

@@ -33,6 +33,7 @@ struct AppState {
     bus: Arc<EventBus>,
     chain_state: Arc<RwLock<State>>,
     nftcdn: NftcdnConfig,
+    http: reqwest::Client,
     genesis: GenesisConfig,
     n2n_addr: SocketAddr,
     magic: u64,
@@ -1057,6 +1058,98 @@ async fn filtered_events(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+#[derive(serde::Serialize)]
+struct AssetMedia {
+    src: String,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    media_type: Option<String>,
+    name: String,
+}
+
+#[derive(serde::Serialize)]
+struct AssetMediaResponse {
+    fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    media: Vec<AssetMedia>,
+}
+
+/// True for a syntactically valid CIP-14 fingerprint. Guards against injecting
+/// `.`/`/`/`:` into the NFTCDN URL host (SSRF), since the fingerprint becomes the
+/// request subdomain. NFTCDN does the real existence check.
+fn is_valid_fingerprint(fp: &str) -> bool {
+    fp.starts_with("asset1")
+        && fp.len() <= 64
+        && fp
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+}
+
+/// Resolve an asset's displayable media via NFTCDN. Fetches the (server-signed)
+/// `/metadata`, then returns ready-signed URLs: one entry per `metadata.files`
+/// entry when present (served from `/files/{i}/`), otherwise a single full-res
+/// `/preview`. mediaType is passed through so the frontend media player can pick
+/// the right renderer.
+async fn asset_media(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(fingerprint): axum::extract::Path<String>,
+) -> Result<axum::Json<AssetMediaResponse>, StatusCode> {
+    if !is_valid_fingerprint(&fingerprint) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let meta_url = state.nftcdn.signed_url(&fingerprint, "metadata", "");
+    let resp = state
+        .http
+        .get(&meta_url)
+        .send()
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    if !resp.status().is_success() {
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+    let body = resp.text().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let meta: serde_json::Value =
+        serde_json::from_str(&body).map_err(|_| StatusCode::BAD_GATEWAY)?;
+
+    let inner = &meta["metadata"];
+    let name = inner["name"]
+        .as_str()
+        .or_else(|| meta["name"].as_str())
+        .map(str::to_string);
+
+    let media = match inner["files"].as_array() {
+        Some(files) if !files.is_empty() => files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| AssetMedia {
+                src: state
+                    .nftcdn
+                    .signed_url(&fingerprint, &format!("files/{}/", i), ""),
+                media_type: f["mediaType"].as_str().map(str::to_string),
+                name: f["name"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("{}-{}", fingerprint, i)),
+            })
+            .collect(),
+        _ => vec![AssetMedia {
+            src: state.nftcdn.signed_url(&fingerprint, "preview", ""),
+            media_type: inner["mediaType"].as_str().map(str::to_string),
+            name: name.clone().unwrap_or_else(|| fingerprint.clone()),
+        }],
+    };
+
+    Ok(axum::Json(AssetMediaResponse {
+        fingerprint,
+        name,
+        media,
+    }))
+}
+
 pub async fn serve(
     addr: SocketAddr,
     bus: Arc<EventBus>,
@@ -1081,6 +1174,7 @@ pub async fn serve(
         bus,
         chain_state,
         nftcdn,
+        http: reqwest::Client::new(),
         genesis,
         n2n_addr,
         magic,
@@ -1089,6 +1183,7 @@ pub async fn serve(
     let app = Router::new()
         .route("/events", get(events))
         .route("/events/{feed_id}", get(filtered_events))
+        .route("/api/asset/{fingerprint}", get(asset_media))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

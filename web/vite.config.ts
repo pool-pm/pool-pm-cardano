@@ -3,15 +3,16 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { fileURLToPath, URL } from 'node:url';
 
 export default defineConfig({
-	plugins: [svelte()],
-	resolve: {
-		alias: {
-			$lib: fileURLToPath(new URL('./src/lib', import.meta.url)),
-		},
-	},
-	server: {
-		proxy: {
-			'/events': 'http://localhost:3000',
-		},
-	},
+  plugins: [svelte()],
+  resolve: {
+    alias: {
+      $lib: fileURLToPath(new URL('./src/lib', import.meta.url)),
+    },
+  },
+  server: {
+    proxy: {
+      '/events': 'http://localhost:3000',
+      '/api': 'http://localhost:3000',
+    },
+  },
 });
