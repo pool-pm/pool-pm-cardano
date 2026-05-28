@@ -9,13 +9,57 @@ export function formatTicker(ticker: string): string {
     .slice(0, 5);
 }
 
+// Largest sRGB-displayable OKLCH chroma for a given lightness & hue, found by
+// binary-searching the oklab→linear-sRGB gamut boundary (Ottosson's matrices).
+// Lets us vary chroma without straying past the gamut, where higher values just
+// clamp to the same rendered color.
+function maxSrgbChroma(l: number, hueDeg: number): number {
+  const hr = (hueDeg * Math.PI) / 180;
+  const ca = Math.cos(hr);
+  const cb = Math.sin(hr);
+  const inGamut = (c: number): boolean => {
+    const a = c * ca;
+    const b = c * cb;
+    const l_ = l + 0.3963377774 * a + 0.2158037573 * b;
+    const m_ = l - 0.1055613458 * a - 0.0638541728 * b;
+    const s_ = l - 0.0894841775 * a - 1.291485548 * b;
+    const lc = l_ * l_ * l_;
+    const mc = m_ * m_ * m_;
+    const sc = s_ * s_ * s_;
+    const r = 4.0767416621 * lc - 3.3077115913 * mc + 0.2309699292 * sc;
+    const g = -1.2684380046 * lc + 2.6097574011 * mc - 0.3413193965 * sc;
+    const bl = -0.0041960863 * lc - 0.7034186147 * mc + 1.707614701 * sc;
+    const eps = 1e-4;
+    return r >= -eps && r <= 1 + eps && g >= -eps && g <= 1 + eps && bl >= -eps && bl <= 1 + eps;
+  };
+  let lo = 0;
+  let hi = 0.4;
+  for (let i = 0; i < 20; i++) {
+    const mid = (lo + hi) / 2;
+    if (inGamut(mid)) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+const LIGHTNESS = 0.7; // fixed for legibility on the black background
+// Fractions of each hue's max in-gamut chroma. Kept high so every color stays
+// vivid; only 3 steps because the vivid band is narrow and chroma is ~perceptually
+// uniform, so finer steps wouldn't be distinguishable (hue carries the variety).
+const CHROMA_STEPS = [0.7, 0.85, 1];
+
 export function poolColor(poolId?: string): string {
   const key = poolId?.slice(5) ?? '';
   let h = 0;
   for (let i = 0; i < key.length; i++) {
     h = Math.imul(h ^ key.charCodeAt(i), 0x9e3779b9);
   }
-  return `oklch(0.7 0.25 ${(h >>> 0) % 360})`;
+  const u = h >>> 0;
+  const hue = u % 360;
+  // Vary hue and chroma (not lightness) for more distinguishable colors. Chroma
+  // is a fraction of this hue's gamut max, so it never clamps to a duplicate.
+  const chroma = maxSrgbChroma(LIGHTNESS, hue) * CHROMA_STEPS[Math.floor(u / 360) % CHROMA_STEPS.length];
+  return `oklch(${LIGHTNESS} ${chroma.toFixed(4)} ${hue})`;
 }
 
 // --- Unified grid layout action ---
