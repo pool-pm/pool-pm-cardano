@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import { sanitizeQuery, searchTarget } from '../search';
 
   // `visible` is the shared idle-fade state (from App). The closed icon follows
   // it; once the bar is open it stays visible regardless.
@@ -26,6 +27,17 @@
     }
   }
 
+  // Filter to the allowed charset; navigate as soon as the field holds a complete
+  // address (see searchTarget).
+  function onInput(e: Event) {
+    const el = e.currentTarget as HTMLInputElement;
+    const clean = sanitizeQuery(el.value);
+    query = clean;
+    if (el.value !== clean) el.value = clean;
+    const target = searchTarget(clean);
+    if (target) location.href = target;
+  }
+
   // While open, a pointer down outside the bar closes it.
   $effect(() => {
     if (!open) return;
@@ -42,7 +54,8 @@
 <div class="search" class:open class:hidden={!visible && !open} bind:this={containerEl}>
   <input
     bind:this={inputEl}
-    bind:value={query}
+    value={query}
+    oninput={onInput}
     class="search-input"
     type="text"
     placeholder="Search…"

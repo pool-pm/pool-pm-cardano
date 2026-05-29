@@ -16,7 +16,15 @@ cargo run                  # Build and run
 cargo clippy               # Lint
 ```
 
-There are no tests in this project currently.
+## Testing
+
+```bash
+cargo test                    # Rust unit tests (server/)
+cd web && pnpm test           # Frontend unit tests (Vitest)
+```
+
+- **Rust**: unit tests live in a `#[cfg(test)] mod tests` block in the same file (e.g. `server/src/nftcdn.rs`). `cargo test` compiles the crate, so — like any build — it needs a reachable cardano-db-sync DB (the sqlx `query!` macros are validated at compile time). Test pure logic; queries that need the DB aren't unit-testable.
+- **Frontend**: Vitest. Put a `*.test.ts` next to the module it covers (e.g. `web/src/lib/search.test.ts`) and `import { describe, it, expect } from 'vitest'`. Test **pure functions** — extract logic out of `.svelte` components into a plain `.ts` module so it's testable without a DOM (see `search.ts` + `search.test.ts`). Run a single file with `pnpm test <path>`.
 
 ## Architecture
 
