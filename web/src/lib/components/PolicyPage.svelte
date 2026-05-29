@@ -47,6 +47,11 @@
   const visible = $derived(assets.filter((a) => !broken.has(a.fingerprint)));
 
   const cols = $derived(Math.max(1, Math.floor((containerW + GAP) / ROW)));
+  // Exact width of one full row of `cols` cells. Pinning the flex container to
+  // this (rather than the full container width) makes it wrap at exactly `cols`
+  // per row — matching the slice math deterministically, instead of letting
+  // sub-pixel rounding drift to cols-1 and unmount on-screen rows (black gaps).
+  const rowWidth = $derived(cols * CELL + (cols - 1) * GAP);
   const loadedRows = $derived(Math.ceil(visible.length / cols));
   // Content height: rows are ROW apart, the last row adds only its cell height;
   // VPAD is reserved above the first row and below the last.
@@ -118,7 +123,7 @@
     <div class="status">No assets for this policy.</div>
   {:else}
     <div class="spacer" style="height:{spacerHeight}px">
-      <div class="window" style="transform:translateY({offsetY}px); --cols:{cols}">
+      <div class="window" style="transform:translateY({offsetY}px); width:{rowWidth}px">
         {#each slice as a (a.fingerprint)}
           {@const label = a.name ?? a.fingerprint}
           <a class="cell" href={'/' + a.fingerprint} aria-label={label} title={label}>
@@ -163,18 +168,24 @@
     width: 100%;
   }
 
+  /* flex-wrap (not grid) so the partial last row is centered too, not left-packed.
+     Width is pinned (inline) to exactly `cols` cells and the box is centered via
+     auto margins; that makes it wrap at exactly `cols`/row (no sub-pixel drift)
+     while justify-content:center centers the partial last row. */
   .window {
     position: absolute;
     top: 0;
     left: 0;
     right: 0;
-    display: grid;
-    grid-template-columns: repeat(var(--cols), 128px);
+    margin-inline: auto;
+    display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     justify-content: center;
   }
 
   .cell {
+    flex: none;
     width: 128px;
     height: 128px;
     display: block;
