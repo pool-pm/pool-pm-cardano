@@ -50,6 +50,7 @@
   // Auto-hide the corner chrome (logo + search icon) when idle, reveal on any
   // interaction. The open search bar opts out of hiding (handled in SearchBar).
   let uiVisible = $state(true);
+  let searchOpen = $state(false); // bound from SearchBar; hides the logo while open
   let hideTimer: ReturnType<typeof setTimeout>;
 
   function showUiTransiently() {
@@ -85,11 +86,17 @@
   });
 </script>
 
-<a class="home-logo" class:hidden={!uiVisible} href="/" aria-label="pool.pm home">
+<a
+  class="home-logo"
+  class:search-hidden={searchOpen}
+  class:idle-hidden={!uiVisible && !searchOpen}
+  href="/"
+  aria-label="pool.pm home"
+>
   <img src="/pool.pm.svg" alt="pool.pm" />
 </a>
 
-<SearchBar visible={uiVisible} />
+<SearchBar visible={uiVisible} bind:open={searchOpen} />
 
 <main>
   {#if assetFingerprint}
@@ -106,15 +113,22 @@
     position: fixed;
     top: 12px;
     left: 12px;
-    z-index: 100;
+    z-index: 101; /* above the search bar, which expands over this spot */
     display: block;
     opacity: 1;
     transition: opacity 0.15s ease; /* fast fade-in on interaction */
   }
-  .home-logo.hidden {
+  /* Slow fade-out when idle. */
+  .home-logo.idle-hidden {
     opacity: 0;
     pointer-events: none;
-    transition: opacity 1.5s ease; /* slow fade-out when idle */
+    transition: opacity 1.5s ease;
+  }
+  /* Quicker fade-out (matching the bar's expand) while the search is open. */
+  .home-logo.search-hidden {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
   }
   .home-logo img {
     width: 48px;

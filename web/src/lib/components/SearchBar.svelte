@@ -3,23 +3,26 @@
 
   // `visible` is the shared idle-fade state (from App). The closed icon follows
   // it; once the bar is open it stays visible regardless.
-  let { visible = true }: { visible?: boolean } = $props();
+  let { visible = true, open = $bindable(false) }: { visible?: boolean; open?: boolean } = $props();
 
-  let open = $state(false);
   let query = $state('');
   let inputEl = $state<HTMLInputElement>();
   let containerEl = $state<HTMLElement>();
 
-  async function onIconClick() {
+  async function onIconClick(e: MouseEvent) {
+    // Don't let the button keep focus after its action — otherwise an orientation
+    // reflow can re-show its focus ring.
+    const btn = e.currentTarget as HTMLButtonElement;
     if (!open) {
       open = true;
       await tick();
       inputEl?.focus();
     } else if (query.trim() === '') {
       open = false;
-      inputEl?.blur();
+      btn.blur();
     } else {
       // Non-empty: confirm the search — null action for now.
+      btn.blur();
     }
   }
 
@@ -63,6 +66,7 @@
     border-radius: 24px;
     overflow: hidden;
     background: transparent;
+    box-shadow: 0 2px 12px rgb(0 0 0 / 0.6); /* float above the feed */
     opacity: 1;
     transition:
       opacity 0.15s ease,
@@ -92,9 +96,9 @@
       padding 0.25s ease;
   }
   .search.open .search-input {
-    /* Extend left to just past the logo: viewport minus logo (12 + 48) + gap (12)
-       + this bar's icon (48) + right margin (12) + scrollbar. */
-    width: calc(100vw - 132px - var(--scrollbar-width, 0px));
+    /* Extend to the top-left margin: viewport minus left margin (12) + this bar's
+       icon (48) + right margin (12) + scrollbar. */
+    width: calc(100vw - 72px - var(--scrollbar-width, 0px));
     padding: 0 8px 0 16px;
   }
 
@@ -110,10 +114,16 @@
     align-items: center;
     justify-content: center;
     padding: 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* No focus ring for pointer/programmatic focus (e.g. after a click or an
+     orientation reflow); keep it for keyboard navigation. */
+  .search-icon:focus:not(:focus-visible) {
+    outline: none;
   }
   .search-icon img {
-    width: 24px;
-    height: 24px;
+    width: 32px;
+    height: 32px;
     display: block;
   }
 </style>
