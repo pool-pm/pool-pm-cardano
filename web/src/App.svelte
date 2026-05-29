@@ -52,11 +52,12 @@
   let uiVisible = $state(true);
   let searchOpen = $state(false); // bound from SearchBar; hides the logo while open
   let hideTimer: ReturnType<typeof setTimeout>;
+  const IDLE_HIDE_MS = 3000; // hide the corner chrome this long after the last interaction
 
   function showUiTransiently() {
     uiVisible = true;
     clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => (uiVisible = false), 1000);
+    hideTimer = setTimeout(() => (uiVisible = false), IDLE_HIDE_MS);
   }
 
   // Expose the scrollbar width so right-anchored chrome (search) clears it.
