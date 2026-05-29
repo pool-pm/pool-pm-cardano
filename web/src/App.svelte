@@ -47,6 +47,10 @@
   });
 </script>
 
+<a class="home-logo" href="/" aria-label="pool.pm home">
+  <img src="/pool.pm.svg" alt="pool.pm" />
+</a>
+
 <main>
   {#if assetFingerprint}
     <AssetPage fingerprint={assetFingerprint} />
@@ -56,3 +60,18 @@
     <Feed />
   {/if}
 </main>
+
+<style>
+  .home-logo {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    z-index: 100;
+    display: block;
+  }
+  .home-logo img {
+    height: 64px;
+    width: auto;
+    display: block;
+  }
+</style>
