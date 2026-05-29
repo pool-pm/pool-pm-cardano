@@ -199,6 +199,9 @@ impl DbSync {
             r#"SELECT id, fingerprint AS "fingerprint!", name AS "name!"
             FROM multi_asset
             WHERE policy = $1 AND ($2::bigint IS NULL OR id < $2)
+            -- Hide CIP-68 reference NFTs (CIP-67 label 100); the (222) user token
+            -- renders the same image, so they'd otherwise show as duplicates.
+            AND substring(name from 1 for 4) != '\x000643b0'
             ORDER BY id DESC
             LIMIT $3"#,
             policy,
