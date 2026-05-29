@@ -462,16 +462,23 @@
         {#if $stake.pool_id}
           <div class="pool-param">
             <span class="pool-param-label">pool</span>
-            <span class="pool-param-value" title={$stake.pool_ticker ?? $stake.pool_id}
-              >{$stake.pool_ticker ? formatTicker($stake.pool_ticker) : $stake.pool_id}</span
+            <a
+              class="pool-param-value stake-link"
+              style:color={poolColor($stake.pool_id)}
+              href="/{$stake.pool_id}"
+              title={$stake.pool_ticker ?? $stake.pool_id}
+              >{$stake.pool_ticker ? formatTicker($stake.pool_ticker) : $stake.pool_id}</a
             >
           </div>
         {/if}
         {#if $stake.drep_id}
           <div class="pool-param">
             <span class="pool-param-label">drep</span>
-            <span class="pool-param-value" title={$stake.drep_name ?? $stake.drep_id}
-              >{$stake.drep_name ?? $stake.drep_id}</span
+            <a
+              class="pool-param-value stake-link"
+              style:color={poolColor($stake.drep_id)}
+              href="/{$stake.drep_id}"
+              title={$stake.drep_name ?? $stake.drep_id}>{$stake.drep_name ?? $stake.drep_id}</a
             >
           </div>
         {/if}
@@ -482,6 +489,9 @@
     <div class="pool-circle" style:border-color={color}>
       {#if $address.balance}
         <span class="pool-stake">{formatAda($address.balance)}</span>
+      {/if}
+      {#if $address.handle}
+        <span class="stake-address" style:color>${$address.handle}</span>
       {/if}
       <span class="stake-address" style:color title={$address.address}>{$address.address}</span>
       {#if $address.stake_address}

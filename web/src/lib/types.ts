@@ -161,6 +161,7 @@ export interface AddressInfo {
   address: string;
   balance?: string;
   stake_address?: string;
+  handle?: string;
 }
 
 export interface FeedTx extends BlockTx {

@@ -235,25 +235,31 @@ struct AddressEvent<'a> {
     balance: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     stake_address: Option<String>,
+    /// ADA Handle currently held by this address, if any (without the `$`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    handle: Option<String>,
 }
 
-/// Send a payment-address info event: balance (sum of unspent UTXOs, no rewards)
-/// and its stake address (for linking to the stake feed).
+/// Send a payment-address info event: balance (sum of unspent UTXOs, no rewards),
+/// its stake address (for linking to the stake feed), and its ADA Handle if any.
 async fn send_address_info(
     sender: &Sender<Result<SseEvent, Infallible>>,
     chain_state: &RwLock<State>,
     address: &str,
     mainnet: bool,
 ) {
-    let balance = {
+    let (balance, handle) = {
         let guard = chain_state.read().await;
-        guard.address_balance(address).await.unwrap_or(0)
+        let handle = guard.current().and_then(|s| s.handle_for(address));
+        let balance = guard.address_balance(address).await.unwrap_or(0);
+        (balance, handle)
     };
     let json = serde_json::to_string(&AddressEvent {
         kind: "Address",
         address,
         balance: balance.to_string(),
         stake_address: stake_address_of(address, mainnet),
+        handle,
     })
     .unwrap();
     let _ = sender.send(Ok(SseEvent::default().data(json))).await;
