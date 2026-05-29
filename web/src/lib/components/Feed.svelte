@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { sections, config, pool, drep, stake, blockCount } from '../stores';
+  import { sections, config, pool, drep, stake, address, blockCount } from '../stores';
   import type { GenesisConfig, Section } from '../types';
   import { TX_WIDTH, FLIP_DURATION, poolColor, formatTicker, layoutGrid } from '../layout';
   import Transaction from './Transaction.svelte';
@@ -23,7 +23,7 @@
 
   // A subject feed (pool/drep/stake) vs the global homepage feed. Drives block
   // spacing, coloring, and whether the per-block minting-pool ticker is shown.
-  const isSubjectFeed = $derived(!!($pool || $drep || $stake));
+  const isSubjectFeed = $derived(!!($pool || $drep || $stake || $address));
 
   // Section positioning: absolute layout with smooth CSS transitions
   let sectionRefs = new Map<string, HTMLElement>();
@@ -226,6 +226,7 @@
     const p = $pool;
     const d = $drep;
     const s = $stake;
+    const a = $address;
     const net = $config ? networkName($config.magic) : null;
     const site = net ? `${net}.pool.pm` : 'pool.pm';
     if (d) {
@@ -234,6 +235,8 @@
       document.title = `${formatTicker(p.ticker ?? p.pool_id.slice(5, 10))} - ${site}`;
     } else if (s) {
       document.title = `${s.stake_address.slice(0, 12)}… - ${site}`;
+    } else if (a) {
+      document.title = `${a.address.slice(0, 12)}… - ${site}`;
     } else {
       document.title = site;
     }
@@ -474,6 +477,25 @@
         {/if}
       </div>
     </div>
+  {:else if $address}
+    {@const color = poolColor($address.address)}
+    <div class="pool-circle" style:border-color={color}>
+      {#if $address.balance}
+        <span class="pool-stake">{formatAda($address.balance)}</span>
+      {/if}
+      <span class="stake-address" style:color title={$address.address}>{$address.address}</span>
+      {#if $address.stake_address}
+        <div class="pool-param">
+          <span class="pool-param-label">stake</span>
+          <a
+            class="pool-param-value stake-link"
+            style:color
+            href="/{$address.stake_address}"
+            title={$address.stake_address}>{$address.stake_address}</a
+          >
+        </div>
+      {/if}
+    </div>
   {/if}
   <div class="canvas" style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}>
     {#each $sections as section, i (section.id)}
@@ -607,13 +629,19 @@
   /* Full address stays in the DOM (copyable / select-all), clipped to one line. */
   .stake-address {
     font-weight: 600;
-    font-size: 13px;
+    font-size: 16px;
     line-height: 1.2;
     max-width: 100%;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     user-select: all;
+  }
+
+  /* Clickable stake address in the payment-address header (accent color set
+     inline; ellipsis from .pool-param-value); no underline. */
+  .stake-link {
+    text-decoration: none;
   }
 
   .pool-stake {
@@ -644,6 +672,7 @@
     align-items: center;
     padding: 0 6px;
     min-width: 0; /* allow the value to shrink + ellipsize in a flex row */
+    max-width: 100%; /* constrain a standalone param so its value ellipsizes */
   }
 
   .pool-params .pool-param + .pool-param {

@@ -13,6 +13,9 @@ pub enum FeedFilter {
     /// credential). The credential is `payload[1..]`; the 29 bytes double as
     /// db-sync `stake_address.hash_raw`.
     Stake(Vec<u8>),
+    /// A specific payment address (bech32 `addr1…`), matched exactly against tx
+    /// input/output addresses.
+    Address(String),
 }
 
 impl FeedFilter {
@@ -37,6 +40,8 @@ impl FeedFilter {
             }
             // Reward address: 1 header byte + 28-byte credential
             "stake" | "stake_test" if data.len() == 29 => Some(FeedFilter::Stake(data)),
+            // Payment address: matched exactly by its bech32 string
+            "addr" | "addr_test" => Some(FeedFilter::Address(id.to_string())),
             _ => None,
         }
     }
@@ -55,6 +60,7 @@ impl FeedFilter {
                 bech32::encode::<bech32::Bech32>(bech32::Hrp::parse(hrp).unwrap(), payload)
                     .unwrap_or_default()
             }
+            FeedFilter::Address(addr) => addr.clone(),
         }
     }
 
@@ -74,6 +80,14 @@ impl FeedFilter {
         }
     }
 
+    /// The bech32 payment address for an address feed; `None` otherwise.
+    pub fn address(&self) -> Option<&str> {
+        match self {
+            FeedFilter::Address(addr) => Some(addr),
+            _ => None,
+        }
+    }
+
     /// The set of stake credentials whose transactions belong to this feed,
     /// resolved against the current snapshot. Pool/drep feeds use their delegator
     /// set; a stake feed is just its own single credential.
@@ -82,6 +96,8 @@ impl FeedFilter {
             FeedFilter::Pool(hash) => snap.pool_delegators.get(hash).cloned().unwrap_or_default(),
             FeedFilter::DRep(bytes) => snap.drep_delegators.get(bytes).cloned().unwrap_or_default(),
             FeedFilter::Stake(payload) => HashSet::unit(payload[1..].to_vec()),
+            // Address feeds match by exact address, not a credential set.
+            FeedFilter::Address(_) => HashSet::new(),
         }
     }
 }
@@ -104,7 +120,14 @@ pub fn extract_stake_credentials(tx: &BlockTx) -> Vec<Vec<u8>> {
 }
 
 impl FeedFilter {
-    fn matches_tx(&self, tx: &BlockTx, delegators: &HashSet<Vec<u8>>) -> bool {
+    pub fn matches_tx(&self, tx: &BlockTx, delegators: &HashSet<Vec<u8>>) -> bool {
+        if let FeedFilter::Address(addr) = self {
+            return tx.outputs.iter().any(|o| o.address == *addr)
+                || tx
+                    .inputs
+                    .iter()
+                    .any(|i| i.address.as_deref() == Some(addr.as_str()));
+        }
         tx.stake_credentials
             .iter()
             .any(|cred| delegators.contains(cred))
@@ -175,6 +198,25 @@ impl FeedFilter {
 /// Combines UTXO changes (outputs - inputs - withdrawals) with delegation
 /// impact (live_stake gained/lost from delegation certificate changes).
 pub fn apply_stake_change(tx: &mut BlockTx, delegators: &HashSet<Vec<u8>>, filter: &FeedFilter) {
+    // Address feeds: net is simply outputs to the address minus inputs from it.
+    if let FeedFilter::Address(addr) = filter {
+        let mut net: i64 = 0;
+        for output in &tx.outputs {
+            if output.address == *addr {
+                net += output.lovelace as i64;
+            }
+        }
+        for input in &tx.inputs {
+            if input.address.as_deref() == Some(addr.as_str()) {
+                net -= input.lovelace as i64;
+            }
+        }
+        if net != 0 {
+            tx.stake_change = Some(net);
+        }
+        return;
+    }
+
     let mut net: i64 = 0;
     for output in &tx.outputs {
         if let Some(cred) = stake_credential(&output.address) {
@@ -204,6 +246,7 @@ pub fn apply_stake_change(tx: &mut BlockTx, delegators: &HashSet<Vec<u8>>, filte
         FeedFilter::Pool(_) => Some(false),
         FeedFilter::DRep(_) => Some(true),
         FeedFilter::Stake(_) => None,
+        FeedFilter::Address(_) => None, // handled by the early return above
     };
     if let Some(is_drep) = pool_or_drep {
         let feed_id = filter.feed_id();

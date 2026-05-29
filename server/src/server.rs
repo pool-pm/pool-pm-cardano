@@ -205,6 +205,60 @@ async fn send_stake_info(
         .await;
 }
 
+/// The bech32 stake (reward) address of a payment address, or `None` for an
+/// address with no stake part (enterprise/pointer). Preserves the key/script
+/// credential type and network so it round-trips to db-sync.
+fn stake_address_of(address: &str, mainnet: bool) -> Option<String> {
+    use pallas::ledger::addresses::{Address, ShelleyDelegationPart};
+    let Address::Shelley(sh) = Address::from_bech32(address).ok()? else {
+        return None;
+    };
+    let (is_script, hash) = match sh.delegation() {
+        ShelleyDelegationPart::Key(h) => (false, h.as_ref().to_vec()),
+        ShelleyDelegationPart::Script(h) => (true, h.as_ref().to_vec()),
+        _ => return None,
+    };
+    let net = if mainnet { 1u8 } else { 0u8 };
+    let mut payload = Vec::with_capacity(29);
+    payload.push(if is_script { 0xf0 | net } else { 0xe0 | net });
+    payload.extend_from_slice(&hash);
+    let hrp = if mainnet { "stake" } else { "stake_test" };
+    bech32::encode::<bech32::Bech32>(bech32::Hrp::parse(hrp).unwrap(), &payload).ok()
+}
+
+#[derive(serde::Serialize)]
+struct AddressEvent<'a> {
+    #[serde(rename = "type")]
+    kind: &'a str,
+    address: &'a str,
+    /// String-encoded (can exceed JS Number.MAX_SAFE_INTEGER).
+    balance: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stake_address: Option<String>,
+}
+
+/// Send a payment-address info event: balance (sum of unspent UTXOs, no rewards)
+/// and its stake address (for linking to the stake feed).
+async fn send_address_info(
+    sender: &Sender<Result<SseEvent, Infallible>>,
+    chain_state: &RwLock<State>,
+    address: &str,
+    mainnet: bool,
+) {
+    let balance = {
+        let guard = chain_state.read().await;
+        guard.address_balance(address).await.unwrap_or(0)
+    };
+    let json = serde_json::to_string(&AddressEvent {
+        kind: "Address",
+        address,
+        balance: balance.to_string(),
+        stake_address: stake_address_of(address, mainnet),
+    })
+    .unwrap();
+    let _ = sender.send(Ok(SseEvent::default().data(json))).await;
+}
+
 /// Query string for SSE endpoints. `dpr` is the client's
 /// `window.devicePixelRatio`, used to negotiate the thumbnail image size.
 #[derive(serde::Deserialize)]
@@ -550,12 +604,15 @@ async fn send_replay_blocks(
                 if block.filter_by_delegators {
                     // Computes UTXO changes + delegation impact in one pass
                     filter::apply_stake_changes(&mut txs, delegators, feed_filter);
-                    let is_stake = matches!(feed_filter, filter::FeedFilter::Stake(_));
+                    let single_subject = matches!(
+                        feed_filter,
+                        filter::FeedFilter::Stake(_) | filter::FeedFilter::Address(_)
+                    );
                     txs.retain(|tx| {
-                        if is_stake {
-                            // Single address: show every tx that touches it, like the
-                            // live path — not the pool/drep stake-change threshold.
-                            tx.stake_credentials.iter().any(|c| delegators.contains(c))
+                        if single_subject {
+                            // Single stake/payment address: show every tx that touches
+                            // it, like the live path — not the pool/drep threshold.
+                            feed_filter.matches_tx(tx, delegators)
                         } else {
                             !tx.delegations.is_empty()
                                 || tx
@@ -759,6 +816,9 @@ fn build_live_stream(
                                 last_live_stake = current_balance;
                             }
                         }
+                        // Address balance needs a db query, too costly to recompute
+                        // per block; the header balance is set once at connect.
+                        filter::FeedFilter::Address(_) => {}
                     }
                 }
 
@@ -1167,6 +1227,55 @@ async fn filtered_events(
             .await;
 
             exclude_slots
+        } else if let Some(addr) = replay_filter.address().map(str::to_string) {
+            send_address_info(
+                &sender,
+                &replay_state.chain_state,
+                &addr,
+                replay_state.mainnet,
+            )
+            .await;
+
+            let blocks = {
+                let guard = replay_state.chain_state.read().await;
+                guard
+                    .address_recent_blocks(&addr, STAKE_REPLAY_BLOCKS)
+                    .await
+            }
+            .unwrap_or_default();
+
+            let exclude_slots: HashSet<u64> = blocks.iter().map(|(slot, _, _)| *slot).collect();
+
+            let mut replay_blocks: Vec<ReplayBlock> = blocks
+                .into_iter()
+                .map(|(slot, hash, number)| ReplayBlock {
+                    slot,
+                    hash,
+                    number,
+                    pool_id: None,
+                    pool_ticker: None,
+                    filter_by_delegators: true,
+                })
+                .collect();
+
+            send_replay_blocks(
+                &sender,
+                &mut replay_blocks,
+                &replay_delegators,
+                &replay_filter,
+                &HashMap::new(),
+                0,
+                &replay_state.nftcdn,
+                &replay_state.genesis,
+                &replay_state.chain_state,
+                replay_state.n2n_addr,
+                replay_state.magic,
+                replay_state.mainnet,
+                size,
+            )
+            .await;
+
+            exclude_slots
         } else {
             HashSet::new()
         };
@@ -1205,6 +1314,8 @@ async fn filtered_events(
                 .and_then(|s| s.stakes.get(&payload[1..]).copied());
             (None, balance)
         }
+        // Address feed has no live header tracking (balance set once at connect).
+        filter::FeedFilter::Address(_) => (None, None),
     };
 
     let replay = tokio_stream::wrappers::ReceiverStream::new(receiver);

@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { Config, DRepInfo, PoolInfo, Section, StakeInfo } from './types';
+import type { AddressInfo, Config, DRepInfo, PoolInfo, Section, StakeInfo } from './types';
 
 let idCounter = 0;
 
@@ -16,5 +16,6 @@ export const config = writable<Config | null>(null);
 export const pool = writable<PoolInfo | null>(null);
 export const drep = writable<DRepInfo | null>(null);
 export const stake = writable<StakeInfo | null>(null);
+export const address = writable<AddressInfo | null>(null);
 /** Bumped each time a block is received, so Feed can run cleanup reactively. */
 export const blockCount = writable(0);

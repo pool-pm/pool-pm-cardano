@@ -157,6 +157,12 @@ export interface StakeInfo {
   drep_name?: string | null;
 }
 
+export interface AddressInfo {
+  address: string;
+  balance?: string;
+  stake_address?: string;
+}
+
 export interface FeedTx extends BlockTx {
   receivedAt: number;
 }

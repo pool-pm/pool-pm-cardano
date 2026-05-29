@@ -591,6 +591,22 @@ impl State {
         db.stake_recent_blocks(hash_raw, limit).await.ok()
     }
 
+    /// Current balance (sum of unspent UTXOs, lovelace) of a payment address.
+    pub async fn address_balance(&self, address: &str) -> Option<i64> {
+        let db = self.db().await?;
+        db.address_balance(address).await.ok()
+    }
+
+    /// Fetch recent blocks touching a payment address from db-sync, newest-first.
+    pub async fn address_recent_blocks(
+        &self,
+        address: &str,
+        limit: i64,
+    ) -> Option<Vec<(u64, String, u64)>> {
+        let db = self.db().await?;
+        db.address_recent_blocks(address, limit).await.ok()
+    }
+
     /// Rollback to the given slot: drop all snapshots after it.
     /// Returns false if history is empty after truncation (snapshot was too old).
     pub fn rollback(&mut self, slot: u64) -> bool {

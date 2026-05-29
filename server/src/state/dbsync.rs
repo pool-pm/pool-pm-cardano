@@ -78,6 +78,53 @@ impl DbSync {
             .collect())
     }
 
+    /// Current balance of a payment address = sum of its unspent UTXOs (lovelace).
+    /// No rewards (those belong to the stake address). Uses `idx_tx_out_address`.
+    pub async fn address_balance(&self, address: &str) -> Result<i64, sqlx::Error> {
+        let row = sqlx::query!(
+            r#"SELECT COALESCE(SUM(value), 0)::bigint AS "balance!"
+            FROM tx_out
+            WHERE address = $1 AND consumed_by_tx_id IS NULL"#,
+            address
+        )
+        .fetch_one(&self.db)
+        .await?;
+        Ok(row.balance)
+    }
+
+    /// Recent blocks containing a transaction that touches the given payment
+    /// address (an output paid to it, or one of its outputs consumed). Newest-first,
+    /// capped at `limit`. Returns (slot_no, block_hash_hex, block_no). Mirrors
+    /// `stake_recent_blocks` but matches the exact address.
+    pub async fn address_recent_blocks(
+        &self,
+        address: &str,
+        limit: i64,
+    ) -> Result<Vec<(u64, String, u64)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT b.slot_no AS "slot_no!", b.hash, b.block_no AS "block_no!"
+            FROM (
+                SELECT tx_id FROM tx_out WHERE address = $1
+                UNION
+                SELECT consumed_by_tx_id AS tx_id FROM tx_out
+                  WHERE address = $1 AND consumed_by_tx_id IS NOT NULL
+            ) t
+            JOIN tx ON tx.id = t.tx_id
+            JOIN block b ON b.id = tx.block_id
+            GROUP BY b.id, b.slot_no, b.hash, b.block_no
+            ORDER BY b.slot_no DESC
+            LIMIT $2"#,
+            address,
+            limit
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.slot_no as u64, hex::encode(r.hash), r.block_no as u64))
+            .collect())
+    }
+
     pub async fn resolve_utxo(
         &self,
         tx_hash: &[u8],

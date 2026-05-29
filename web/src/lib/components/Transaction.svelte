@@ -1,19 +1,27 @@
 <script lang="ts">
   import type { AssetInfo, DelegationInfo, FeedTx, TxInput, TxOutputInfo, VoteInfo } from '../types';
-  import { config, stake } from '../stores';
+  import { config, stake, address } from '../stores';
   import { poolColor, formatTicker } from '../layout';
   import { nonChangeOutputs as computeNonChangeOutputs } from '../change';
   import { stakeCredential, rewardCredential } from '../bech32';
   import dappRegistry from '../dapp_addresses.json';
 
-  // On a stake feed, highlight inputs/outputs belonging to the feed's stake
-  // address (any address sharing its credential — incl. ones shown as handles)
-  // with the same color as the info circle.
+  // On a stake or address feed, highlight inputs/outputs belonging to the feed's
+  // subject (stake feed: any address sharing the credential, incl. handles;
+  // address feed: the exact address) with the info-circle color.
   const feedStakeCred = $derived($stake ? rewardCredential($stake.stake_address) : null);
-  const ownedColor = $derived($stake ? poolColor($stake.stake_address) : null);
-  function ownedAddressColor(address: string | null | undefined): string | null {
-    if (!feedStakeCred || !address) return null;
-    return stakeCredential(address) === feedStakeCred ? ownedColor : null;
+  const ownedColor = $derived($stake ? poolColor($stake.stake_address) : $address ? poolColor($address.address) : null);
+  function ownedAddressColor(addr: string | null | undefined): string | null {
+    if (!addr) return null;
+    if (feedStakeCred) return stakeCredential(addr) === feedStakeCred ? ownedColor : null;
+    if ($address) return addr === $address.address ? ownedColor : null;
+    return null;
+  }
+
+  // Link an address to its feed: addr1…/stake1… have one; Byron and unresolved
+  // addresses don't, so they render as plain text.
+  function addrHref(addr: string | null | undefined): string | undefined {
+    return addr && /^(addr1|addr_test1|stake1|stake_test1)/.test(addr) ? '/' + addr : undefined;
   }
 
   const dappLookup: Record<string, string> = Object.fromEntries(
@@ -257,11 +265,20 @@
               {/if}
             {/if}
             {#if addressLabel(output.address, output.handle)}
-              <span class="addr mono label" style:color={ownedAddressColor(output.address)}
-                >{addressLabel(output.address, output.handle)}</span
+              <svelte:element
+                this={addrHref(output.address) ? 'a' : 'span'}
+                href={addrHref(output.address)}
+                class="addr mono label"
+                style:color={ownedAddressColor(output.address)}
+                >{addressLabel(output.address, output.handle)}</svelte:element
               >
             {:else}
-              <span class="addr mono" style:color={ownedAddressColor(output.address)}>{output.address}</span>
+              <svelte:element
+                this={addrHref(output.address) ? 'a' : 'span'}
+                href={addrHref(output.address)}
+                class="addr mono"
+                style:color={ownedAddressColor(output.address)}>{output.address}</svelte:element
+              >
             {/if}
           </div>
         {/each}
@@ -278,11 +295,20 @@
         {#each visibleInputs as input}
           <div class="addr-item">
             {#if addressLabel(input.address ?? '', input.handle)}
-              <span class="addr mono label" style:color={ownedAddressColor(input.address)}
-                >{addressLabel(input.address ?? '', input.handle)}</span
+              <svelte:element
+                this={addrHref(input.address) ? 'a' : 'span'}
+                href={addrHref(input.address)}
+                class="addr mono label"
+                style:color={ownedAddressColor(input.address)}
+                >{addressLabel(input.address ?? '', input.handle)}</svelte:element
               >
             {:else}
-              <span class="addr mono" style:color={ownedAddressColor(input.address)}>{input.address ?? '???'}</span>
+              <svelte:element
+                this={addrHref(input.address) ? 'a' : 'span'}
+                href={addrHref(input.address)}
+                class="addr mono"
+                style:color={ownedAddressColor(input.address)}>{input.address ?? '???'}</svelte:element
+              >
             {/if}
           </div>
         {/each}
@@ -441,6 +467,14 @@
 
   .addr.label {
     color: white;
+  }
+
+  a.addr {
+    text-decoration: none;
+    cursor: pointer;
+  }
+  a.addr:hover {
+    text-decoration: underline;
   }
 
   .arrow {

@@ -1,5 +1,15 @@
-import { sections, newSection, config, pool, drep, stake, blockCount } from './stores';
-import type { BlockTx, Config, DRepInfo, Event, MempoolTxEvent, PoolInfo, Section, StakeInfo } from './types';
+import { sections, newSection, config, pool, drep, stake, address, blockCount } from './stores';
+import type {
+  AddressInfo,
+  BlockTx,
+  Config,
+  DRepInfo,
+  Event,
+  MempoolTxEvent,
+  PoolInfo,
+  Section,
+  StakeInfo,
+} from './types';
 
 let source: EventSource | null = null;
 let pendingPrune = new Set<string>();
@@ -149,6 +159,7 @@ export function connectSSE(url: string): void {
   pool.set(null);
   drep.set(null);
   stake.set(null);
+  address.set(null);
   pendingPrune.clear();
 
   source = new EventSource(url);
@@ -165,6 +176,8 @@ export function connectSSE(url: string): void {
         drep.set(data as DRepInfo);
       } else if (data.type === 'Stake') {
         stake.set(data as StakeInfo);
+      } else if (data.type === 'Address') {
+        address.set(data as AddressInfo);
       } else if (Array.isArray(data)) {
         handleSnapshot(data as Event[]);
       } else {
