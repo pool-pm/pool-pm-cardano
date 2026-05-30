@@ -59,8 +59,9 @@ export interface PolicyAsset {
   srcset: string;
 }
 
-export interface PolicyResponse {
-  policy_id: string;
+/** Response for both `/api/policy/{id}` and `/api/assets/{bech32}` — same
+ * pagination scheme; the subject (policy id or address) is implicit in the URL. */
+export interface AssetsResponse {
   assets: PolicyAsset[];
   /** Last asset id of this page; pass back as `?cursor=` for the next page. */
   cursor?: number;
@@ -155,6 +156,9 @@ export interface StakeInfo {
   pool_ticker?: string | null;
   drep_id?: string;
   drep_name?: string | null;
+  /** Distinct multi-assets across every payment address sharing this stake;
+   * updated live per block. Plain number — counts won't approach 2^53. */
+  assets_count?: number;
 }
 
 export interface AddressInfo {
@@ -162,6 +166,8 @@ export interface AddressInfo {
   balance?: string;
   stake_address?: string;
   handle?: string;
+  /** Distinct multi-assets currently held; updated live per block. */
+  assets_count?: number;
 }
 
 export interface FeedTx extends BlockTx {

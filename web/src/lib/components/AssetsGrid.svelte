@@ -1,9 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import type { PolicyAsset, PolicyResponse } from '../types';
+  import type { PolicyAsset, AssetsResponse } from '../types';
 
-  let { policyId }: { policyId: string } = $props();
+  // `endpoint` is the paginated API URL (cursor is appended as `?cursor=`); `title`
+  // sets document.title. `mode` controls cell rendering: 'hide-broken' (policy
+  // pages: tiles whose image 404s drop out of the grid) or 'text-fallback' (owned-
+  // assets: the cell keeps showing, with the decoded asset name or fingerprint as
+  // a backdrop the image covers when it loads — so non-image tokens stay visible).
+  let {
+    endpoint,
+    title,
+    mode = 'hide-broken',
+  }: { endpoint: string; title: string; mode?: 'hide-broken' | 'text-fallback' } = $props();
 
   // Uniform-grid geometry (px). The fixed cell size is what makes windowing
   // trivial: a row's top is exactly its index * ROW, so no measurement is needed.
@@ -34,17 +43,18 @@
   // settle.
   let suppressImages = $state(false);
   const loaded = new SvelteSet<string>();
-  // Fingerprints whose thumbnail 404'd (no preview on nftcdn): hide the tile and
-  // remember it so a recycled cell doesn't re-request the same 404.
+  // Fingerprints whose thumbnail 404'd. In 'hide-broken' mode they drop out of
+  // `visible` so the grid reflows; in 'text-fallback' mode the cell stays
+  // (showing its text backdrop) and `broken` only suppresses the `<img>` so a
+  // recycled cell doesn't re-request the same 404.
   const broken = new SvelteSet<string>();
   let lastScrollTop = 0;
   let lastScrollTime = 0;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
 
-  // Broken (404) assets are dropped from layout so the grid reflows and later
-  // assets fill the gap, rather than leaving holes. All windowing math is over
-  // `visible`, not the raw fetched `assets`.
-  const visible = $derived(assets.filter((a) => !broken.has(a.fingerprint)));
+  // 'hide-broken' filters 404s out so the grid reflows and later assets fill the
+  // gap; 'text-fallback' keeps every cell so name/fingerprint stays readable.
+  const visible = $derived(mode === 'hide-broken' ? assets.filter((a) => !broken.has(a.fingerprint)) : assets);
 
   const cols = $derived(Math.max(1, Math.floor((containerW + GAP) / ROW)));
   // Exact width of one full row of `cols` cells. Pinning the flex container to
@@ -71,10 +81,10 @@
     if (loading || !hasMore) return;
     loading = true;
     try {
-      const url = cursor === undefined ? `/api/policy/${policyId}` : `/api/policy/${policyId}?cursor=${cursor}`;
+      const url = cursor === undefined ? endpoint : `${endpoint}?cursor=${cursor}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: PolicyResponse = await res.json();
+      const data: AssetsResponse = await res.json();
       assets = [...assets, ...data.assets];
       cursor = data.cursor;
       hasMore = data.has_more;
@@ -97,7 +107,7 @@
   });
 
   onMount(() => {
-    document.title = `${policyId.slice(0, 12)}…`;
+    document.title = title;
     return () => clearTimeout(settleTimer);
   });
 
@@ -118,15 +128,22 @@
 
 <div class="scroll" bind:clientWidth={containerW} bind:clientHeight={viewportH} onscroll={onScroll}>
   {#if error && assets.length === 0}
-    <div class="status">Could not load policy: {error}</div>
+    <div class="status">Could not load: {error}</div>
   {:else if !loading && assets.length === 0}
-    <div class="status">No assets for this policy.</div>
+    <div class="status">No assets.</div>
   {:else}
     <div class="spacer" style="height:{spacerHeight}px">
       <div class="window" style="transform:translateY({offsetY}px); width:{rowWidth}px">
         {#each slice as a (a.fingerprint)}
           {@const label = a.name ?? a.fingerprint}
           <a class="cell" href={'/' + a.fingerprint} aria-label={label} title={label}>
+            <!-- text-fallback mode: the label sits at z=0 and the image covers
+                 it when (and only when) it loads. For broken/404 images we
+                 keep the cell in the grid (in 'hide-broken' mode the cell
+                 would have dropped out of `visible` already). -->
+            {#if mode === 'text-fallback'}
+              <span class="cell-text">{label}</span>
+            {/if}
             <!-- No loading="lazy": windowing already keeps only near-viewport
                  rows mounted, so lazy just delays cached images from repainting
                  when a row is scrolled back into view. New rows are deferred while
@@ -134,9 +151,7 @@
                  grid never blanks out what was on screen. alt="" keeps Firefox from
                  painting the name over a still-loading tile (the link is labelled
                  via aria-label instead). -->
-            {#if !suppressImages || loaded.has(a.fingerprint)}
-              <!-- onerror records a 404; the asset then drops out of `visible`,
-                   collapsing its cell instead of leaving a hole. -->
+            {#if (!suppressImages || loaded.has(a.fingerprint)) && !broken.has(a.fingerprint)}
               <img
                 class="thumb"
                 src={a.src}
@@ -189,11 +204,31 @@
     width: 128px;
     height: 128px;
     display: block;
+    position: relative; /* so .cell-text and .thumb can stack via position:absolute */
     background: var(--bg);
     border-radius: 3px;
+    overflow: hidden;
+  }
+
+  /* The text-fallback label sits behind the image; image cover when loaded. */
+  .cell-text {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+    color: var(--text-muted, #9c9c9c);
+    font-family: system-ui, sans-serif;
+    font-size: 11px;
+    text-align: center;
+    word-break: break-all;
+    overflow: hidden;
   }
 
   .thumb {
+    position: absolute;
+    inset: 0;
     width: 128px;
     height: 128px;
     object-fit: contain;

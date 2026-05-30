@@ -482,6 +482,14 @@
             >
           </div>
         {/if}
+        {#if $stake.assets_count !== undefined && $stake.assets_count > 0}
+          <div class="pool-param">
+            <span class="pool-param-label">assets</span>
+            <a class="pool-param-value stake-link" style:color href="/{$stake.stake_address}/assets"
+              >{$stake.assets_count}</a
+            >
+          </div>
+        {/if}
       </div>
     </div>
   {:else if $address}
@@ -494,17 +502,27 @@
         <span class="stake-address" style:color>${$address.handle}</span>
       {/if}
       <span class="stake-address" style:color title={$address.address}>{$address.address}</span>
-      {#if $address.stake_address}
-        <div class="pool-param">
-          <span class="pool-param-label">stake</span>
-          <a
-            class="pool-param-value stake-link"
-            style:color
-            href="/{$address.stake_address}"
-            title={$address.stake_address}>{$address.stake_address}</a
-          >
-        </div>
-      {/if}
+      <div class="pool-params">
+        {#if $address.stake_address}
+          <div class="pool-param">
+            <span class="pool-param-label">stake</span>
+            <a
+              class="pool-param-value stake-link"
+              style:color
+              href="/{$address.stake_address}"
+              title={$address.stake_address}>{$address.stake_address}</a
+            >
+          </div>
+        {/if}
+        {#if $address.assets_count !== undefined && $address.assets_count > 0}
+          <div class="pool-param">
+            <span class="pool-param-label">assets</span>
+            <a class="pool-param-value stake-link" style:color href="/{$address.address}/assets"
+              >{$address.assets_count}</a
+            >
+          </div>
+        {/if}
+      </div>
     </div>
   {/if}
   <div class="canvas" style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}>

@@ -2,7 +2,7 @@
   import { connectSSE, disconnectSSE } from './lib/sse';
   import Feed from './lib/components/Feed.svelte';
   import AssetPage from './lib/components/AssetPage.svelte';
-  import PolicyPage from './lib/components/PolicyPage.svelte';
+  import AssetsGrid from './lib/components/AssetsGrid.svelte';
   import SearchBar from './lib/components/SearchBar.svelte';
   import './app.css';
 
@@ -10,10 +10,12 @@
 
   const path = window.location.pathname.replace(/^\/+/, '');
   // A bare CIP-14 fingerprint path renders the standalone asset page;
-  // `/policy/<28-byte hex>` renders the policy asset grid; everything else is a
-  // feed (root, pool id, or drep id).
+  // `/policy/<28-byte hex>` renders the policy asset grid; `/<bech32>/assets`
+  // renders the owned-assets grid for a payment address or stake credential;
+  // everything else is a feed (root, pool id, drep id, addr, stake, …).
   const assetFingerprint = /^asset1[a-z0-9]+$/.test(path) ? path : null;
   const policyId = /^policy\/([0-9a-f]{56})$/.exec(path)?.[1] ?? null;
+  const ownedAssetsSubject = /^((addr|stake)(_test)?1[a-z0-9]+)\/assets$/.exec(path)?.[1] ?? null;
 
   function sseUrl(): string {
     const base = path ? `${SSE_BASE}/${path}` : SSE_BASE;
@@ -24,8 +26,8 @@
   }
 
   $effect(() => {
-    // The asset and policy pages are stateless HTTP views — no SSE connection.
-    if (assetFingerprint || policyId) return;
+    // The asset, policy and owned-assets pages are stateless HTTP views — no SSE connection.
+    if (assetFingerprint || policyId || ownedAssetsSubject) return;
 
     const url = sseUrl();
     connectSSE(url);
@@ -103,7 +105,13 @@
   {#if assetFingerprint}
     <AssetPage fingerprint={assetFingerprint} />
   {:else if policyId}
-    <PolicyPage {policyId} />
+    <AssetsGrid endpoint={`/api/policy/${policyId}`} title={`${policyId.slice(0, 12)}…`} mode="hide-broken" />
+  {:else if ownedAssetsSubject}
+    <AssetsGrid
+      endpoint={`/api/assets/${ownedAssetsSubject}`}
+      title={`${ownedAssetsSubject.slice(0, 12)}… assets`}
+      mode="text-fallback"
+    />
   {:else}
     <Feed />
   {/if}
