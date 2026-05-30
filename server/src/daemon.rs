@@ -163,6 +163,7 @@ pub fn run(args: Args) -> Result<(), Error> {
                     .unwrap();
                 rt.block_on(state.populate_handles());
                 rt.block_on(state.populate_gov_titles());
+                rt.block_on(state.populate_address_aggregates());
             }
 
             if let Some(snap) = state.current() {

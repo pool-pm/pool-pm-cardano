@@ -362,6 +362,78 @@ impl DbSync {
         Ok((delegations, delegators))
     }
 
+    /// Populate `address_balances`, `address_assets`, and `stake_addresses`
+    /// from db-sync at the given cutoff. Two grouped queries scan all
+    /// unconsumed UTXOs at `last_tx_id` — expensive on mainnet (paid once on
+    /// cold reset / first run after upgrade); see `populate_address_aggregates_if_empty`.
+    /// Byron addresses (non-bech32) are skipped — they don't appear in feeds.
+    pub async fn address_aggregates(
+        &self,
+        last_tx_id: i64,
+    ) -> Result<
+        (
+            HashMap<Vec<u8>, i64>,
+            HashMap<Vec<u8>, HashMap<String, u32>>,
+            HashMap<Vec<u8>, HashSet<Vec<u8>>>,
+        ),
+        sqlx::Error,
+    > {
+        use crate::pallas::stake_credential_from_address_bytes;
+        use pallas::ledger::addresses::Address;
+
+        let mut balances: HashMap<Vec<u8>, i64> = HashMap::new();
+        let mut stake_addresses: HashMap<Vec<u8>, HashSet<Vec<u8>>> = HashMap::new();
+
+        let mut rows = sqlx::query!(
+            r#"SELECT address, SUM(value)::bigint AS "balance!"
+            FROM tx_out
+            WHERE tx_id <= $1
+              AND (consumed_by_tx_id IS NULL OR consumed_by_tx_id > $1)
+            GROUP BY address"#,
+            last_tx_id
+        )
+        .fetch(&self.db);
+
+        while let Some(row) = rows.try_next().await? {
+            let Ok(addr) = Address::from_bech32(&row.address) else {
+                continue;
+            };
+            let addr_bytes = addr.to_vec();
+            balances.insert(addr_bytes.clone(), row.balance);
+            if let Some(cred) = stake_credential_from_address_bytes(&addr_bytes) {
+                stake_addresses.entry(cred).or_default().insert(addr_bytes);
+            }
+        }
+        drop(rows);
+
+        let mut assets: HashMap<Vec<u8>, HashMap<String, u32>> = HashMap::new();
+        let mut rows = sqlx::query!(
+            r#"SELECT txo.address, ma.fingerprint AS "fingerprint!",
+                      COUNT(*)::int AS "ref_count!"
+            FROM tx_out txo
+            JOIN ma_tx_out mto ON mto.tx_out_id = txo.id
+            JOIN multi_asset ma ON ma.id = mto.ident
+            WHERE txo.tx_id <= $1
+              AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $1)
+            GROUP BY txo.address, ma.fingerprint"#,
+            last_tx_id
+        )
+        .fetch(&self.db);
+
+        while let Some(row) = rows.try_next().await? {
+            let Ok(addr) = Address::from_bech32(&row.address) else {
+                continue;
+            };
+            let addr_bytes = addr.to_vec();
+            assets
+                .entry(addr_bytes)
+                .or_default()
+                .insert(row.fingerprint, row.ref_count as u32);
+        }
+
+        Ok((balances, assets, stake_addresses))
+    }
+
     pub async fn utxo_stakes(&self, last_tx_id: i64) -> Result<HashMap<Vec<u8>, i64>, sqlx::Error> {
         let mut rows = sqlx::query!(
             r#"SELECT stake_address.hash_raw AS stake_address,

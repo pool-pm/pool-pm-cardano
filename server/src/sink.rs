@@ -88,7 +88,10 @@ impl Worker {
             let state = stage.state.read().await;
             let snap = state.current();
             let mut txs = Vec::new();
-            let mut consumed = Vec::new();
+            // Each consumed input carries its resolved TxOutput so `apply_block`
+            // can update per-address aggregates without re-looking up inputs
+            // that predate the snapshot (db-sync fallback path).
+            let mut consumed: Vec<((Vec<u8>, i16), TxOutput)> = Vec::new();
             let mut produced: std::collections::HashMap<(Vec<u8>, i16), TxOutput> =
                 std::collections::HashMap::new();
             let mut pool_deleg: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
@@ -131,13 +134,13 @@ impl Worker {
                 for input in tx.inputs() {
                     let key = (input.hash().as_ref().to_vec(), input.index() as i16);
                     // Check block-local UTXOs first, then in-memory state,
-                    // then fall back to db-sync for pre-reset UTXOs
-                    let resolved = if let Some(utxo) = produced.get(&key) {
-                        Some((utxo.address.clone(), utxo.lovelaces))
+                    // then fall back to db-sync for pre-reset UTXOs.
+                    let resolved: Option<TxOutput> = if let Some(utxo) = produced.get(&key) {
+                        Some(utxo.clone())
                     } else if let Some(utxo) = snap.and_then(|s| s.utxos.get(&key)) {
-                        Some((utxo.address.clone(), utxo.lovelaces))
+                        Some(utxo.clone())
                     } else {
-                        let (addr_str, lovelace, _assets) = state
+                        let (addr_str, lovelace, assets) = state
                             .resolve_input(input.hash().as_ref(), input.index() as i16)
                             .await;
                         addr_str
@@ -146,12 +149,18 @@ impl Worker {
                                     .ok()
                                     .map(|a| a.to_vec())
                             })
-                            .map(|addr| (addr, Decimal::from(lovelace)))
+                            .map(|addr| TxOutput {
+                                lovelaces: Decimal::from(lovelace),
+                                address: addr,
+                                assets,
+                            })
                     };
-                    if let Some((addr, lovelaces)) = resolved {
-                        if let Some(cred) = stake_credential_from_address_bytes(&addr) {
-                            let amount: i64 =
-                                lovelaces.try_into().expect("lovelace value must fit i64");
+                    if let Some(utxo) = resolved {
+                        if let Some(cred) = stake_credential_from_address_bytes(&utxo.address) {
+                            let amount: i64 = utxo
+                                .lovelaces
+                                .try_into()
+                                .expect("lovelace value must fit i64");
                             stake_changes.push((cred.clone(), -amount));
 
                             // Feed index: track pool/drep for any consumed input
@@ -162,8 +171,20 @@ impl Worker {
                                 stake_change_dreps.insert(drep.clone());
                             }
                         }
+                        consumed.push((key, utxo));
+                    } else {
+                        // Unresolved input (very old / byron-only): record the
+                        // utxo removal key with a zero-lovelace, no-asset
+                        // sentinel so the utxo map drop still happens.
+                        consumed.push((
+                            key,
+                            TxOutput {
+                                lovelaces: Decimal::ZERO,
+                                address: Vec::new(),
+                                assets: Vec::new(),
+                            },
+                        ));
                     }
-                    consumed.push(key);
                 }
 
                 txs.push(
