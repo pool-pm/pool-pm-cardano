@@ -181,13 +181,24 @@ impl DbSync {
         cursor: Option<i64>,
         limit: i64,
     ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
+        // MATERIALIZED CTE inhibits the planner from pushing the outer
+        // `ORDER BY id DESC LIMIT N` into a backward pkey scan that filters by
+        // policy — that plan walks every newer multi_asset row before finding
+        // matches in an old policy (e.g. SpaceBudz: minted years ago → low ids
+        // → millions of rows scanned for 60 hits). Materializing forces the
+        // bitmap-scan via `unique_multi_asset (policy, name)` first, then
+        // top-N sort over the small per-policy result.
         let rows = sqlx::query!(
-            r#"SELECT id, fingerprint AS "fingerprint!", name AS "name!"
-            FROM multi_asset
-            WHERE policy = $1 AND ($2::bigint IS NULL OR id < $2)
-            -- Hide CIP-68 reference NFTs (CIP-67 label 100); the (222) user token
-            -- renders the same image, so they'd otherwise show as duplicates.
-            AND substring(name from 1 for 4) != '\x000643b0'
+            r#"WITH filtered AS MATERIALIZED (
+                SELECT id, fingerprint AS "fingerprint!", name AS "name!"
+                FROM multi_asset
+                WHERE policy = $1 AND ($2::bigint IS NULL OR id < $2)
+                -- Hide CIP-68 reference NFTs (CIP-67 label 100); the (222)
+                -- user token renders the same image, so they'd otherwise show
+                -- as duplicates.
+                AND substring(name from 1 for 4) != '\x000643b0'
+            )
+            SELECT id, "fingerprint!", "name!" FROM filtered
             ORDER BY id DESC
             LIMIT $3"#,
             policy,
@@ -213,15 +224,19 @@ impl DbSync {
         cursor: Option<i64>,
         limit: i64,
     ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
+        // See `assets_by_policy` for the rationale behind the MATERIALIZED CTE.
         let rows = sqlx::query!(
-            r#"SELECT id, fingerprint AS "fingerprint!", name AS "name!"
-            FROM multi_asset
-            WHERE id IN (
-              SELECT DISTINCT mto.ident
-              FROM ma_tx_out mto
-              JOIN tx_out txo ON txo.id = mto.tx_out_id
-              WHERE txo.address = $1 AND txo.consumed_by_tx_id IS NULL
-            ) AND ($2::bigint IS NULL OR id < $2)
+            r#"WITH filtered AS MATERIALIZED (
+                SELECT id, fingerprint AS "fingerprint!", name AS "name!"
+                FROM multi_asset
+                WHERE id IN (
+                  SELECT DISTINCT mto.ident
+                  FROM ma_tx_out mto
+                  JOIN tx_out txo ON txo.id = mto.tx_out_id
+                  WHERE txo.address = $1 AND txo.consumed_by_tx_id IS NULL
+                ) AND ($2::bigint IS NULL OR id < $2)
+            )
+            SELECT id, "fingerprint!", "name!" FROM filtered
             ORDER BY id DESC
             LIMIT $3"#,
             address,
@@ -246,16 +261,20 @@ impl DbSync {
         cursor: Option<i64>,
         limit: i64,
     ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
+        // See `assets_by_policy` for the rationale behind the MATERIALIZED CTE.
         let rows = sqlx::query!(
-            r#"SELECT id, fingerprint AS "fingerprint!", name AS "name!"
-            FROM multi_asset
-            WHERE id IN (
-              SELECT DISTINCT mto.ident
-              FROM ma_tx_out mto
-              JOIN tx_out txo ON txo.id = mto.tx_out_id
-              WHERE txo.stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
-                AND txo.consumed_by_tx_id IS NULL
-            ) AND ($2::bigint IS NULL OR id < $2)
+            r#"WITH filtered AS MATERIALIZED (
+                SELECT id, fingerprint AS "fingerprint!", name AS "name!"
+                FROM multi_asset
+                WHERE id IN (
+                  SELECT DISTINCT mto.ident
+                  FROM ma_tx_out mto
+                  JOIN tx_out txo ON txo.id = mto.tx_out_id
+                  WHERE txo.stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+                    AND txo.consumed_by_tx_id IS NULL
+                ) AND ($2::bigint IS NULL OR id < $2)
+            )
+            SELECT id, "fingerprint!", "name!" FROM filtered
             ORDER BY id DESC
             LIMIT $3"#,
             hash_raw,
