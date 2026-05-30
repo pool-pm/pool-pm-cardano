@@ -416,28 +416,18 @@ impl DbSync {
         Ok((delegations, delegators))
     }
 
-    /// Populate `address_balances`, `address_assets`, and `stake_addresses`
-    /// from db-sync at the given cutoff. Two grouped queries scan all
-    /// unconsumed UTXOs at `last_tx_id` — expensive on mainnet (paid once on
-    /// cold reset / first run after upgrade); see `populate_address_aggregates_if_empty`.
-    /// Byron addresses (non-bech32) are skipped — they don't appear in feeds.
-    pub async fn address_aggregates(
+    /// Populate `address_balances` from db-sync at the given cutoff. Grouped
+    /// scan of unconsumed UTXOs at `last_tx_id` — expensive on mainnet (paid
+    /// once on cold reset / first run after upgrade); see
+    /// `populate_address_balances`. Byron addresses (non-bech32) are skipped —
+    /// they don't appear in feeds.
+    pub async fn address_balances(
         &self,
         last_tx_id: i64,
-    ) -> Result<
-        (
-            HashMap<Vec<u8>, i64>,
-            HashMap<Vec<u8>, HashMap<String, u32>>,
-            HashMap<Vec<u8>, HashSet<Vec<u8>>>,
-        ),
-        sqlx::Error,
-    > {
-        use crate::pallas::stake_credential_from_address_bytes;
+    ) -> Result<HashMap<Vec<u8>, i64>, sqlx::Error> {
         use pallas::ledger::addresses::Address;
 
         let mut balances: HashMap<Vec<u8>, i64> = HashMap::new();
-        let mut stake_addresses: HashMap<Vec<u8>, HashSet<Vec<u8>>> = HashMap::new();
-
         let mut rows = sqlx::query!(
             r#"SELECT address, SUM(value)::bigint AS "balance!"
             FROM tx_out
@@ -452,40 +442,41 @@ impl DbSync {
             let Ok(addr) = Address::from_bech32(&row.address) else {
                 continue;
             };
-            let addr_bytes = addr.to_vec();
-            balances.insert(addr_bytes.clone(), row.balance);
-            if let Some(cred) = stake_credential_from_address_bytes(&addr_bytes) {
-                stake_addresses.entry(cred).or_default().insert(addr_bytes);
-            }
+            balances.insert(addr.to_vec(), row.balance);
         }
-        drop(rows);
+        Ok(balances)
+    }
 
-        let mut assets: HashMap<Vec<u8>, HashMap<String, u32>> = HashMap::new();
-        let mut rows = sqlx::query!(
-            r#"SELECT txo.address, ma.fingerprint AS "fingerprint!",
-                      COUNT(*)::int AS "ref_count!"
-            FROM tx_out txo
-            JOIN ma_tx_out mto ON mto.tx_out_id = txo.id
-            JOIN multi_asset ma ON ma.id = mto.ident
-            WHERE txo.tx_id <= $1
-              AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $1)
-            GROUP BY txo.address, ma.fingerprint"#,
-            last_tx_id
+    /// Distinct unconsumed multi-assets currently held by a payment address.
+    /// Connect-time query for the feed header's `assets_count` — no live
+    /// update, the user refreshes to re-fetch.
+    pub async fn address_assets_count(&self, address: &str) -> Result<i64, sqlx::Error> {
+        let row = sqlx::query!(
+            r#"SELECT COUNT(DISTINCT mto.ident)::bigint AS "count!"
+            FROM ma_tx_out mto
+            JOIN tx_out txo ON txo.id = mto.tx_out_id
+            WHERE txo.address = $1 AND txo.consumed_by_tx_id IS NULL"#,
+            address
         )
-        .fetch(&self.db);
+        .fetch_one(&self.db)
+        .await?;
+        Ok(row.count)
+    }
 
-        while let Some(row) = rows.try_next().await? {
-            let Ok(addr) = Address::from_bech32(&row.address) else {
-                continue;
-            };
-            let addr_bytes = addr.to_vec();
-            assets
-                .entry(addr_bytes)
-                .or_default()
-                .insert(row.fingerprint, row.ref_count as u32);
-        }
-
-        Ok((balances, assets, stake_addresses))
+    /// Distinct unconsumed multi-assets across every payment address sharing
+    /// the stake credential (29-byte `hash_raw`). Connect-time only.
+    pub async fn stake_assets_count(&self, hash_raw: &[u8]) -> Result<i64, sqlx::Error> {
+        let row = sqlx::query!(
+            r#"SELECT COUNT(DISTINCT mto.ident)::bigint AS "count!"
+            FROM ma_tx_out mto
+            JOIN tx_out txo ON txo.id = mto.tx_out_id
+            WHERE txo.stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+              AND txo.consumed_by_tx_id IS NULL"#,
+            hash_raw
+        )
+        .fetch_one(&self.db)
+        .await?;
+        Ok(row.count)
     }
 
     pub async fn utxo_stakes(&self, last_tx_id: i64) -> Result<HashMap<Vec<u8>, i64>, sqlx::Error> {

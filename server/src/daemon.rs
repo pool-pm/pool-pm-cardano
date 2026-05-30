@@ -163,7 +163,7 @@ pub fn run(args: Args) -> Result<(), Error> {
                     .unwrap();
                 rt.block_on(state.populate_handles());
                 rt.block_on(state.populate_gov_titles());
-                rt.block_on(state.populate_address_aggregates());
+                rt.block_on(state.populate_address_balances());
             }
 
             if let Some(snap) = state.current() {
@@ -186,6 +186,8 @@ pub fn run(args: Args) -> Result<(), Error> {
                     decimals = snap.decimals.len(),
                     handles = snap.address_by_handle.len(),
                     gov_actions = snap.gov_action_titles.len(),
+                    address_balances = snap.address_balances.len(),
+                    balances_populated = snap.address_balances_populated,
                     "loaded snapshot, resuming"
                 );
             }

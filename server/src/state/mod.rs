@@ -40,19 +40,17 @@ pub struct BlockSnapshot {
     pub gov_action_titles: HashMap<String, String>,
     /// Live ADA balance per payment address (raw address bytes → lovelace).
     /// Entries with zero balance are removed; mirrors `stakes` at address level.
+    /// Drives the live balance in the address feed header (replacing what used
+    /// to be a one-shot db-sync query at connect).
     #[serde(default)]
     pub address_balances: HashMap<Vec<u8>, i64>,
-    /// Per (address, asset-fingerprint) UTXO ref-count. A 1→0 transition for
-    /// the inner fingerprint means the address no longer holds that asset
-    /// (asset count drops); a 0→1 transition means it just acquired it.
-    /// Inner key is the CIP-14 fingerprint, matching `TxOutput.assets`.
+    /// True iff `address_balances` was fully populated from db-sync (either by
+    /// `reset()` or `populate_address_balances`). False on old snapshots and
+    /// after a failed populate — in which case the sink will have added a
+    /// *partial* set of entries during catch-up that would otherwise fool an
+    /// `is_empty()` check and skip the re-populate.
     #[serde(default)]
-    pub address_assets: HashMap<Vec<u8>, HashMap<String, u32>>,
-    /// Reverse index: stake credential → set of currently-active payment
-    /// addresses sharing it. Used to derive stake-level asset count via union
-    /// over `address_assets` without scanning the global map.
-    #[serde(default)]
-    pub stake_addresses: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
+    pub address_balances_populated: bool,
 }
 
 impl BlockSnapshot {
@@ -81,17 +79,21 @@ impl State {
         }
     }
 
-    /// Populate per-address balance + asset aggregates from db-sync if absent.
-    /// Runs once after warm-resume from a pre-aggregates snapshot; subsequent
-    /// blocks maintain the maps incrementally in `apply_block`. No-op if the
-    /// snapshot already carries the data (the common case).
-    pub async fn populate_address_aggregates(&mut self) {
-        let is_empty = self
+    /// Populate `address_balances` from db-sync if the loaded snapshot wasn't
+    /// built with it. Runs once after warm-resume from a pre-balances snapshot
+    /// (or one whose previous populate failed); subsequent blocks maintain the
+    /// map incrementally in `apply_block`. Gated on the explicit
+    /// `address_balances_populated` flag, not `is_empty()`: if a previous
+    /// populate failed, the sink will have inserted *partial* entries during
+    /// catch-up that would otherwise fool an emptiness check and skip the
+    /// re-populate.
+    pub async fn populate_address_balances(&mut self) {
+        let already_populated = self
             .history
             .last()
-            .map(|s| s.address_balances.is_empty())
-            .unwrap_or(true);
-        if !is_empty {
+            .map(|s| s.address_balances_populated)
+            .unwrap_or(false);
+        if already_populated {
             return;
         }
         let Some(snap_slot) = self.history.last().map(|s| s.slot) else {
@@ -101,27 +103,23 @@ impl State {
         let (last_tx_id, _) = match db.slot_info(snap_slot).await {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("failed to fetch slot_info for aggregates: {e}");
+                tracing::warn!("failed to fetch slot_info for balances: {e}");
                 return;
             }
         };
-        let (balances, assets, stake_addresses) = match db.address_aggregates(last_tx_id).await {
+        let balances = match db.address_balances(last_tx_id).await {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("failed to fetch address aggregates: {e}");
+                tracing::warn!("failed to fetch address balances: {e}");
                 return;
             }
         };
-        let total_pairs: usize = assets.values().map(|m| m.len()).sum();
         let snap = self.history.last_mut().unwrap();
         snap.address_balances = balances;
-        snap.address_assets = assets;
-        snap.stake_addresses = stake_addresses;
+        snap.address_balances_populated = true;
         tracing::info!(
             addresses = snap.address_balances.len(),
-            asset_pairs = total_pairs,
-            stake_credentials = snap.stake_addresses.len(),
-            "per-address aggregates populated from db-sync"
+            "address balances populated from db-sync"
         );
     }
 
@@ -330,15 +328,9 @@ impl State {
         let gov_action_titles = db.gov_action_titles().await?.into();
         tracing::info!("governance action titles fetched");
 
-        tracing::info!("Fetching per-address balances + assets...");
-        let (address_balances, address_assets, stake_addresses) =
-            db.address_aggregates(last_tx_id).await?;
-        tracing::info!(
-            "{} addresses with UTXOs, {} (address, asset) pairs, {} stake credentials indexed",
-            address_balances.len(),
-            address_assets.values().map(|m| m.len()).sum::<usize>(),
-            stake_addresses.len()
-        );
+        tracing::info!("Fetching per-address balances...");
+        let address_balances = db.address_balances(last_tx_id).await?;
+        tracing::info!("{} addresses with UTXOs", address_balances.len());
 
         self.history.clear();
         self.history.push(BlockSnapshot {
@@ -352,8 +344,7 @@ impl State {
             drep_delegations,
             drep_delegators,
             address_balances,
-            address_assets,
-            stake_addresses,
+            address_balances_populated: true,
             dreps,
             stakes,
             rewards,
@@ -379,8 +370,8 @@ impl State {
     /// apply UTXO changes, stake changes, withdrawals, and push to history.
     ///
     /// `consumed` carries each input's `(utxo_ref, resolved_output)` so
-    /// `address_balances` / `address_assets` can be decremented without a
-    /// re-lookup (some inputs predate the snapshot and aren't in `prev.utxos`).
+    /// `address_balances` can be decremented without re-looking up inputs that
+    /// predate the snapshot (and aren't in `prev.utxos`).
     pub fn apply_block(
         &mut self,
         slot: u64,
@@ -395,83 +386,30 @@ impl State {
         epoch: u64,
         reward_deltas: Option<&HashMap<Vec<u8>, i64>>,
     ) {
-        use crate::pallas::stake_credential_from_address_bytes;
-
         let prev = self.history.last().expect("state not initialized");
 
         let mut utxos = prev.utxos.clone();
         let mut address_balances = prev.address_balances.clone();
-        let mut address_assets = prev.address_assets.clone();
-        let mut stake_addresses = prev.stake_addresses.clone();
-
-        // Helper: returns true if the address now has 0 lovelace AND 0 assets.
-        let is_empty = |bal: &HashMap<Vec<u8>, i64>,
-                        ass: &HashMap<Vec<u8>, HashMap<String, u32>>,
-                        addr: &[u8]|
-         -> bool { !bal.contains_key(addr) && !ass.contains_key(addr) };
 
         for (key, output) in consumed {
             utxos.remove(key);
-            let addr = &output.address;
-            // Lovelace: decrement, drop on zero.
             let bal: i64 = output
                 .lovelaces
                 .try_into()
                 .expect("lovelace value must fit i64");
-            if let Some(entry) = address_balances.get_mut(addr) {
+            if let Some(entry) = address_balances.get_mut(&output.address) {
                 *entry -= bal;
                 if *entry <= 0 {
-                    address_balances.remove(addr);
-                }
-            }
-            // Assets: ref-count down per fingerprint, drop on zero.
-            if let Some(inner) = address_assets.get_mut(addr) {
-                for (fp, _qty) in &output.assets {
-                    if let Some(rc) = inner.get_mut(fp) {
-                        *rc = rc.saturating_sub(1);
-                        if *rc == 0 {
-                            inner.remove(fp);
-                        }
-                    }
-                }
-                if inner.is_empty() {
-                    address_assets.remove(addr);
-                }
-            }
-            // Drop the address from stake_addresses[cred] once it has nothing.
-            if is_empty(&address_balances, &address_assets, addr) {
-                if let Some(cred) = stake_credential_from_address_bytes(addr) {
-                    if let Some(set) = stake_addresses.get_mut(&cred) {
-                        set.remove(addr);
-                        if set.is_empty() {
-                            stake_addresses.remove(&cred);
-                        }
-                    }
+                    address_balances.remove(&output.address);
                 }
             }
         }
         for (key, output) in produced {
-            let addr = output.address.clone();
             let bal: i64 = output
                 .lovelaces
                 .try_into()
                 .expect("lovelace value must fit i64");
-            // Track stake_addresses presence: insert before bumping so we
-            // detect the 0→present transition.
-            let was_empty = is_empty(&address_balances, &address_assets, &addr);
-            *address_balances.entry(addr.clone()).or_insert(0) += bal;
-            let inner = address_assets.entry(addr.clone()).or_default();
-            for (fp, _qty) in &output.assets {
-                *inner.entry(fp.clone()).or_insert(0) += 1;
-            }
-            if was_empty {
-                if let Some(cred) = stake_credential_from_address_bytes(&addr) {
-                    stake_addresses
-                        .entry(cred)
-                        .or_default()
-                        .insert(addr.clone());
-                }
-            }
+            *address_balances.entry(output.address.clone()).or_insert(0) += bal;
             utxos.insert(key, output);
         }
 
@@ -530,6 +468,7 @@ impl State {
         let handle_by_address = prev.handle_by_address.clone();
         let address_by_handle = prev.address_by_handle.clone();
         let gov_action_titles = prev.gov_action_titles.clone();
+        let address_balances_populated = prev.address_balances_populated;
         self.history.push(BlockSnapshot {
             slot,
             block_hash: Some(block_hash),
@@ -545,8 +484,7 @@ impl State {
             rewards,
             decimals,
             address_balances,
-            address_assets,
-            stake_addresses,
+            address_balances_populated,
             handle_by_address,
             address_by_handle,
             gov_action_titles,
@@ -740,6 +678,13 @@ impl State {
         db.address_assets(address, cursor, limit).await.ok()
     }
 
+    /// Distinct unconsumed multi-assets held by a payment address. Static
+    /// connect-time read for the feed header; no live update.
+    pub async fn address_assets_count(&self, address: &str) -> Option<i64> {
+        let db = self.db().await?;
+        db.address_assets_count(address).await.ok()
+    }
+
     /// Assets currently held across all payment addresses sharing a stake
     /// credential (29-byte `hash_raw`), paginated by mint-id.
     pub async fn stake_assets(
@@ -750,6 +695,13 @@ impl State {
     ) -> Option<Vec<(i64, String, Vec<u8>)>> {
         let db = self.db().await?;
         db.stake_assets(hash_raw, cursor, limit).await.ok()
+    }
+
+    /// Distinct unconsumed multi-assets across all payment addresses sharing
+    /// the stake credential. Static connect-time read for the feed header.
+    pub async fn stake_assets_count(&self, hash_raw: &[u8]) -> Option<i64> {
+        let db = self.db().await?;
+        db.stake_assets_count(hash_raw).await.ok()
     }
 
     /// Fetch recent blocks touching a stake address (29-byte `hash_raw`) from

@@ -145,43 +145,18 @@ struct StakeEvent<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     drep_name: Option<String>,
     /// Distinct multi-assets held across every payment address sharing this
-    /// credential. Snapshot-derived (union over `address_assets` for the
-    /// payment addresses in `stake_addresses[cred]`), updated live per block.
+    /// credential. Computed once via db-sync at connect; not updated live.
     assets_count: u32,
 }
 
-/// Distinct multi-assets currently held by the stake credential. Computed as
-/// the union of fingerprints across every active payment address sharing the
-/// credential (`stake_addresses[cred]` lookup → `address_assets[addr].keys()`).
-/// Typical wallets have 1–3 addresses per stake, so the union is microseconds.
-fn stake_assets_count(snap: &BlockSnapshot, cred: &[u8]) -> u32 {
-    let Some(addresses) = snap.stake_addresses.get(cred) else {
-        return 0;
-    };
-    if addresses.len() == 1 {
-        // Single-address shortcut: skip set construction.
-        return addresses
-            .iter()
-            .next()
-            .and_then(|a| snap.address_assets.get(a))
-            .map_or(0, |m| m.len()) as u32;
-    }
-    let mut seen: std::collections::HashSet<&String> = std::collections::HashSet::new();
-    for addr in addresses {
-        if let Some(inner) = snap.address_assets.get(addr) {
-            seen.extend(inner.keys());
-        }
-    }
-    seen.len() as u32
-}
-
 /// Build a `Stake` info event for a stake feed: ADA balance, available rewards,
-/// and current pool/drep delegation — all read from the snapshot by the 28-byte
-/// credential (`cred`).
+/// current pool/drep delegation (all snapshot-live), plus a connect-time
+/// `assets_count` the caller passes through unchanged on every emit.
 fn stake_sse_event(
     stake_address: &str,
     cred: &[u8],
     snap: Option<&BlockSnapshot>,
+    assets_count: u32,
 ) -> Result<SseEvent, Infallible> {
     let balance = snap.and_then(|s| s.stakes.get(cred).copied()).unwrap_or(0);
     let rewards = snap.and_then(|s| s.rewards.get(cred).copied()).unwrap_or(0);
@@ -207,7 +182,6 @@ fn stake_sse_event(
         }
         None => (None, None),
     };
-    let assets_count = snap.map(|s| stake_assets_count(s, cred)).unwrap_or(0);
     let json = serde_json::to_string(&StakeEvent {
         kind: "Stake",
         stake_address,
@@ -229,10 +203,16 @@ async fn send_stake_info(
     chain_state: &RwLock<State>,
     stake_address: &str,
     cred: &[u8],
+    assets_count: u32,
 ) {
     let guard = chain_state.read().await;
     let _ = sender
-        .send(stake_sse_event(stake_address, cred, guard.current()))
+        .send(stake_sse_event(
+            stake_address,
+            cred,
+            guard.current(),
+            assets_count,
+        ))
         .await;
 }
 
@@ -269,34 +249,30 @@ struct AddressEvent<'a> {
     /// ADA Handle currently held by this address, if any (without the `$`).
     #[serde(skip_serializing_if = "Option::is_none")]
     handle: Option<String>,
-    /// Distinct multi-assets currently held. Snapshot-derived (no db query),
-    /// updated live per block.
+    /// Distinct multi-assets currently held. Computed once via db-sync at
+    /// connect; not updated live.
     assets_count: u32,
 }
 
 /// Decode a payment-address bech32 string to its raw bytes — the key used by
-/// `BlockSnapshot.address_balances` / `address_assets`. None on parse failure
-/// (e.g. byron-style addresses).
+/// `BlockSnapshot.address_balances`. None on parse failure (e.g. byron-style).
 fn address_bytes(address: &str) -> Option<Vec<u8>> {
     pallas::ledger::addresses::Address::from_bech32(address)
         .ok()
         .map(|a| a.to_vec())
 }
 
-/// Build an `Address` info event entirely from snapshot reads — balance and
-/// assets_count come from `address_balances` / `address_assets`, kept live by
-/// the sink (see `state::apply_block`). No db-sync query per emit.
+/// Build an `Address` info event — balance from snapshot `address_balances`
+/// (kept live by the sink); `assets_count` is the caller's connect-time value.
 fn address_sse_event(
     address: &str,
     addr_bytes: &[u8],
     snap: Option<&BlockSnapshot>,
     mainnet: bool,
+    assets_count: u32,
 ) -> Result<SseEvent, Infallible> {
     let balance = snap
         .and_then(|s| s.address_balances.get(addr_bytes).copied())
-        .unwrap_or(0);
-    let assets_count = snap
-        .and_then(|s| s.address_assets.get(addr_bytes).map(|m| m.len() as u32))
         .unwrap_or(0);
     let handle = snap.and_then(|s| s.handle_for(address));
     let json = serde_json::to_string(&AddressEvent {
@@ -313,13 +289,14 @@ fn address_sse_event(
 
 /// Send a payment-address info event: balance (sum of unspent UTXOs, no rewards),
 /// its stake address (for linking to the stake feed), its ADA Handle if any,
-/// and its current assets_count.
+/// and its connect-time assets_count.
 async fn send_address_info(
     sender: &Sender<Result<SseEvent, Infallible>>,
     chain_state: &RwLock<State>,
     address: &str,
     addr_bytes: &[u8],
     mainnet: bool,
+    assets_count: u32,
 ) {
     let guard = chain_state.read().await;
     let _ = sender
@@ -328,6 +305,7 @@ async fn send_address_info(
             addr_bytes,
             guard.current(),
             mainnet,
+            assets_count,
         ))
         .await;
 }
@@ -874,54 +852,41 @@ fn build_live_stream(
                         }
                         filter::FeedFilter::Stake(ref payload) => {
                             let cred = &payload[1..];
-                            let (current_balance, current_count) = {
+                            let current_balance = {
                                 let guard = chain_state.read().await;
-                                let snap = guard.current();
-                                (
-                                    snap.and_then(|s| s.stakes.get(cred).copied()),
-                                    snap.map(|s| stake_assets_count(s, cred)),
-                                )
+                                guard.current().and_then(|s| s.stakes.get(cred).copied())
                             };
-                            if current_balance != live.balance || current_count != live.assets_count
-                            {
+                            if current_balance != live.balance {
                                 let stake_address = filter.feed_id();
                                 let guard = chain_state.read().await;
+                                // assets_count is connect-only; pass the cached value.
                                 buf.push_back(stake_sse_event(
                                     &stake_address,
                                     cred,
                                     guard.current(),
+                                    live.assets_count.unwrap_or(0),
                                 ));
                                 live.balance = current_balance;
-                                live.assets_count = current_count;
                             }
                         }
                         filter::FeedFilter::Address(ref addr) => {
                             if let Some(addr_b) = address_bytes(addr) {
-                                let (current_balance, current_count) = {
+                                let current_balance = {
                                     let guard = chain_state.read().await;
-                                    let snap = guard.current();
-                                    (
-                                        snap.and_then(|s| s.address_balances.get(&addr_b).copied()),
-                                        snap.map(|s| {
-                                            s.address_assets
-                                                .get(&addr_b)
-                                                .map(|m| m.len() as u32)
-                                                .unwrap_or(0)
-                                        }),
-                                    )
+                                    guard
+                                        .current()
+                                        .and_then(|s| s.address_balances.get(&addr_b).copied())
                                 };
-                                if current_balance != live.balance
-                                    || current_count != live.assets_count
-                                {
+                                if current_balance != live.balance {
                                     let guard = chain_state.read().await;
                                     buf.push_back(address_sse_event(
                                         addr,
                                         &addr_b,
                                         guard.current(),
                                         mainnet,
+                                        live.assets_count.unwrap_or(0),
                                     ));
                                     live.balance = current_balance;
-                                    live.assets_count = current_count;
                                 }
                             }
                         }
@@ -1280,7 +1245,21 @@ async fn filtered_events(
         } else if let Some(payload) = replay_filter.stake_payload().cloned() {
             let cred = payload[1..].to_vec();
             let stake_address = replay_filter.feed_id();
-            send_stake_info(&sender, &replay_state.chain_state, &stake_address, &cred).await;
+            let assets_count = replay_state
+                .chain_state
+                .read()
+                .await
+                .stake_assets_count(&payload)
+                .await
+                .unwrap_or(0) as u32;
+            send_stake_info(
+                &sender,
+                &replay_state.chain_state,
+                &stake_address,
+                &cred,
+                assets_count,
+            )
+            .await;
 
             let blocks = {
                 let guard = replay_state.chain_state.read().await;
@@ -1324,12 +1303,20 @@ async fn filtered_events(
             exclude_slots
         } else if let Some(addr) = replay_filter.address().map(str::to_string) {
             let addr_bytes = address_bytes(&addr).unwrap_or_default();
+            let assets_count = replay_state
+                .chain_state
+                .read()
+                .await
+                .address_assets_count(&addr)
+                .await
+                .unwrap_or(0) as u32;
             send_address_info(
                 &sender,
                 &replay_state.chain_state,
                 &addr,
                 &addr_bytes,
                 replay_state.mainnet,
+                assets_count,
             )
             .await;
 
@@ -1405,28 +1392,56 @@ async fn filtered_events(
                 balance: snap.and_then(|s| State::drep_live_stake(s, bytes)),
                 assets_count: None,
             },
-            filter::FeedFilter::Stake(ref payload) => {
-                let cred = &payload[1..];
-                LiveState {
-                    pool: None,
-                    balance: snap.and_then(|s| s.stakes.get(cred).copied()),
-                    assets_count: snap.map(|s| stake_assets_count(s, cred)),
-                }
-            }
+            filter::FeedFilter::Stake(ref payload) => LiveState {
+                pool: None,
+                balance: snap.and_then(|s| s.stakes.get(&payload[1..]).copied()),
+                // assets_count is queried fresh below (it's connect-only and
+                // shouldn't drift across reads; the live-stream just passes it
+                // through unchanged on each re-emit).
+                assets_count: None,
+            },
             filter::FeedFilter::Address(ref addr) => {
                 let addr_b = address_bytes(addr).unwrap_or_default();
                 LiveState {
                     pool: None,
                     balance: snap.and_then(|s| s.address_balances.get(&addr_b).copied()),
-                    assets_count: snap.map(|s| {
-                        s.address_assets
-                            .get(&addr_b)
-                            .map(|m| m.len() as u32)
-                            .unwrap_or(0)
-                    }),
+                    assets_count: None,
                 }
             }
         }
+    };
+
+    // For stake/address feeds, query the static assets_count once and seed
+    // the live state with it. The live stream re-emits the info event on
+    // balance changes; it always passes this count through unchanged.
+    let initial_live = match &filter {
+        filter::FeedFilter::Stake(payload) => {
+            let count = state
+                .chain_state
+                .read()
+                .await
+                .stake_assets_count(payload)
+                .await
+                .unwrap_or(0) as u32;
+            LiveState {
+                assets_count: Some(count),
+                ..initial_live
+            }
+        }
+        filter::FeedFilter::Address(addr) => {
+            let count = state
+                .chain_state
+                .read()
+                .await
+                .address_assets_count(addr)
+                .await
+                .unwrap_or(0) as u32;
+            LiveState {
+                assets_count: Some(count),
+                ..initial_live
+            }
+        }
+        _ => initial_live,
     };
 
     let replay = tokio_stream::wrappers::ReceiverStream::new(receiver);
