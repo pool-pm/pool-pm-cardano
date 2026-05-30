@@ -78,20 +78,6 @@ impl DbSync {
             .collect())
     }
 
-    /// Current balance of a payment address = sum of its unspent UTXOs (lovelace).
-    /// No rewards (those belong to the stake address). Uses `idx_tx_out_address`.
-    pub async fn address_balance(&self, address: &str) -> Result<i64, sqlx::Error> {
-        let row = sqlx::query!(
-            r#"SELECT COALESCE(SUM(value), 0)::bigint AS "balance!"
-            FROM tx_out
-            WHERE address = $1 AND consumed_by_tx_id IS NULL"#,
-            address
-        )
-        .fetch_one(&self.db)
-        .await?;
-        Ok(row.balance)
-    }
-
     /// Recent blocks containing a transaction that touches the given payment
     /// address (an output paid to it, or one of its outputs consumed). Newest-first,
     /// capped at `limit`. Returns (slot_no, block_hash_hex, block_no). Mirrors
@@ -205,6 +191,74 @@ impl DbSync {
             ORDER BY id DESC
             LIMIT $3"#,
             policy,
+            cursor,
+            limit
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.id, r.fingerprint, r.name))
+            .collect())
+    }
+
+    /// All distinct assets currently held by a payment address, newest-minted
+    /// first, keyset-paginated on `multi_asset.id` (same scheme as
+    /// `assets_by_policy`). **No CIP-68 reference-token filter** — owned-asset
+    /// listings show what the wallet actually holds (including reference NFTs
+    /// it may hold). Returns (id, fingerprint, name).
+    pub async fn address_assets(
+        &self,
+        address: &str,
+        cursor: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT id, fingerprint AS "fingerprint!", name AS "name!"
+            FROM multi_asset
+            WHERE id IN (
+              SELECT DISTINCT mto.ident
+              FROM ma_tx_out mto
+              JOIN tx_out txo ON txo.id = mto.tx_out_id
+              WHERE txo.address = $1 AND txo.consumed_by_tx_id IS NULL
+            ) AND ($2::bigint IS NULL OR id < $2)
+            ORDER BY id DESC
+            LIMIT $3"#,
+            address,
+            cursor,
+            limit
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.id, r.fingerprint, r.name))
+            .collect())
+    }
+
+    /// All distinct assets currently held across every payment address that
+    /// shares the given stake credential, newest-minted first, keyset-paginated
+    /// on `multi_asset.id`. `hash_raw` is the full 29-byte reward-address
+    /// payload (matches `stake_address.hash_raw`).
+    pub async fn stake_assets(
+        &self,
+        hash_raw: &[u8],
+        cursor: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT id, fingerprint AS "fingerprint!", name AS "name!"
+            FROM multi_asset
+            WHERE id IN (
+              SELECT DISTINCT mto.ident
+              FROM ma_tx_out mto
+              JOIN tx_out txo ON txo.id = mto.tx_out_id
+              WHERE txo.stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+                AND txo.consumed_by_tx_id IS NULL
+            ) AND ($2::bigint IS NULL OR id < $2)
+            ORDER BY id DESC
+            LIMIT $3"#,
+            hash_raw,
             cursor,
             limit
         )

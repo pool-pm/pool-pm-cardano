@@ -729,6 +729,29 @@ impl State {
         db.assets_by_policy(policy, cursor, limit).await.ok()
     }
 
+    /// Assets currently held by a payment address, paginated by mint-id.
+    pub async fn address_assets(
+        &self,
+        address: &str,
+        cursor: Option<i64>,
+        limit: i64,
+    ) -> Option<Vec<(i64, String, Vec<u8>)>> {
+        let db = self.db().await?;
+        db.address_assets(address, cursor, limit).await.ok()
+    }
+
+    /// Assets currently held across all payment addresses sharing a stake
+    /// credential (29-byte `hash_raw`), paginated by mint-id.
+    pub async fn stake_assets(
+        &self,
+        hash_raw: &[u8],
+        cursor: Option<i64>,
+        limit: i64,
+    ) -> Option<Vec<(i64, String, Vec<u8>)>> {
+        let db = self.db().await?;
+        db.stake_assets(hash_raw, cursor, limit).await.ok()
+    }
+
     /// Fetch recent blocks touching a stake address (29-byte `hash_raw`) from
     /// db-sync, newest-first, for feed replay.
     pub async fn stake_recent_blocks(
@@ -738,12 +761,6 @@ impl State {
     ) -> Option<Vec<(u64, String, u64)>> {
         let db = self.db().await?;
         db.stake_recent_blocks(hash_raw, limit).await.ok()
-    }
-
-    /// Current balance (sum of unspent UTXOs, lovelace) of a payment address.
-    pub async fn address_balance(&self, address: &str) -> Option<i64> {
-        let db = self.db().await?;
-        db.address_balance(address).await.ok()
     }
 
     /// Fetch recent blocks touching a payment address from db-sync, newest-first.

@@ -144,6 +144,35 @@ struct StakeEvent<'a> {
     drep_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     drep_name: Option<String>,
+    /// Distinct multi-assets held across every payment address sharing this
+    /// credential. Snapshot-derived (union over `address_assets` for the
+    /// payment addresses in `stake_addresses[cred]`), updated live per block.
+    assets_count: u32,
+}
+
+/// Distinct multi-assets currently held by the stake credential. Computed as
+/// the union of fingerprints across every active payment address sharing the
+/// credential (`stake_addresses[cred]` lookup → `address_assets[addr].keys()`).
+/// Typical wallets have 1–3 addresses per stake, so the union is microseconds.
+fn stake_assets_count(snap: &BlockSnapshot, cred: &[u8]) -> u32 {
+    let Some(addresses) = snap.stake_addresses.get(cred) else {
+        return 0;
+    };
+    if addresses.len() == 1 {
+        // Single-address shortcut: skip set construction.
+        return addresses
+            .iter()
+            .next()
+            .and_then(|a| snap.address_assets.get(a))
+            .map_or(0, |m| m.len()) as u32;
+    }
+    let mut seen: std::collections::HashSet<&String> = std::collections::HashSet::new();
+    for addr in addresses {
+        if let Some(inner) = snap.address_assets.get(addr) {
+            seen.extend(inner.keys());
+        }
+    }
+    seen.len() as u32
 }
 
 /// Build a `Stake` info event for a stake feed: ADA balance, available rewards,
@@ -178,6 +207,7 @@ fn stake_sse_event(
         }
         None => (None, None),
     };
+    let assets_count = snap.map(|s| stake_assets_count(s, cred)).unwrap_or(0);
     let json = serde_json::to_string(&StakeEvent {
         kind: "Stake",
         stake_address,
@@ -187,6 +217,7 @@ fn stake_sse_event(
         pool_ticker,
         drep_id,
         drep_name,
+        assets_count,
     })
     .unwrap();
     Ok(SseEvent::default().data(json))
@@ -238,31 +269,67 @@ struct AddressEvent<'a> {
     /// ADA Handle currently held by this address, if any (without the `$`).
     #[serde(skip_serializing_if = "Option::is_none")]
     handle: Option<String>,
+    /// Distinct multi-assets currently held. Snapshot-derived (no db query),
+    /// updated live per block.
+    assets_count: u32,
 }
 
-/// Send a payment-address info event: balance (sum of unspent UTXOs, no rewards),
-/// its stake address (for linking to the stake feed), and its ADA Handle if any.
-async fn send_address_info(
-    sender: &Sender<Result<SseEvent, Infallible>>,
-    chain_state: &RwLock<State>,
+/// Decode a payment-address bech32 string to its raw bytes — the key used by
+/// `BlockSnapshot.address_balances` / `address_assets`. None on parse failure
+/// (e.g. byron-style addresses).
+fn address_bytes(address: &str) -> Option<Vec<u8>> {
+    pallas::ledger::addresses::Address::from_bech32(address)
+        .ok()
+        .map(|a| a.to_vec())
+}
+
+/// Build an `Address` info event entirely from snapshot reads — balance and
+/// assets_count come from `address_balances` / `address_assets`, kept live by
+/// the sink (see `state::apply_block`). No db-sync query per emit.
+fn address_sse_event(
     address: &str,
+    addr_bytes: &[u8],
+    snap: Option<&BlockSnapshot>,
     mainnet: bool,
-) {
-    let (balance, handle) = {
-        let guard = chain_state.read().await;
-        let handle = guard.current().and_then(|s| s.handle_for(address));
-        let balance = guard.address_balance(address).await.unwrap_or(0);
-        (balance, handle)
-    };
+) -> Result<SseEvent, Infallible> {
+    let balance = snap
+        .and_then(|s| s.address_balances.get(addr_bytes).copied())
+        .unwrap_or(0);
+    let assets_count = snap
+        .and_then(|s| s.address_assets.get(addr_bytes).map(|m| m.len() as u32))
+        .unwrap_or(0);
+    let handle = snap.and_then(|s| s.handle_for(address));
     let json = serde_json::to_string(&AddressEvent {
         kind: "Address",
         address,
         balance: balance.to_string(),
         stake_address: stake_address_of(address, mainnet),
         handle,
+        assets_count,
     })
     .unwrap();
-    let _ = sender.send(Ok(SseEvent::default().data(json))).await;
+    Ok(SseEvent::default().data(json))
+}
+
+/// Send a payment-address info event: balance (sum of unspent UTXOs, no rewards),
+/// its stake address (for linking to the stake feed), its ADA Handle if any,
+/// and its current assets_count.
+async fn send_address_info(
+    sender: &Sender<Result<SseEvent, Infallible>>,
+    chain_state: &RwLock<State>,
+    address: &str,
+    addr_bytes: &[u8],
+    mainnet: bool,
+) {
+    let guard = chain_state.read().await;
+    let _ = sender
+        .send(address_sse_event(
+            address,
+            addr_bytes,
+            guard.current(),
+            mainnet,
+        ))
+        .await;
 }
 
 /// Query string for SSE endpoints. `dpr` is the client's
@@ -732,39 +799,39 @@ enum SlotAction {
 }
 
 /// Build the live stream that detects pool parameter/stake changes and filters events.
+/// Per-feed mutable state the live stream compares against between blocks to
+/// decide whether to re-emit the info header. Different filter kinds use
+/// different subsets: Pool tracks `(pool, balance)`; DRep tracks `balance`;
+/// Stake / Address track `(balance, assets_count)`.
+#[derive(Default, Clone)]
+struct LiveState {
+    pool: Option<Pool>,
+    balance: Option<i64>,
+    assets_count: Option<u32>,
+}
+
 fn build_live_stream(
     rx: tokio::sync::broadcast::Receiver<crate::event::Event>,
     filter: filter::FeedFilter,
     chain_state: Arc<RwLock<State>>,
-    last_pool: Option<Pool>,
-    last_live_stake: Option<i64>,
+    initial: LiveState,
     size: u16,
+    mainnet: bool,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> {
     futures::stream::unfold(
         (
             BroadcastStream::new(rx),
             filter,
             chain_state,
-            last_pool,
-            last_live_stake,
+            initial,
             std::collections::VecDeque::<Result<SseEvent, Infallible>>::new(),
             size,
+            mainnet,
         ),
-        |(mut rx, filter, chain_state, mut last_pool, mut last_live_stake, mut buf, size)| async move {
+        |(mut rx, filter, chain_state, mut live, mut buf, size, mainnet)| async move {
             loop {
                 if let Some(sse) = buf.pop_front() {
-                    return Some((
-                        sse,
-                        (
-                            rx,
-                            filter,
-                            chain_state,
-                            last_pool,
-                            last_live_stake,
-                            buf,
-                            size,
-                        ),
-                    ));
+                    return Some((sse, (rx, filter, chain_state, live, buf, size, mainnet)));
                 }
 
                 let event = rx.next().await?.ok()?;
@@ -775,7 +842,7 @@ fn build_live_stream(
                 ) {
                     match &filter {
                         filter::FeedFilter::Pool(ref hash) => {
-                            let (current_pool, current_live_stake, pool_event) = {
+                            let (current_pool, current_balance, pool_event) = {
                                 let guard = chain_state.read().await;
                                 let snap = guard.current();
                                 let pool =
@@ -784,34 +851,39 @@ fn build_live_stream(
                                 let event = pool.as_ref().map(|p| pool_sse_event(p, snap));
                                 (pool, live_stake, event)
                             };
-                            if current_pool != last_pool || current_live_stake != last_live_stake {
+                            if current_pool != live.pool || current_balance != live.balance {
                                 if let Some(event) = pool_event {
                                     buf.push_back(event);
                                 }
-                                last_pool = current_pool;
-                                last_live_stake = current_live_stake;
+                                live.pool = current_pool;
+                                live.balance = current_balance;
                             }
                         }
                         filter::FeedFilter::DRep(ref bytes) => {
-                            let current_live_stake = {
+                            let current_balance = {
                                 let guard = chain_state.read().await;
                                 guard
                                     .current()
                                     .and_then(|s| State::drep_live_stake(s, bytes))
                             };
-                            if current_live_stake != last_live_stake {
+                            if current_balance != live.balance {
                                 let guard = chain_state.read().await;
                                 buf.push_back(drep_sse_event(bytes, guard.current()));
-                                last_live_stake = current_live_stake;
+                                live.balance = current_balance;
                             }
                         }
                         filter::FeedFilter::Stake(ref payload) => {
                             let cred = &payload[1..];
-                            let current_balance = {
+                            let (current_balance, current_count) = {
                                 let guard = chain_state.read().await;
-                                guard.current().and_then(|s| s.stakes.get(cred).copied())
+                                let snap = guard.current();
+                                (
+                                    snap.and_then(|s| s.stakes.get(cred).copied()),
+                                    snap.map(|s| stake_assets_count(s, cred)),
+                                )
                             };
-                            if current_balance != last_live_stake {
+                            if current_balance != live.balance || current_count != live.assets_count
+                            {
                                 let stake_address = filter.feed_id();
                                 let guard = chain_state.read().await;
                                 buf.push_back(stake_sse_event(
@@ -819,12 +891,40 @@ fn build_live_stream(
                                     cred,
                                     guard.current(),
                                 ));
-                                last_live_stake = current_balance;
+                                live.balance = current_balance;
+                                live.assets_count = current_count;
                             }
                         }
-                        // Address balance needs a db query, too costly to recompute
-                        // per block; the header balance is set once at connect.
-                        filter::FeedFilter::Address(_) => {}
+                        filter::FeedFilter::Address(ref addr) => {
+                            if let Some(addr_b) = address_bytes(addr) {
+                                let (current_balance, current_count) = {
+                                    let guard = chain_state.read().await;
+                                    let snap = guard.current();
+                                    (
+                                        snap.and_then(|s| s.address_balances.get(&addr_b).copied()),
+                                        snap.map(|s| {
+                                            s.address_assets
+                                                .get(&addr_b)
+                                                .map(|m| m.len() as u32)
+                                                .unwrap_or(0)
+                                        }),
+                                    )
+                                };
+                                if current_balance != live.balance
+                                    || current_count != live.assets_count
+                                {
+                                    let guard = chain_state.read().await;
+                                    buf.push_back(address_sse_event(
+                                        addr,
+                                        &addr_b,
+                                        guard.current(),
+                                        mainnet,
+                                    ));
+                                    live.balance = current_balance;
+                                    live.assets_count = current_count;
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -839,18 +939,7 @@ fn build_live_stream(
                     .filter_event(&event, &delegators)
                     .and_then(|e| serialize_event(e, size))
                 {
-                    return Some((
-                        sse,
-                        (
-                            rx,
-                            filter,
-                            chain_state,
-                            last_pool,
-                            last_live_stake,
-                            buf,
-                            size,
-                        ),
-                    ));
+                    return Some((sse, (rx, filter, chain_state, live, buf, size, mainnet)));
                 }
             }
         },
@@ -1234,10 +1323,12 @@ async fn filtered_events(
 
             exclude_slots
         } else if let Some(addr) = replay_filter.address().map(str::to_string) {
+            let addr_bytes = address_bytes(&addr).unwrap_or_default();
             send_address_info(
                 &sender,
                 &replay_state.chain_state,
                 &addr,
+                &addr_bytes,
                 replay_state.mainnet,
             )
             .await;
@@ -1297,35 +1388,49 @@ async fn filtered_events(
         .await;
     });
 
-    // Build live stream with pool/drep change detection
+    // Seed the live stream's per-feed header-comparison state from the current
+    // snapshot — pool/drep use balance only, stake/address use balance + count.
     let chain_state = state.chain_state.clone();
-    let (last_pool, last_live_stake) = match &filter {
-        filter::FeedFilter::Pool(ref hash) => {
-            let guard = state.chain_state.read().await;
-            let snap = guard.current();
-            let pool = snap.and_then(|s| s.pools.get(&hex::encode(hash)).cloned());
-            let live_stake = snap.and_then(|s| State::pool_live_stake(s, hash));
-            (pool, live_stake)
+    let initial_live = {
+        let guard = state.chain_state.read().await;
+        let snap = guard.current();
+        match &filter {
+            filter::FeedFilter::Pool(ref hash) => LiveState {
+                pool: snap.and_then(|s| s.pools.get(&hex::encode(hash)).cloned()),
+                balance: snap.and_then(|s| State::pool_live_stake(s, hash)),
+                assets_count: None,
+            },
+            filter::FeedFilter::DRep(ref bytes) => LiveState {
+                pool: None,
+                balance: snap.and_then(|s| State::drep_live_stake(s, bytes)),
+                assets_count: None,
+            },
+            filter::FeedFilter::Stake(ref payload) => {
+                let cred = &payload[1..];
+                LiveState {
+                    pool: None,
+                    balance: snap.and_then(|s| s.stakes.get(cred).copied()),
+                    assets_count: snap.map(|s| stake_assets_count(s, cred)),
+                }
+            }
+            filter::FeedFilter::Address(ref addr) => {
+                let addr_b = address_bytes(addr).unwrap_or_default();
+                LiveState {
+                    pool: None,
+                    balance: snap.and_then(|s| s.address_balances.get(&addr_b).copied()),
+                    assets_count: snap.map(|s| {
+                        s.address_assets
+                            .get(&addr_b)
+                            .map(|m| m.len() as u32)
+                            .unwrap_or(0)
+                    }),
+                }
+            }
         }
-        filter::FeedFilter::DRep(ref bytes) => {
-            let guard = state.chain_state.read().await;
-            let snap = guard.current();
-            let live_stake = snap.and_then(|s| State::drep_live_stake(s, bytes));
-            (None, live_stake)
-        }
-        filter::FeedFilter::Stake(ref payload) => {
-            let guard = state.chain_state.read().await;
-            let balance = guard
-                .current()
-                .and_then(|s| s.stakes.get(&payload[1..]).copied());
-            (None, balance)
-        }
-        // Address feed has no live header tracking (balance set once at connect).
-        filter::FeedFilter::Address(_) => (None, None),
     };
 
     let replay = tokio_stream::wrappers::ReceiverStream::new(receiver);
-    let live = build_live_stream(rx, filter, chain_state, last_pool, last_live_stake, size);
+    let live = build_live_stream(rx, filter, chain_state, initial_live, size, state.mainnet);
     let stream = replay.chain(live);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
@@ -1438,7 +1543,7 @@ struct PolicyQuery {
 }
 
 #[derive(serde::Serialize)]
-struct PolicyAsset {
+struct AssetItem {
     fingerprint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
@@ -1448,9 +1553,8 @@ struct PolicyAsset {
 }
 
 #[derive(serde::Serialize)]
-struct PolicyResponse {
-    policy_id: String,
-    assets: Vec<PolicyAsset>,
+struct AssetsResponse {
+    assets: Vec<AssetItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cursor: Option<i64>,
     has_more: bool,
@@ -1464,6 +1568,55 @@ const POLICY_PAGE_SIZE: i64 = 60;
 /// descriptor for each nftcdn rung is `rung_size / POLICY_THUMB_PX`.
 const POLICY_THUMB_PX: u16 = 128;
 
+/// Decode an on-chain asset name to a display string. Strips the 4-byte
+/// CIP-67 label prefix if present (so CIP-68 (222) "MyToken" reads as
+/// "MyToken"), then UTF-8 decodes; returns None when the result is empty
+/// or non-UTF-8 (caller falls back to the fingerprint).
+fn decode_asset_name(name_bytes: &[u8]) -> Option<String> {
+    let trimmed = crate::cip68::base_name(name_bytes);
+    std::str::from_utf8(trimmed)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Build the `(src, srcset)` pair of ready-signed nftcdn preview URLs for the
+/// given fingerprint at the displayed CSS size, across the size ladder.
+fn build_thumb_urls(nftcdn: &NftcdnConfig, fingerprint: &str) -> (String, String) {
+    let rungs: Vec<(u16, String)> = SIZE_LADDER
+        .iter()
+        .map(|&size| {
+            let url = nftcdn.signed_url(fingerprint, "preview", &format!("size={size}"));
+            (size, url)
+        })
+        .collect();
+    let src = rungs
+        .first()
+        .map(|(_, url)| url.clone())
+        .unwrap_or_default();
+    let srcset = if rungs.len() > 1 {
+        rungs
+            .iter()
+            .map(|(size, url)| format!("{url} {}x", *size as f64 / POLICY_THUMB_PX as f64))
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else {
+        String::new()
+    };
+    (src, srcset)
+}
+
+fn row_to_asset(state: &AppState, fingerprint: String, name_bytes: Vec<u8>) -> AssetItem {
+    let name = decode_asset_name(&name_bytes);
+    let (src, srcset) = build_thumb_urls(&state.nftcdn, &fingerprint);
+    AssetItem {
+        fingerprint,
+        name,
+        src,
+        srcset,
+    }
+}
+
 /// List a policy's assets, most-recently-first-minted first, keyset-paginated on
 /// `multi_asset.id` (see `DbSync::assets_by_policy`). Returns ready-signed nftcdn
 /// preview URLs — a `src` plus a multi-rung `srcset` so the browser picks the DPR
@@ -1473,7 +1626,7 @@ async fn policy_assets(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(policy_id): axum::extract::Path<String>,
     axum::extract::Query(query): axum::extract::Query<PolicyQuery>,
-) -> Result<axum::Json<PolicyResponse>, StatusCode> {
+) -> Result<axum::Json<AssetsResponse>, StatusCode> {
     if !is_valid_policy_id(&policy_id) {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -1492,45 +1645,52 @@ async fn policy_assets(
 
     let assets = rows
         .into_iter()
-        .map(|(_, fingerprint, name_bytes)| {
-            let name = std::str::from_utf8(&name_bytes)
-                .ok()
-                .filter(|s| !s.is_empty())
-                .map(str::to_string);
-            let rungs: Vec<(u16, String)> = SIZE_LADDER
-                .iter()
-                .map(|&size| {
-                    let url =
-                        state
-                            .nftcdn
-                            .signed_url(&fingerprint, "preview", &format!("size={size}"));
-                    (size, url)
-                })
-                .collect();
-            let src = rungs
-                .first()
-                .map(|(_, url)| url.clone())
-                .unwrap_or_default();
-            let srcset = if rungs.len() > 1 {
-                rungs
-                    .iter()
-                    .map(|(size, url)| format!("{url} {}x", *size as f64 / POLICY_THUMB_PX as f64))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            } else {
-                String::new()
-            };
-            PolicyAsset {
-                fingerprint,
-                name,
-                src,
-                srcset,
-            }
-        })
+        .map(|(_, fingerprint, name_bytes)| row_to_asset(&state, fingerprint, name_bytes))
         .collect();
 
-    Ok(axum::Json(PolicyResponse {
-        policy_id,
+    Ok(axum::Json(AssetsResponse {
+        assets,
+        cursor,
+        has_more,
+    }))
+}
+
+/// List assets currently owned by a payment address (`addr1…`) or stake
+/// credential (`stake1…`). Same response shape and pagination scheme as
+/// `policy_assets`, but **does not** filter CIP-68 reference NFTs — owned
+/// listings show what the wallet actually holds. Only `Address` and `Stake`
+/// filter kinds are accepted; pool/drep ids return 400.
+async fn owned_assets(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(feed_id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<PolicyQuery>,
+) -> Result<axum::Json<AssetsResponse>, StatusCode> {
+    let filter = filter::FeedFilter::from_path(&feed_id).ok_or(StatusCode::BAD_REQUEST)?;
+    let guard = state.chain_state.read().await;
+    let rows = match &filter {
+        filter::FeedFilter::Address(addr) => {
+            guard
+                .address_assets(addr, query.cursor, POLICY_PAGE_SIZE)
+                .await
+        }
+        filter::FeedFilter::Stake(payload) => {
+            guard
+                .stake_assets(payload, query.cursor, POLICY_PAGE_SIZE)
+                .await
+        }
+        _ => return Err(StatusCode::BAD_REQUEST),
+    }
+    .ok_or(StatusCode::BAD_GATEWAY)?;
+    drop(guard);
+
+    let has_more = rows.len() as i64 == POLICY_PAGE_SIZE;
+    let cursor = rows.last().map(|(id, ..)| *id);
+    let assets = rows
+        .into_iter()
+        .map(|(_, fingerprint, name_bytes)| row_to_asset(&state, fingerprint, name_bytes))
+        .collect();
+
+    Ok(axum::Json(AssetsResponse {
         assets,
         cursor,
         has_more,
@@ -1572,6 +1732,7 @@ pub async fn serve(
         .route("/events/{feed_id}", get(filtered_events))
         .route("/api/asset/{fingerprint}", get(asset_media))
         .route("/api/policy/{policy_id}", get(policy_assets))
+        .route("/api/assets/{feed_id}", get(owned_assets))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
