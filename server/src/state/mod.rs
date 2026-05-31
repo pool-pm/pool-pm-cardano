@@ -216,6 +216,19 @@ impl State {
             .ok()
     }
 
+    /// Synchronous, lock-friendly clone of the db handle for callers that
+    /// want to run a db query *without* holding the `chain_state` lock for
+    /// its duration (avoiding head-of-line blocking when one slow query —
+    /// e.g. a whale's `assets_count` — would otherwise stall every other
+    /// reader behind the sink's pending writer).
+    ///
+    /// Returns `None` until `db()` has been awaited at least once; the
+    /// daemon's startup `populate_*` calls do this before SSE accepts
+    /// connections, so handlers can rely on `Some`.
+    pub fn db_handle(&self) -> Option<DbSync> {
+        self.db.get().cloned()
+    }
+
     pub fn current(&self) -> Option<&BlockSnapshot> {
         self.history.last()
     }
@@ -653,76 +666,6 @@ impl State {
     pub async fn epoch_reward_delta(&self, epoch: u64) -> Option<HashMap<Vec<u8>, i64>> {
         let db = self.db().await?;
         db.epoch_reward_delta(epoch).await.ok()
-    }
-
-    /// Fetch a page of a policy's assets (newest-first-minted) from db-sync.
-    /// `cursor` is the last id of the previous page (None for the first page).
-    pub async fn assets_by_policy(
-        &self,
-        policy: &[u8],
-        cursor: Option<i64>,
-        limit: i64,
-    ) -> Option<Vec<(i64, String, Vec<u8>)>> {
-        let db = self.db().await?;
-        db.assets_by_policy(policy, cursor, limit).await.ok()
-    }
-
-    /// Assets currently held by a payment address, paginated by mint-id.
-    pub async fn address_assets(
-        &self,
-        address: &str,
-        cursor: Option<i64>,
-        limit: i64,
-    ) -> Option<Vec<(i64, String, Vec<u8>)>> {
-        let db = self.db().await?;
-        db.address_assets(address, cursor, limit).await.ok()
-    }
-
-    /// Distinct unconsumed multi-assets held by a payment address. Static
-    /// connect-time read for the feed header; no live update.
-    pub async fn address_assets_count(&self, address: &str) -> Option<i64> {
-        let db = self.db().await?;
-        db.address_assets_count(address).await.ok()
-    }
-
-    /// Assets currently held across all payment addresses sharing a stake
-    /// credential (29-byte `hash_raw`), paginated by mint-id.
-    pub async fn stake_assets(
-        &self,
-        hash_raw: &[u8],
-        cursor: Option<i64>,
-        limit: i64,
-    ) -> Option<Vec<(i64, String, Vec<u8>)>> {
-        let db = self.db().await?;
-        db.stake_assets(hash_raw, cursor, limit).await.ok()
-    }
-
-    /// Distinct unconsumed multi-assets across all payment addresses sharing
-    /// the stake credential. Static connect-time read for the feed header.
-    pub async fn stake_assets_count(&self, hash_raw: &[u8]) -> Option<i64> {
-        let db = self.db().await?;
-        db.stake_assets_count(hash_raw).await.ok()
-    }
-
-    /// Fetch recent blocks touching a stake address (29-byte `hash_raw`) from
-    /// db-sync, newest-first, for feed replay.
-    pub async fn stake_recent_blocks(
-        &self,
-        hash_raw: &[u8],
-        limit: i64,
-    ) -> Option<Vec<(u64, String, u64)>> {
-        let db = self.db().await?;
-        db.stake_recent_blocks(hash_raw, limit).await.ok()
-    }
-
-    /// Fetch recent blocks touching a payment address from db-sync, newest-first.
-    pub async fn address_recent_blocks(
-        &self,
-        address: &str,
-        limit: i64,
-    ) -> Option<Vec<(u64, String, u64)>> {
-        let db = self.db().await?;
-        db.address_recent_blocks(address, limit).await.ok()
     }
 
     /// Rollback to the given slot: drop all snapshots after it.

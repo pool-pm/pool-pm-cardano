@@ -9,6 +9,11 @@ use url::Url;
 
 use crate::model::{asset_fingerprint, parse_handle_name, DRep, Pool, CIP67_LABEL_222};
 
+/// Cheap to clone — `sqlx::Pool` is internally `Arc`-shared, so a `DbSync`
+/// clone reuses the same underlying connection pool. Cloning hands a db
+/// handle to a caller that wants to run queries without holding a lock on the
+/// owner of the original `DbSync`.
+#[derive(Clone)]
 pub struct DbSync {
     db: sqlx::Pool<sqlx::Postgres>,
 }

@@ -1245,13 +1245,11 @@ async fn filtered_events(
         } else if let Some(payload) = replay_filter.stake_payload().cloned() {
             let cred = payload[1..].to_vec();
             let stake_address = replay_filter.feed_id();
-            let assets_count = replay_state
-                .chain_state
-                .read()
-                .await
-                .stake_assets_count(&payload)
-                .await
-                .unwrap_or(0) as u32;
+            let db = replay_state.chain_state.read().await.db_handle();
+            let assets_count = match &db {
+                Some(db) => db.stake_assets_count(&payload).await.unwrap_or(0) as u32,
+                None => 0,
+            };
             send_stake_info(
                 &sender,
                 &replay_state.chain_state,
@@ -1261,13 +1259,13 @@ async fn filtered_events(
             )
             .await;
 
-            let blocks = {
-                let guard = replay_state.chain_state.read().await;
-                guard
+            let blocks = match &db {
+                Some(db) => db
                     .stake_recent_blocks(&payload, STAKE_REPLAY_BLOCKS)
                     .await
-            }
-            .unwrap_or_default();
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            };
 
             let exclude_slots: HashSet<u64> = blocks.iter().map(|(slot, _, _)| *slot).collect();
 
@@ -1303,13 +1301,11 @@ async fn filtered_events(
             exclude_slots
         } else if let Some(addr) = replay_filter.address().map(str::to_string) {
             let addr_bytes = address_bytes(&addr).unwrap_or_default();
-            let assets_count = replay_state
-                .chain_state
-                .read()
-                .await
-                .address_assets_count(&addr)
-                .await
-                .unwrap_or(0) as u32;
+            let db = replay_state.chain_state.read().await.db_handle();
+            let assets_count = match &db {
+                Some(db) => db.address_assets_count(&addr).await.unwrap_or(0) as u32,
+                None => 0,
+            };
             send_address_info(
                 &sender,
                 &replay_state.chain_state,
@@ -1320,13 +1316,13 @@ async fn filtered_events(
             )
             .await;
 
-            let blocks = {
-                let guard = replay_state.chain_state.read().await;
-                guard
+            let blocks = match &db {
+                Some(db) => db
                     .address_recent_blocks(&addr, STAKE_REPLAY_BLOCKS)
                     .await
-            }
-            .unwrap_or_default();
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            };
 
             let exclude_slots: HashSet<u64> = blocks.iter().map(|(slot, _, _)| *slot).collect();
 
@@ -1413,35 +1409,30 @@ async fn filtered_events(
 
     // For stake/address feeds, query the static assets_count once and seed
     // the live state with it. The live stream re-emits the info event on
-    // balance changes; it always passes this count through unchanged.
-    let initial_live = match &filter {
-        filter::FeedFilter::Stake(payload) => {
-            let count = state
-                .chain_state
-                .read()
-                .await
-                .stake_assets_count(payload)
-                .await
-                .unwrap_or(0) as u32;
-            LiveState {
-                assets_count: Some(count),
-                ..initial_live
+    // balance changes; it always passes this count through unchanged. The db
+    // handle is taken under the chain_state read lock and the lock is
+    // released *before* the query, so a slow count() can't queue every other
+    // reader behind the sink's pending writer.
+    let initial_live = if matches!(
+        filter,
+        filter::FeedFilter::Stake(_) | filter::FeedFilter::Address(_)
+    ) {
+        let db = state.chain_state.read().await.db_handle();
+        let count = match (&filter, db) {
+            (filter::FeedFilter::Stake(payload), Some(db)) => {
+                db.stake_assets_count(payload).await.unwrap_or(0) as u32
             }
-        }
-        filter::FeedFilter::Address(addr) => {
-            let count = state
-                .chain_state
-                .read()
-                .await
-                .address_assets_count(addr)
-                .await
-                .unwrap_or(0) as u32;
-            LiveState {
-                assets_count: Some(count),
-                ..initial_live
+            (filter::FeedFilter::Address(addr), Some(db)) => {
+                db.address_assets_count(addr).await.unwrap_or(0) as u32
             }
+            _ => 0,
+        };
+        LiveState {
+            assets_count: Some(count),
+            ..initial_live
         }
-        _ => initial_live,
+    } else {
+        initial_live
     };
 
     let replay = tokio_stream::wrappers::ReceiverStream::new(receiver);
@@ -1647,13 +1638,18 @@ async fn policy_assets(
     }
     let policy = hex::decode(&policy_id).map_err(|_| StatusCode::BAD_REQUEST)?;
 
-    let rows = {
-        let guard = state.chain_state.read().await;
-        guard
-            .assets_by_policy(&policy, query.cursor, POLICY_PAGE_SIZE)
-            .await
-    }
-    .ok_or(StatusCode::BAD_GATEWAY)?;
+    // Take only a db-handle clone under the lock; release before the slow
+    // query so other readers/the sink aren't queued behind it.
+    let db = state
+        .chain_state
+        .read()
+        .await
+        .db_handle()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let rows = db
+        .assets_by_policy(&policy, query.cursor, POLICY_PAGE_SIZE)
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
 
     let has_more = rows.len() as i64 == POLICY_PAGE_SIZE;
     let cursor = rows.last().map(|(id, ..)| *id);
@@ -1681,22 +1677,26 @@ async fn owned_assets(
     axum::extract::Query(query): axum::extract::Query<PolicyQuery>,
 ) -> Result<axum::Json<AssetsResponse>, StatusCode> {
     let filter = filter::FeedFilter::from_path(&feed_id).ok_or(StatusCode::BAD_REQUEST)?;
-    let guard = state.chain_state.read().await;
+    // Drop the chain_state guard before the slow db query — see comment in
+    // policy_assets for the rationale.
+    let db = state
+        .chain_state
+        .read()
+        .await
+        .db_handle()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let rows = match &filter {
         filter::FeedFilter::Address(addr) => {
-            guard
-                .address_assets(addr, query.cursor, POLICY_PAGE_SIZE)
+            db.address_assets(addr, query.cursor, POLICY_PAGE_SIZE)
                 .await
         }
         filter::FeedFilter::Stake(payload) => {
-            guard
-                .stake_assets(payload, query.cursor, POLICY_PAGE_SIZE)
+            db.stake_assets(payload, query.cursor, POLICY_PAGE_SIZE)
                 .await
         }
         _ => return Err(StatusCode::BAD_REQUEST),
     }
-    .ok_or(StatusCode::BAD_GATEWAY)?;
-    drop(guard);
+    .map_err(|_| StatusCode::BAD_GATEWAY)?;
 
     let has_more = rows.len() as i64 == POLICY_PAGE_SIZE;
     let cursor = rows.last().map(|(id, ..)| *id);
