@@ -23,7 +23,7 @@ use tracing::{info, warn};
 use crate::event::{format_quantity, AssetInfo, BlockTx, DelegationInfo, TxInput, TxOutputInfo};
 use crate::event_bus::EventBus;
 use crate::filter;
-use crate::model::{asset_fingerprint, drep_bech32_id, pool_bech32_id, Pool};
+use crate::model::{asset_fingerprint, drep_bech32_id, pool_bech32_id, Pool, TxOutput};
 use crate::nftcdn::{rung_for_dpr, NftcdnConfig, SIZE_LADDER};
 use crate::state::feed_index::BlockRef;
 use crate::state::{BlockSnapshot, State};
@@ -529,18 +529,73 @@ async fn resolve_block_inputs(
     if input_keys.is_empty() {
         return;
     }
-    let (resolved, to_cache, decimals, handle_by_address) = {
+    // Phase 1: brief read lock — snapshot peek for in-memory UTXOs +
+    // clone the per-snapshot lookup tables + take a db handle. Anything
+    // synchronous; lock released before the slow db query so other readers
+    // (homepage feed, every other SSE) aren't queued behind this one.
+    let (mut resolved, remaining_keys, decimals, handle_by_address, db) = {
         let guard = chain_state.read().await;
-        let (resolved, to_cache) = guard.resolve_utxos_batch(&input_keys).await;
         let snap = guard.current();
         let decimals = snap.map(|s| s.decimals.clone()).unwrap_or_default();
         let handle_by_address = snap
             .map(|s| s.handle_by_address.clone())
             .unwrap_or_default();
-        (resolved, to_cache, decimals, handle_by_address)
+        let db = guard.db_handle();
+        let mut resolved = std::collections::HashMap::<
+            (Vec<u8>, i16),
+            (String, u64, Vec<(String, u64)>),
+        >::with_capacity(input_keys.len());
+        let mut remaining = Vec::new();
+        if let Some(s) = snap {
+            for (hash, index) in &input_keys {
+                let key = (hash.clone(), *index);
+                if let Some(utxo) = s.utxos.get(&key) {
+                    let addr = pallas::ledger::addresses::Address::from_bytes(&utxo.address)
+                        .ok()
+                        .map(|a| a.to_string())
+                        .unwrap_or_default();
+                    let lovelace: u64 = utxo
+                        .lovelaces
+                        .try_into()
+                        .expect("lovelace value must fit u64");
+                    resolved.insert(key, (addr, lovelace, utxo.assets.clone()));
+                } else {
+                    remaining.push(key);
+                }
+            }
+        } else {
+            remaining = input_keys.clone();
+        }
+        (resolved, remaining, decimals, handle_by_address, db)
     };
 
-    // Cache unspent UTXOs so subsequent feed loads skip db-sync
+    // Phase 2: db query for cache misses, with NO lock held.
+    let mut to_cache = Vec::new();
+    if !remaining_keys.is_empty() {
+        if let Some(db) = db {
+            if let Ok(db_result) = db.resolve_utxos_batch(&remaining_keys).await {
+                for (key, (addr, lovelace, assets, unspent)) in db_result {
+                    if unspent {
+                        let address_bytes = pallas::ledger::addresses::Address::from_bech32(&addr)
+                            .ok()
+                            .map(|a| a.to_vec())
+                            .unwrap_or_default();
+                        to_cache.push((
+                            key.clone(),
+                            TxOutput {
+                                lovelaces: rust_decimal::Decimal::from(lovelace),
+                                address: address_bytes,
+                                assets: assets.clone(),
+                            },
+                        ));
+                    }
+                    resolved.insert(key, (addr, lovelace, assets));
+                }
+            }
+        }
+    }
+
+    // Phase 3: brief write lock to insert into the snapshot's utxo cache.
     if !to_cache.is_empty() {
         let mut guard = chain_state.write().await;
         if let Some(snap) = guard.current_mut() {
