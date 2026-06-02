@@ -253,6 +253,18 @@ pub fn extract_votes(tx: &MultiEraTx<'_>, state: &State) -> Vec<VoteInfo> {
         .collect()
 }
 
+/// Per-credential merge of pool + DRep delegation changes within one tx.
+/// `cred_bytes -> (StakeCredential, pool_hash, drep_bytes)`; each `Option<Option<_>>`
+/// is `Some(Some(x))` to set, `Some(None)` to deregister, `None` if unchanged.
+type MergedDelegations<'a> = std::collections::HashMap<
+    Vec<u8>,
+    (
+        Option<&'a pallas::ledger::primitives::conway::StakeCredential>,
+        Option<Option<&'a Vec<u8>>>,
+        Option<Option<&'a Vec<u8>>>,
+    ),
+>;
+
 pub fn extract_delegations(
     tx: &MultiEraTx<'_>,
     state: &State,
@@ -277,14 +289,7 @@ pub fn extract_delegations(
     let drep_changes = tx.drep_delegation_changes();
 
     // Merge by credential: build a map of cred_bytes → (pool info, drep info, StakeCredential)
-    let mut merged: std::collections::HashMap<
-        Vec<u8>,
-        (
-            Option<&pallas::ledger::primitives::conway::StakeCredential>,
-            Option<Option<&Vec<u8>>>, // pool_hash: Some(Some(hash)) or Some(None) for deregistration
-            Option<Option<&Vec<u8>>>, // drep_bytes: Some(Some(bytes)) or Some(None) for deregistration
-        ),
-    > = std::collections::HashMap::new();
+    let mut merged: MergedDelegations = std::collections::HashMap::new();
 
     for (cred, pool_hash) in &pool_certs {
         let cred_bytes = stake_credential_bytes(cred);

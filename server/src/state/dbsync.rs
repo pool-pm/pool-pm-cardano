@@ -9,6 +9,11 @@ use url::Url;
 
 use crate::model::{asset_fingerprint, parse_handle_name, DRep, Pool, CIP67_LABEL_222};
 
+/// A resolved UTXO: `(address, lovelace, assets, unspent)`, keyed by
+/// `(tx_hash, output_index)`. Returned by `resolve_utxos_batch`.
+type ResolvedUtxos =
+    std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<(String, u64)>, bool)>;
+
 /// Cheap to clone — `sqlx::Pool` is internally `Arc`-shared, so a `DbSync`
 /// clone reuses the same underlying connection pool. Cloning hands a db
 /// handle to a caller that wants to run queries without holding a lock on the
@@ -310,10 +315,7 @@ impl DbSync {
     pub async fn resolve_utxos_batch(
         &self,
         inputs: &[(Vec<u8>, i16)],
-    ) -> Result<
-        std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<(String, u64)>, bool)>,
-        sqlx::Error,
-    > {
+    ) -> Result<ResolvedUtxos, sqlx::Error> {
         if inputs.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
@@ -334,10 +336,7 @@ impl DbSync {
         // Build id→key lookup and initial result map from first query
         let mut id_to_key: std::collections::HashMap<i64, (Vec<u8>, i16)> =
             std::collections::HashMap::with_capacity(rows.len());
-        let mut result: std::collections::HashMap<
-            (Vec<u8>, i16),
-            (String, u64, Vec<(String, u64)>, bool),
-        > = std::collections::HashMap::with_capacity(rows.len());
+        let mut result: ResolvedUtxos = std::collections::HashMap::with_capacity(rows.len());
         let mut tx_out_ids: Vec<i64> = Vec::with_capacity(rows.len());
 
         for r in rows {

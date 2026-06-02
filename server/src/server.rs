@@ -648,22 +648,39 @@ struct ReplayBlock {
 }
 
 /// Fetch replay blocks via N2N and send as SSE events. Newest-first order.
+/// Shared SSE transport + config for replay sends, reused across the per-feed
+/// branches in `filtered_events`. Built once; the per-call inputs (blocks,
+/// delegators, filter, deleg_info, threshold) stay separate arguments.
+struct ReplaySse<'a> {
+    sender: &'a Sender<Result<SseEvent, Infallible>>,
+    nftcdn: &'a NftcdnConfig,
+    genesis: &'a GenesisConfig,
+    chain_state: &'a RwLock<State>,
+    n2n_addr: SocketAddr,
+    magic: u64,
+    mainnet: bool,
+    size: u16,
+}
+
 /// `deleg_info` maps tx_hash -> Vec<DelegationInfo> for injecting correct delegation data.
 async fn send_replay_blocks(
-    sender: &Sender<Result<SseEvent, Infallible>>,
+    sse: &ReplaySse<'_>,
     blocks: &mut [ReplayBlock],
     delegators: &imbl::hashset::HashSet<Vec<u8>>,
     feed_filter: &filter::FeedFilter,
     deleg_info: &HashMap<String, Vec<DelegationInfo>>,
     stake_threshold: u64,
-    nftcdn: &NftcdnConfig,
-    genesis: &GenesisConfig,
-    chain_state: &RwLock<State>,
-    n2n_addr: SocketAddr,
-    magic: u64,
-    mainnet: bool,
-    size: u16,
 ) {
+    let &ReplaySse {
+        sender,
+        nftcdn,
+        genesis,
+        chain_state,
+        n2n_addr,
+        magic,
+        mainnet,
+        size,
+    } = sse;
     if blocks.is_empty() {
         return;
     }
@@ -723,7 +740,7 @@ async fn send_replay_blocks(
                             !tx.delegations.is_empty()
                                 || tx
                                     .stake_change
-                                    .map_or(false, |sc| sc.unsigned_abs() > stake_threshold)
+                                    .is_some_and(|sc| sc.unsigned_abs() > stake_threshold)
                         }
                     });
                 }
@@ -1034,6 +1051,18 @@ async fn filtered_events(
             ))
             .await;
 
+        // Shared transport/config for every send_replay_blocks call below.
+        let sse = ReplaySse {
+            sender: &sender,
+            nftcdn: &replay_state.nftcdn,
+            genesis: &replay_state.genesis,
+            chain_state: &replay_state.chain_state,
+            n2n_addr: replay_state.n2n_addr,
+            magic: replay_state.magic,
+            mainnet: replay_state.mainnet,
+            size,
+        };
+
         let exclude_slots = if let Some(ref ph) = pool_hash {
             send_pool_info(&sender, &replay_state.chain_state, ph).await;
 
@@ -1154,19 +1183,12 @@ async fn filtered_events(
 
             // Send blocks via N2N with delegation info injected
             send_replay_blocks(
-                &sender,
+                &sse,
                 &mut replay_blocks,
                 &replay_delegators,
                 &replay_filter,
                 &deleg_info,
                 stake_threshold,
-                &replay_state.nftcdn,
-                &replay_state.genesis,
-                &replay_state.chain_state,
-                replay_state.n2n_addr,
-                replay_state.magic,
-                replay_state.mainnet,
-                size,
             )
             .await;
 
@@ -1280,19 +1302,12 @@ async fn filtered_events(
             }
 
             send_replay_blocks(
-                &sender,
+                &sse,
                 &mut replay_blocks,
                 &replay_delegators,
                 &replay_filter,
                 &deleg_info,
                 stake_threshold,
-                &replay_state.nftcdn,
-                &replay_state.genesis,
-                &replay_state.chain_state,
-                replay_state.n2n_addr,
-                replay_state.magic,
-                replay_state.mainnet,
-                size,
             )
             .await;
 
@@ -1346,19 +1361,12 @@ async fn filtered_events(
                 .collect();
 
             send_replay_blocks(
-                &sender,
+                &sse,
                 &mut replay_blocks,
                 &replay_delegators,
                 &replay_filter,
                 &HashMap::new(),
                 0,
-                &replay_state.nftcdn,
-                &replay_state.genesis,
-                &replay_state.chain_state,
-                replay_state.n2n_addr,
-                replay_state.magic,
-                replay_state.mainnet,
-                size,
             )
             .await;
 
@@ -1412,19 +1420,12 @@ async fn filtered_events(
                 .collect();
 
             send_replay_blocks(
-                &sender,
+                &sse,
                 &mut replay_blocks,
                 &replay_delegators,
                 &replay_filter,
                 &HashMap::new(),
                 0,
-                &replay_state.nftcdn,
-                &replay_state.genesis,
-                &replay_state.chain_state,
-                replay_state.n2n_addr,
-                replay_state.magic,
-                replay_state.mainnet,
-                size,
             )
             .await;
 
@@ -1853,17 +1854,31 @@ async fn owned_assets(
     }))
 }
 
-pub async fn serve(
-    addr: SocketAddr,
-    bus: Arc<EventBus>,
-    chain_state: Arc<RwLock<State>>,
-    nftcdn: NftcdnConfig,
-    genesis: GenesisConfig,
-    n2n_addr: SocketAddr,
-    magic: u64,
-    mainnet: bool,
-    catching_up: Arc<std::sync::atomic::AtomicBool>,
-) {
+/// Everything the SSE server needs to run. Bundled so `serve` takes one arg.
+pub struct ServeConfig {
+    pub addr: SocketAddr,
+    pub bus: Arc<EventBus>,
+    pub chain_state: Arc<RwLock<State>>,
+    pub nftcdn: NftcdnConfig,
+    pub genesis: GenesisConfig,
+    pub n2n_addr: SocketAddr,
+    pub magic: u64,
+    pub mainnet: bool,
+    pub catching_up: Arc<std::sync::atomic::AtomicBool>,
+}
+
+pub async fn serve(config: ServeConfig) {
+    let ServeConfig {
+        addr,
+        bus,
+        chain_state,
+        nftcdn,
+        genesis,
+        n2n_addr,
+        magic,
+        mainnet,
+        catching_up,
+    } = config;
     // Wait for catch-up to complete before accepting SSE connections
     if catching_up.load(std::sync::atomic::Ordering::Relaxed) {
         info!("waiting for catch-up before starting SSE server");

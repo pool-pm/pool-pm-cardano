@@ -59,7 +59,7 @@ impl RegistryConfig {
 /// Fetch the latest commit SHA for the registry branch.
 pub async fn fetch_commit_sha(client: &reqwest::Client, config: &RegistryConfig) -> Option<String> {
     let resp = client
-        .get(&config.commit_api_url())
+        .get(config.commit_api_url())
         .header("User-Agent", "pool-pm-cardano")
         .header("Accept", "application/vnd.github.sha")
         .send()
@@ -87,7 +87,7 @@ pub async fn fetch_decimals(
         config.owner, config.repo
     );
 
-    let resp = match client.get(&config.tarball_url()).send().await {
+    let resp = match client.get(config.tarball_url()).send().await {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
             warn!(status = %r.status(), "failed to download token registry tarball");

@@ -85,12 +85,10 @@ fn extract_decimals_from_map(metadata: &PlutusData) -> Option<u8> {
 
 /// Convert a PlutusData integer to u8.
 fn plutus_int_to_u8(pd: &PlutusData) -> Option<u8> {
-    if let PlutusData::BigInt(bi) = pd {
-        if let BigInt::Int(i) = bi {
-            let n: i128 = (*i).into();
-            if (0..=255).contains(&n) {
-                return Some(n as u8);
-            }
+    if let PlutusData::BigInt(BigInt::Int(i)) = pd {
+        let n: i128 = (*i).into();
+        if (0..=255).contains(&n) {
+            return Some(n as u8);
         }
     }
     None

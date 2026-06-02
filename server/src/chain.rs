@@ -11,7 +11,7 @@ pub struct Chain(ChainConfig);
 
 impl Chain {
     pub fn config(&self) -> &ChainConfig {
-        return &self.0;
+        &self.0
     }
 
     pub fn magic(&self) -> u64 {
@@ -47,14 +47,15 @@ impl FromStr for Chain {
     }
 }
 
-impl ToString for Chain {
-    fn to_string(&self) -> String {
-        match self {
-            Chain(ChainConfig::Mainnet) => "mainnet".to_string(),
-            Chain(ChainConfig::PreProd) => "preprod".to_string(),
-            Chain(ChainConfig::Preview) => "preview".to_string(),
-            _ => "".to_string(),
-        }
+impl Display for Chain {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s = match self {
+            Chain(ChainConfig::Mainnet) => "mainnet",
+            Chain(ChainConfig::PreProd) => "preprod",
+            Chain(ChainConfig::Preview) => "preview",
+            _ => "",
+        };
+        write!(f, "{s}")
     }
 }
 

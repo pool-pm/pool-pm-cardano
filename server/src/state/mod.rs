@@ -104,7 +104,7 @@ impl BlockSnapshot {
     pub fn handle_for(&self, address: &str) -> Option<String> {
         self.handle_by_address
             .get(address)
-            .and_then(|handles| handles.iter().min_by_key(|h| h.len()).map(|h| h.clone()))
+            .and_then(|handles| handles.iter().min_by_key(|h| h.len()).cloned())
     }
 }
 
@@ -119,6 +119,13 @@ impl BlockSnapshot {
 /// cross it are picked up at the next reset.
 pub const MIN_UTXOS_TO_CACHE: i64 = 1000;
 
+/// A delegation map plus its reverse index: `(cred -> target, target -> {creds})`.
+/// Returned by `apply_delegation_changes` for both pool and DRep delegations.
+type DelegationIndex = (
+    HashMap<Vec<u8>, Vec<u8>>,
+    HashMap<Vec<u8>, HashSet<Vec<u8>>>,
+);
+
 /// The owned-asset cache, warmed from db-sync at a single cutoff. Built by
 /// [`State::warm_asset_cache`] from the `address_balances` scan rows and consumed
 /// by both `reset()` (cold start) and `populate_address_assets()` (warm resume).
@@ -130,6 +137,27 @@ struct WarmedCache {
     stake_assets: HashMap<Vec<u8>, OrdMap<u32, u64>>,
     address_utxos: HashMap<Vec<u8>, u32>,
     stake_utxos: HashMap<Vec<u8>, u32>,
+}
+
+/// All per-block data the sink hands to [`State::apply_block`], bundled into one
+/// argument. Owns the produced outputs (the sink no longer needs them) and
+/// borrows the rest from sink-local buffers for the duration of the call.
+pub struct BlockUpdate<'a> {
+    pub slot: u64,
+    pub block_hash: String,
+    pub epoch: u64,
+    pub produced: Vec<((Vec<u8>, i16), TxOutput)>,
+    pub consumed: &'a [((Vec<u8>, i16), TxOutput)],
+    pub pool_delegation_changes: &'a [(Vec<u8>, Option<Vec<u8>>)],
+    pub drep_delegation_changes: &'a [(Vec<u8>, Option<Vec<u8>>)],
+    pub pool_updates: &'a [PoolUpdate],
+    pub stake_changes: &'a [(Vec<u8>, i64)],
+    pub withdrawal_changes: &'a [(Vec<u8>, i64)],
+    /// Fingerprint → asset name for assets in this block's produced outputs, used
+    /// to fill the intern table when a cached address gains a new asset (the sink
+    /// has the name; we never look it up in the hot path).
+    pub produced_asset_names: &'a std::collections::HashMap<String, Vec<u8>>,
+    pub reward_deltas: Option<&'a HashMap<Vec<u8>, i64>>,
 }
 
 /// Intern `rows` (pre-ordered by mint id so refs seed in mint order ⇒ ref DESC
@@ -816,24 +844,22 @@ impl State {
     /// `consumed` carries each input's `(utxo_ref, resolved_output)` so
     /// `address_balances` can be decremented without re-looking up inputs that
     /// predate the snapshot (and aren't in `prev.utxos`).
-    pub fn apply_block(
-        &mut self,
-        slot: u64,
-        block_hash: String,
-        produced: Vec<((Vec<u8>, i16), TxOutput)>,
-        consumed: &[((Vec<u8>, i16), TxOutput)],
-        pool_delegation_changes: &[(Vec<u8>, Option<Vec<u8>>)],
-        drep_delegation_changes: &[(Vec<u8>, Option<Vec<u8>>)],
-        pool_updates: &[PoolUpdate],
-        stake_changes: &[(Vec<u8>, i64)],
-        withdrawal_changes: &[(Vec<u8>, i64)],
-        // Fingerprint → asset name for assets in this block's produced outputs,
-        // used to fill the intern table when a cached address gains a new asset
-        // (the sink has the name; we never look it up in the hot path).
-        produced_asset_names: &std::collections::HashMap<String, Vec<u8>>,
-        epoch: u64,
-        reward_deltas: Option<&HashMap<Vec<u8>, i64>>,
-    ) {
+    pub fn apply_block(&mut self, update: BlockUpdate) {
+        let BlockUpdate {
+            slot,
+            block_hash,
+            epoch,
+            produced,
+            consumed,
+            pool_delegation_changes,
+            drep_delegation_changes,
+            pool_updates,
+            stake_changes,
+            withdrawal_changes,
+            produced_asset_names,
+            reward_deltas,
+        } = update;
+
         let prev = self.history.last().expect("state not initialized");
 
         let mut utxos = prev.utxos.clone();
@@ -1007,10 +1033,7 @@ impl State {
         prev_delegations: &HashMap<Vec<u8>, Vec<u8>>,
         prev_delegators: &HashMap<Vec<u8>, HashSet<Vec<u8>>>,
         changes: &[(Vec<u8>, Option<Vec<u8>>)],
-    ) -> (
-        HashMap<Vec<u8>, Vec<u8>>,
-        HashMap<Vec<u8>, HashSet<Vec<u8>>>,
-    ) {
+    ) -> DelegationIndex {
         if changes.is_empty() {
             return (prev_delegations.clone(), prev_delegators.clone());
         }

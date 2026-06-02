@@ -45,11 +45,12 @@ fn connect_stages(
 
     gasket::messaging::tokio::connect_ports(prev, cursor.borrow_track(), 100);
 
-    let mut tethers = vec![];
-    tethers.push(source.spawn(policy.clone()));
-    tethers.push(gasket::runtime::spawn_stage(sink, policy.clone()));
-    tethers.push(cursor.spawn(policy.clone()));
-    tethers.push(gasket::runtime::spawn_stage(mempool, policy));
+    let tethers = vec![
+        source.spawn(policy.clone()),
+        gasket::runtime::spawn_stage(sink, policy.clone()),
+        cursor.spawn(policy.clone()),
+        gasket::runtime::spawn_stage(mempool, policy),
+    ];
 
     let runtime = Daemon(tethers);
 
@@ -123,10 +124,10 @@ pub fn run(args: Args) -> Result<(), Error> {
     let genesis_config = server::GenesisConfig {
         shelley_known_slot: genesis.shelley_known_slot,
         shelley_known_time: genesis.shelley_known_time,
-        shelley_slot_length: genesis.shelley_slot_length as u32,
-        byron_epoch_length: genesis.byron_epoch_length as u32,
-        byron_slot_length: genesis.byron_slot_length as u32,
-        shelley_epoch_length: genesis.shelley_epoch_length as u32,
+        shelley_slot_length: genesis.shelley_slot_length,
+        byron_epoch_length: genesis.byron_epoch_length,
+        byron_slot_length: genesis.byron_slot_length,
+        shelley_epoch_length: genesis.shelley_epoch_length,
     };
     let mempool_config = mempool::Config {
         socket_path: args.socket.clone(),
@@ -247,13 +248,15 @@ pub fn run(args: Args) -> Result<(), Error> {
     let source = source_config.bootstrapper(&ctx)?;
     let sink = sink::bootstrapper(
         &ctx,
-        event_bus.clone(),
-        state.clone(),
-        nftcdn.clone(),
-        snapshot_path,
-        snapshot_depth,
-        catchup_target,
-        catching_up.clone(),
+        sink::SinkConfig {
+            event_bus: event_bus.clone(),
+            state: state.clone(),
+            nftcdn: nftcdn.clone(),
+            snapshot_path,
+            snapshot_depth,
+            catchup_target,
+            catching_up: catching_up.clone(),
+        },
     )?;
     let cursor = cursor::Bootstrapper::File(cursor_config.bootstrapper(&ctx)?);
     let mempool = mempool::bootstrapper(
@@ -280,17 +283,17 @@ pub fn run(args: Args) -> Result<(), Error> {
     tokio_rt.spawn(cip26_refresh_task(state.clone(), mainnet));
 
     if let Some(addr) = listen {
-        tokio_rt.spawn(server::serve(
+        tokio_rt.spawn(server::serve(server::ServeConfig {
             addr,
-            event_bus,
-            state,
+            bus: event_bus,
+            chain_state: state,
             nftcdn,
-            genesis_config,
-            args.n2n,
-            args.network.magic(),
+            genesis: genesis_config,
+            n2n_addr: args.n2n,
+            magic: args.network.magic(),
             mainnet,
             catching_up,
-        ));
+        }));
     }
 
     daemon.block();

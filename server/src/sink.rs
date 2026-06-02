@@ -24,7 +24,7 @@ use crate::pallas::{
     stake_credential_bytes, stake_credential_from_address_bytes, MultiEraTxExt, PoolUpdate,
 };
 use crate::state::feed_index::{BlockRef, DelegationEntry};
-use crate::state::State;
+use crate::state::{BlockUpdate, State};
 
 /// During normal operation, persist a snapshot every this many blocks. Skipped
 /// while catching up (initial sync), where periodic saves only slow it down.
@@ -467,20 +467,20 @@ impl Worker {
             let prune_boundary = slot.saturating_sub(FEED_INDEX_WINDOW);
             state.feed_index.prune(prune_boundary);
 
-            state.apply_block(
+            state.apply_block(BlockUpdate {
                 slot,
-                block_hash.clone(),
-                produced,
-                &consumed,
-                &pool_deleg,
-                &drep_deleg,
-                &pool_updates,
-                &stake_changes,
-                &withdrawal_changes,
-                &produced_asset_names,
+                block_hash: block_hash.clone(),
                 epoch,
-                reward_deltas.as_ref(),
-            );
+                produced,
+                consumed: &consumed,
+                pool_delegation_changes: &pool_deleg,
+                drep_delegation_changes: &drep_deleg,
+                pool_updates: &pool_updates,
+                stake_changes: &stake_changes,
+                withdrawal_changes: &withdrawal_changes,
+                produced_asset_names: &produced_asset_names,
+                reward_deltas: reward_deltas.as_ref(),
+            });
 
             // ADA Handle: update handle cache in the latest snapshot
             if !handle_changes.is_empty() {
@@ -634,16 +634,28 @@ pub struct Stage {
     latest_block: gasket::metrics::Gauge,
 }
 
-pub fn bootstrapper(
-    context: &Context,
-    event_bus: Arc<EventBus>,
-    state: Arc<RwLock<State>>,
-    nftcdn: NftcdnConfig,
-    snapshot_path: PathBuf,
-    snapshot_depth: usize,
-    catchup_target: Option<u64>,
-    catching_up: Arc<std::sync::atomic::AtomicBool>,
-) -> Result<Stage, Error> {
+/// Runtime handles + persistence config for the sink stage. Bundled so
+/// `bootstrapper` takes the gasket context plus one config arg.
+pub struct SinkConfig {
+    pub event_bus: Arc<EventBus>,
+    pub state: Arc<RwLock<State>>,
+    pub nftcdn: NftcdnConfig,
+    pub snapshot_path: PathBuf,
+    pub snapshot_depth: usize,
+    pub catchup_target: Option<u64>,
+    pub catching_up: Arc<std::sync::atomic::AtomicBool>,
+}
+
+pub fn bootstrapper(context: &Context, config: SinkConfig) -> Result<Stage, Error> {
+    let SinkConfig {
+        event_bus,
+        state,
+        nftcdn,
+        snapshot_path,
+        snapshot_depth,
+        catchup_target,
+        catching_up,
+    } = config;
     let genesis = GenesisValues::from(context.chain.clone());
     let mainnet = genesis.magic == 764824073;
     Ok(Stage {
