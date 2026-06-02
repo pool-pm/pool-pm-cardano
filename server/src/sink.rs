@@ -84,6 +84,7 @@ impl Worker {
             drep_feed_delegations,
             new_decimals,
             handle_changes,
+            produced_asset_names,
         ) = {
             let state = stage.state.read().await;
             let snap = state.current();
@@ -111,6 +112,12 @@ impl Worker {
 
             // ADA Handle: collect (handle_name, owner_address) for this block
             let mut handle_changes: Vec<(String, String)> = Vec::new();
+
+            // Owned-asset cache: fingerprint -> name for assets paid to a cached
+            // (scan-bound) address this block, so `apply_block` can intern new
+            // assets with their name without a hot-path db lookup.
+            let mut produced_asset_names: std::collections::HashMap<String, Vec<u8>> =
+                std::collections::HashMap::new();
 
             // Feed index: collect raw delegation certs for building DelegationEntry
             struct RawDelegCert {
@@ -209,6 +216,11 @@ impl Worker {
                         .ok()
                         .map(|a| a.to_vec())
                         .unwrap_or_default();
+                    // Only capture asset names for outputs paid to a cached
+                    // (scan-bound) address — the rest never enter the cache.
+                    let addr_cached = snap
+                        .map(|s| s.address_assets.contains_key(&addr))
+                        .unwrap_or(false);
                     let coin = output.value().coin();
                     let lovelaces = Decimal::from(coin);
                     if let Some(cred) = stake_credential_from_address_bytes(&addr) {
@@ -231,7 +243,11 @@ impl Worker {
                         let policy_id = pa.policy().as_ref();
                         for a in pa.assets().iter() {
                             if let Some(raw) = a.output_coin() {
-                                assets.push((asset_fingerprint(policy_id, a.name()), raw));
+                                let fp = asset_fingerprint(policy_id, a.name());
+                                if addr_cached {
+                                    produced_asset_names.insert(fp.clone(), a.name().to_vec());
+                                }
+                                assets.push((fp, raw));
                             }
                             // Detect ADA Handle tokens (classic, CIP-68, virtual)
                             if is_handle_policy(policy_id) {
@@ -393,6 +409,7 @@ impl Worker {
                 drep_feed_delegations,
                 new_decimals,
                 handle_changes,
+                produced_asset_names,
             )
         };
 
@@ -460,6 +477,7 @@ impl Worker {
                 &pool_updates,
                 &stake_changes,
                 &withdrawal_changes,
+                &produced_asset_names,
                 epoch,
                 reward_deltas.as_ref(),
             );

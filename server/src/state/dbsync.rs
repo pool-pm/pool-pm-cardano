@@ -229,21 +229,29 @@ impl DbSync {
         cursor: Option<i64>,
         limit: i64,
     ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
-        // See `assets_by_policy` for the rationale behind the MATERIALIZED CTE.
+        // Resolve (fingerprint, name) for only the returned page, not for every
+        // asset the address holds. The MATERIALIZED CTE forces the address-first
+        // bitmap path (without it the planner picks a catastrophic backward
+        // multi_asset index scan); we keyset-paginate the distinct ids first and
+        // join multi_asset for just this page. The old form materialized metadata
+        // for *all* of the address's assets merely to return one page — e.g. a
+        // 30k-asset address spent ~700ms resolving 30k rows to show 60.
         let rows = sqlx::query!(
-            r#"WITH filtered AS MATERIALIZED (
-                SELECT id, fingerprint AS "fingerprint!", name AS "name!"
-                FROM multi_asset
-                WHERE id IN (
-                  SELECT DISTINCT mto.ident
-                  FROM ma_tx_out mto
-                  JOIN tx_out txo ON txo.id = mto.tx_out_id
-                  WHERE txo.address = $1 AND txo.consumed_by_tx_id IS NULL
-                ) AND ($2::bigint IS NULL OR id < $2)
+            r#"WITH ids AS MATERIALIZED (
+                SELECT DISTINCT mto.ident AS id
+                FROM ma_tx_out mto
+                JOIN tx_out txo ON txo.id = mto.tx_out_id
+                WHERE txo.address = $1 AND txo.consumed_by_tx_id IS NULL
             )
-            SELECT id, "fingerprint!", "name!" FROM filtered
-            ORDER BY id DESC
-            LIMIT $3"#,
+            SELECT ma.id AS "id!", ma.fingerprint AS "fingerprint!", ma.name AS "name!"
+            FROM (
+                SELECT id FROM ids
+                WHERE ($2::bigint IS NULL OR id < $2)
+                ORDER BY id DESC
+                LIMIT $3
+            ) page
+            JOIN multi_asset ma ON ma.id = page.id
+            ORDER BY ma.id DESC"#,
             address,
             cursor,
             limit
@@ -266,22 +274,25 @@ impl DbSync {
         cursor: Option<i64>,
         limit: i64,
     ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
-        // See `assets_by_policy` for the rationale behind the MATERIALIZED CTE.
+        // See `address_assets` for the rationale: resolve metadata for only the
+        // returned page, keyset-paginating the distinct ids first.
         let rows = sqlx::query!(
-            r#"WITH filtered AS MATERIALIZED (
-                SELECT id, fingerprint AS "fingerprint!", name AS "name!"
-                FROM multi_asset
-                WHERE id IN (
-                  SELECT DISTINCT mto.ident
-                  FROM ma_tx_out mto
-                  JOIN tx_out txo ON txo.id = mto.tx_out_id
-                  WHERE txo.stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
-                    AND txo.consumed_by_tx_id IS NULL
-                ) AND ($2::bigint IS NULL OR id < $2)
+            r#"WITH ids AS MATERIALIZED (
+                SELECT DISTINCT mto.ident AS id
+                FROM ma_tx_out mto
+                JOIN tx_out txo ON txo.id = mto.tx_out_id
+                WHERE txo.stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+                  AND txo.consumed_by_tx_id IS NULL
             )
-            SELECT id, "fingerprint!", "name!" FROM filtered
-            ORDER BY id DESC
-            LIMIT $3"#,
+            SELECT ma.id AS "id!", ma.fingerprint AS "fingerprint!", ma.name AS "name!"
+            FROM (
+                SELECT id FROM ids
+                WHERE ($2::bigint IS NULL OR id < $2)
+                ORDER BY id DESC
+                LIMIT $3
+            ) page
+            JOIN multi_asset ma ON ma.id = page.id
+            ORDER BY ma.id DESC"#,
             hash_raw,
             cursor,
             limit
@@ -440,35 +451,128 @@ impl DbSync {
         Ok((delegations, delegators))
     }
 
-    /// Populate `address_balances` from db-sync at the given cutoff. Grouped
-    /// scan of unconsumed UTXOs at `last_tx_id` — expensive on mainnet (paid
-    /// once on cold reset / first run after upgrade); see
-    /// `populate_address_balances`. Byron addresses (non-bech32) are skipped —
-    /// they don't appear in feeds.
+    /// Per-address balance **and unspent-UTXO count** at `last_tx_id`, from one
+    /// grouped scan of unconsumed UTXOs — expensive on mainnet (paid once on cold
+    /// reset / first run after upgrade); see `populate_address_balances`. The
+    /// `COUNT(*)` rides free on the scan we already run for balances and is the
+    /// signal that selects the scan-bound owned-asset cache set (see plan: Part
+    /// 2 — "membership = unspent_utxos, free"), so the caller needs no separate
+    /// discovery scan. Returns `(bech32 address, lovelace, unspent_utxos)`;
+    /// addresses are returned bech32-encoded (the caller parses to bytes and
+    /// skips Byron / non-bech32 ones — they don't appear in feeds).
     pub async fn address_balances(
         &self,
         last_tx_id: i64,
-    ) -> Result<HashMap<Vec<u8>, i64>, sqlx::Error> {
-        use pallas::ledger::addresses::Address;
-
-        let mut balances: HashMap<Vec<u8>, i64> = HashMap::new();
-        let mut rows = sqlx::query!(
-            r#"SELECT address, SUM(value)::bigint AS "balance!"
+    ) -> Result<Vec<(String, i64, i64)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT address AS "address!", SUM(value)::bigint AS "balance!",
+                      COUNT(*)::bigint AS "n_utxos!"
             FROM tx_out
             WHERE tx_id <= $1
               AND (consumed_by_tx_id IS NULL OR consumed_by_tx_id > $1)
             GROUP BY address"#,
             last_tx_id
         )
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.address, r.balance, r.n_utxos))
+            .collect())
+    }
+
+    /// Asset holdings (fingerprint, name, summed quantity) for the given explicit
+    /// set of payment `addresses` (bech32) — the scan-bound set the caller already
+    /// identified from the free `unspent_utxos` counts (see `address_balances`),
+    /// so this does NOT re-discover it. ONE bulk pass, not per-address: a single
+    /// whale costs ~138s per-address, but here every heavy address is amortized
+    /// into one scan. The `heavy` set is injected as a small relation (`unnest`),
+    /// leaving the downstream join plan identical to the old grouped-discovery
+    /// form — only the discovery scan is dropped. Rows are ordered by
+    /// `multi_asset.id` so the caller can intern refs in mint order (ref DESC ⇒
+    /// newest-first pagination). Returns (address_bytes, fingerprint, name,
+    /// quantity); Byron (non-bech32) addresses are skipped. Cold-reset / warm only.
+    pub async fn heavy_address_assets(
+        &self,
+        last_tx_id: i64,
+        addresses: &[String],
+    ) -> Result<Vec<(Vec<u8>, String, Vec<u8>, i64)>, sqlx::Error> {
+        use pallas::ledger::addresses::Address;
+
+        let mut rows = sqlx::query!(
+            r#"WITH heavy(address) AS (
+                SELECT * FROM unnest($2::text[])
+            )
+            SELECT txo.address AS "address!", ma.id AS "id!",
+                   ma.fingerprint AS "fingerprint!", ma.name AS "name!",
+                   SUM(mto.quantity)::bigint AS "qty!"
+            FROM heavy h
+            JOIN tx_out txo ON txo.address = h.address
+            JOIN ma_tx_out mto ON mto.tx_out_id = txo.id
+            JOIN multi_asset ma ON ma.id = mto.ident
+            WHERE txo.tx_id <= $1
+              AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $1)
+            GROUP BY txo.address, ma.id, ma.fingerprint, ma.name
+            ORDER BY ma.id"#,
+            last_tx_id,
+            addresses
+        )
         .fetch(&self.db);
 
+        let mut out: Vec<(Vec<u8>, String, Vec<u8>, i64)> = Vec::new();
         while let Some(row) = rows.try_next().await? {
             let Ok(addr) = Address::from_bech32(&row.address) else {
                 continue;
             };
-            balances.insert(addr.to_vec(), row.balance);
+            out.push((addr.to_vec(), row.fingerprint, row.name, row.qty));
         }
-        Ok(balances)
+        Ok(out)
+    }
+
+    /// Asset holdings (summed across **all** of a stake credential's payment
+    /// addresses) for the given explicit set of 28-byte `creds` — the scan-bound
+    /// stakes the caller already identified from the free per-stake `unspent_utxos`
+    /// sums (see `State::warm_asset_cache`), so this does NOT re-discover them.
+    /// Caching the whole stake (not just its heavy addresses) keeps the union
+    /// complete. The heavy set is injected as a small relation and matched against
+    /// `stake_address` on the credential (`hash_raw` minus its 1-byte header),
+    /// replacing the old `tx_out … GROUP BY stake_address_id HAVING` discovery
+    /// scan; the downstream join is unchanged. Returns the 28-byte credential as
+    /// key, matching how `stakes`/`pool_delegations` are keyed. Cold-reset / warm
+    /// only.
+    pub async fn heavy_stake_assets(
+        &self,
+        last_tx_id: i64,
+        creds: &[Vec<u8>],
+    ) -> Result<Vec<(Vec<u8>, String, Vec<u8>, i64)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"WITH heavy(cred) AS (
+                SELECT * FROM unnest($2::bytea[])
+            )
+            SELECT sa.hash_raw AS "hash_raw!", ma.id AS "id!",
+                   ma.fingerprint AS "fingerprint!", ma.name AS "name!",
+                   SUM(mto.quantity)::bigint AS "qty!"
+            FROM heavy h
+            JOIN stake_address sa ON substring(sa.hash_raw FROM 2) = h.cred
+            JOIN tx_out txo ON txo.stake_address_id = sa.id
+            JOIN ma_tx_out mto ON mto.tx_out_id = txo.id
+            JOIN multi_asset ma ON ma.id = mto.ident
+            WHERE txo.tx_id <= $1
+              AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $1)
+            GROUP BY sa.hash_raw, ma.id, ma.fingerprint, ma.name
+            ORDER BY ma.id"#,
+            last_tx_id,
+            creds
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            // strip the 1-byte header → 28-byte stake credential
+            .map(|r| (r.hash_raw[1..].to_vec(), r.fingerprint, r.name, r.qty))
+            .collect())
     }
 
     /// Distinct unconsumed multi-assets currently held by a payment address.
