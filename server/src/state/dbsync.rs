@@ -516,39 +516,51 @@ impl DbSync {
     ) -> Result<Vec<(Vec<u8>, String, Vec<u8>, i64)>, sqlx::Error> {
         use futures::stream::StreamExt;
         use pallas::ledger::addresses::Address;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         /// Concurrent per-address fetches; kept under the 8-connection pool size.
         const CONCURRENCY: usize = 6;
 
+        let total = addresses.len();
+        let done = AtomicUsize::new(0);
+
         let per_address = futures::stream::iter(addresses.iter())
-            .map(|bech32| async move {
-                let Ok(addr) = Address::from_bech32(bech32) else {
-                    return Ok::<_, sqlx::Error>(Vec::new());
-                };
-                let bytes = addr.to_vec();
-                let rows = sqlx::query!(
-                    r#"WITH holdings AS MATERIALIZED (
-                        SELECT mto.ident AS id, mto.quantity
-                        FROM tx_out txo
-                        JOIN ma_tx_out mto ON mto.tx_out_id = txo.id
-                        WHERE txo.address = $1
-                          AND txo.tx_id <= $2
-                          AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $2)
+            .map(|bech32| {
+                let done = &done;
+                async move {
+                    let Ok(addr) = Address::from_bech32(bech32) else {
+                        return Ok::<_, sqlx::Error>(Vec::new());
+                    };
+                    let bytes = addr.to_vec();
+                    let rows = sqlx::query!(
+                        r#"WITH holdings AS MATERIALIZED (
+                            SELECT mto.ident AS id, mto.quantity
+                            FROM tx_out txo
+                            JOIN ma_tx_out mto ON mto.tx_out_id = txo.id
+                            WHERE txo.address = $1
+                              AND txo.tx_id <= $2
+                              AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $2)
+                        )
+                        SELECT ma.id AS "id!", ma.fingerprint AS "fingerprint!",
+                               ma.name AS "name!", SUM(h.quantity)::bigint AS "qty!"
+                        FROM holdings h
+                        JOIN multi_asset ma ON ma.id = h.id
+                        GROUP BY ma.id, ma.fingerprint, ma.name"#,
+                        bech32,
+                        last_tx_id
                     )
-                    SELECT ma.id AS "id!", ma.fingerprint AS "fingerprint!",
-                           ma.name AS "name!", SUM(h.quantity)::bigint AS "qty!"
-                    FROM holdings h
-                    JOIN multi_asset ma ON ma.id = h.id
-                    GROUP BY ma.id, ma.fingerprint, ma.name"#,
-                    bech32,
-                    last_tx_id
-                )
-                .fetch_all(&self.db)
-                .await?;
-                Ok(rows
-                    .into_iter()
-                    .map(|r| (r.id, bytes.clone(), r.fingerprint, r.name, r.qty))
-                    .collect::<Vec<_>>())
+                    .fetch_all(&self.db)
+                    .await?;
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    tracing::info!(
+                        "owned-asset warmup {n}/{total}: {bech32} ({} assets)",
+                        rows.len()
+                    );
+                    Ok(rows
+                        .into_iter()
+                        .map(|r| (r.id, bytes.clone(), r.fingerprint, r.name, r.qty))
+                        .collect::<Vec<_>>())
+                }
             })
             .buffer_unordered(CONCURRENCY)
             .collect::<Vec<Result<Vec<_>, sqlx::Error>>>()
