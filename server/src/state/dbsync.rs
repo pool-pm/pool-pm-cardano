@@ -14,6 +14,11 @@ use crate::model::{asset_fingerprint, parse_handle_name, DRep, Pool, CIP67_LABEL
 type ResolvedUtxos =
     std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<(String, u64)>, bool)>;
 
+/// A warmed owned-asset holding tagged with its `multi_asset.id`:
+/// `(id, key_bytes, fingerprint, name, quantity)`. The `id` is used to sort into
+/// global mint order before interning, then dropped.
+type HoldingRow = (i64, Vec<u8>, String, Vec<u8>, i64);
+
 /// Statements slower than this are logged at WARN. Sized to the ~100 ms
 /// per-query target with headroom: anything over 1s in steady state signals a
 /// regression. The reset/warm-up scans are deliberately slower and trip this
@@ -489,50 +494,77 @@ impl DbSync {
 
     /// Asset holdings (fingerprint, name, summed quantity) for the given explicit
     /// set of payment `addresses` (bech32) — the scan-bound set the caller already
-    /// identified from the free `unspent_utxos` counts (see `address_balances`),
-    /// so this does NOT re-discover it. ONE bulk pass, not per-address: a single
-    /// whale costs ~138s per-address, but here every heavy address is amortized
-    /// into one scan. The `heavy` set is injected as a small relation (`unnest`),
-    /// leaving the downstream join plan identical to the old grouped-discovery
-    /// form — only the discovery scan is dropped. Rows are ordered by
+    /// identified from the free `unspent_utxos` counts (see `address_balances`).
+    /// Returns (address_bytes, fingerprint, name, quantity) ordered by
     /// `multi_asset.id` so the caller can intern refs in mint order (ref DESC ⇒
-    /// newest-first pagination). Returns (address_bytes, fingerprint, name,
-    /// quantity); Byron (non-bech32) addresses are skipped. Cold-reset / warm only.
+    /// newest-first pagination). Byron (non-bech32) addresses are skipped.
+    /// Cold-reset / warm only.
+    ///
+    /// Fetched **per address**, not as one bulk `unnest`. A constant address lets
+    /// the planner use `idx_tx_out_address` → `ma_tx_out` by `tx_out_id` (the same
+    /// index path the `/assets` page query forces with its `MATERIALIZED` CTE). A
+    /// single bulk `unnest` of the heavy set instead flips the planner to a
+    /// parallel seq scan of all ~472M `ma_tx_out` rows — the whale's millions of
+    /// matches blow up the estimate — which ran >10 min and stalled the reset.
+    /// Per-address queries run with a small concurrency bound to use the pool
+    /// without exhausting it; the heaviest address (~4.2M historical outputs) is
+    /// still the floor (~minutes) but stays on the index path.
     pub async fn heavy_address_assets(
         &self,
         last_tx_id: i64,
         addresses: &[String],
     ) -> Result<Vec<(Vec<u8>, String, Vec<u8>, i64)>, sqlx::Error> {
+        use futures::stream::StreamExt;
         use pallas::ledger::addresses::Address;
 
-        let mut rows = sqlx::query!(
-            r#"WITH heavy(address) AS (
-                SELECT * FROM unnest($2::text[])
-            )
-            SELECT txo.address AS "address!", ma.id AS "id!",
-                   ma.fingerprint AS "fingerprint!", ma.name AS "name!",
-                   SUM(mto.quantity)::bigint AS "qty!"
-            FROM heavy h
-            JOIN tx_out txo ON txo.address = h.address
-            JOIN ma_tx_out mto ON mto.tx_out_id = txo.id
-            JOIN multi_asset ma ON ma.id = mto.ident
-            WHERE txo.tx_id <= $1
-              AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $1)
-            GROUP BY txo.address, ma.id, ma.fingerprint, ma.name
-            ORDER BY ma.id"#,
-            last_tx_id,
-            addresses
-        )
-        .fetch(&self.db);
+        /// Concurrent per-address fetches; kept under the 8-connection pool size.
+        const CONCURRENCY: usize = 6;
 
-        let mut out: Vec<(Vec<u8>, String, Vec<u8>, i64)> = Vec::new();
-        while let Some(row) = rows.try_next().await? {
-            let Ok(addr) = Address::from_bech32(&row.address) else {
-                continue;
-            };
-            out.push((addr.to_vec(), row.fingerprint, row.name, row.qty));
+        let per_address = futures::stream::iter(addresses.iter())
+            .map(|bech32| async move {
+                let Ok(addr) = Address::from_bech32(bech32) else {
+                    return Ok::<_, sqlx::Error>(Vec::new());
+                };
+                let bytes = addr.to_vec();
+                let rows = sqlx::query!(
+                    r#"WITH holdings AS MATERIALIZED (
+                        SELECT mto.ident AS id, mto.quantity
+                        FROM tx_out txo
+                        JOIN ma_tx_out mto ON mto.tx_out_id = txo.id
+                        WHERE txo.address = $1
+                          AND txo.tx_id <= $2
+                          AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $2)
+                    )
+                    SELECT ma.id AS "id!", ma.fingerprint AS "fingerprint!",
+                           ma.name AS "name!", SUM(h.quantity)::bigint AS "qty!"
+                    FROM holdings h
+                    JOIN multi_asset ma ON ma.id = h.id
+                    GROUP BY ma.id, ma.fingerprint, ma.name"#,
+                    bech32,
+                    last_tx_id
+                )
+                .fetch_all(&self.db)
+                .await?;
+                Ok(rows
+                    .into_iter()
+                    .map(|r| (r.id, bytes.clone(), r.fingerprint, r.name, r.qty))
+                    .collect::<Vec<_>>())
+            })
+            .buffer_unordered(CONCURRENCY)
+            .collect::<Vec<Result<Vec<_>, sqlx::Error>>>()
+            .await;
+
+        // Flatten and sort by `multi_asset.id` so refs intern in global mint order
+        // (the per-address fetches arrive unordered).
+        let mut rows: Vec<HoldingRow> = Vec::new();
+        for r in per_address {
+            rows.extend(r?);
         }
-        Ok(out)
+        rows.sort_by_key(|(id, ..)| *id);
+        Ok(rows
+            .into_iter()
+            .map(|(_, addr, fp, name, qty)| (addr, fp, name, qty))
+            .collect())
     }
 
     /// Asset holdings (summed across **all** of a stake credential's payment
