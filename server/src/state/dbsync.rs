@@ -639,28 +639,6 @@ impl DbSync {
         Ok(row.count)
     }
 
-    pub async fn utxo_stakes(&self, last_tx_id: i64) -> Result<HashMap<Vec<u8>, i64>, sqlx::Error> {
-        let mut rows = sqlx::query!(
-            r#"SELECT stake_address.hash_raw AS stake_address,
-                      SUM(tx_out.value)::bigint AS "stake!"
-            FROM tx_out
-            JOIN stake_address ON stake_address.id = tx_out.stake_address_id
-            WHERE tx_out.tx_id <= $1
-              AND (tx_out.consumed_by_tx_id IS NULL OR tx_out.consumed_by_tx_id > $1)
-            GROUP BY stake_address.hash_raw"#,
-            last_tx_id
-        )
-        .fetch(&self.db);
-
-        let mut stakes: HashMap<Vec<u8>, i64> = HashMap::new();
-        while let Some(row) = rows.try_next().await? {
-            let cred = row.stake_address[1..].to_vec();
-            stakes.insert(cred, row.stake);
-        }
-
-        Ok(stakes)
-    }
-
     pub async fn rewards(
         &self,
         current_epoch: u64,

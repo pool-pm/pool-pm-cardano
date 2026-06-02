@@ -131,6 +131,12 @@ type DelegationIndex = (
 /// by both `reset()` (cold start) and `populate_address_assets()` (warm resume).
 struct WarmedCache {
     address_balances: HashMap<Vec<u8>, i64>,
+    /// Live UTXO stake per stake credential — the sum of `address_balances` over
+    /// each credential's payment addresses. Derived from the same scan rather than
+    /// a separate `utxo_stakes` query, and keyed by the same
+    /// `stake_credential_from_address_bytes` the sink uses per-block (so reset and
+    /// live maintenance agree, including on pointer addresses, which both skip).
+    stakes: HashMap<Vec<u8>, i64>,
     asset_fp_to_ref: HashMap<String, u32>,
     asset_meta: Vector<(String, Vec<u8>)>,
     address_assets: HashMap<Vec<u8>, OrdMap<u32, u64>>,
@@ -595,8 +601,9 @@ impl State {
     /// (see plan: Part 2, L573): the heavy *addresses* are those over the
     /// threshold, the heavy *stakes* are those whose per-address counts sum over
     /// it. Holdings for exactly those sets are then fetched in one bulk pass each.
-    /// Also returns the parsed `address_balances` field (the row parse is shared)
-    /// and the per-cached-key UTXO counts that drive live demotion.
+    /// Also returns the parsed `address_balances` field, the per-credential
+    /// `stakes` (sum of balances per stake credential), and the per-cached-key
+    /// UTXO counts that drive live demotion — all from the one shared scan.
     async fn warm_asset_cache(
         db: &DbSync,
         last_tx_id: i64,
@@ -606,10 +613,13 @@ impl State {
 
         let mut address_balances: HashMap<Vec<u8>, i64> = HashMap::new();
         let mut address_utxos: HashMap<Vec<u8>, u32> = HashMap::new();
-        // Free signal: heavy addresses (≥ threshold) collected for the bulk
-        // holdings fetch; stake counts summed across each credential's addresses.
-        let mut heavy_addresses: Vec<String> = Vec::new();
+        // Per-credential UTXO stake (balance sum) and UTXO count, accumulated over
+        // each credential's payment addresses. Stake replaces the separate
+        // `utxo_stakes` db query; the counts are the free heavy-set signal.
+        let mut stakes: HashMap<Vec<u8>, i64> = HashMap::new();
         let mut stake_counts: HashMap<Vec<u8>, u32> = HashMap::new();
+        // Heavy addresses (≥ threshold) collected for the bulk holdings fetch.
+        let mut heavy_addresses: Vec<String> = Vec::new();
         for (bech32, balance, n_utxos) in balance_rows {
             let Ok(addr) = Address::from_bech32(&bech32) else {
                 continue; // Byron / non-bech32 — never in feeds
@@ -617,6 +627,7 @@ impl State {
             let bytes = addr.to_vec();
             let n = u32::try_from(n_utxos).unwrap_or(u32::MAX);
             if let Some(cred) = stake_credential_from_address_bytes(&bytes) {
+                *stakes.entry(cred.clone()).or_insert(0) += balance;
                 *stake_counts.entry(cred).or_insert(0) += n;
             }
             if n_utxos >= MIN_UTXOS_TO_CACHE {
@@ -660,6 +671,7 @@ impl State {
 
         Ok(WarmedCache {
             address_balances,
+            stakes,
             asset_fp_to_ref,
             asset_meta,
             address_assets,
@@ -705,9 +717,9 @@ impl State {
             drep_delegators.len()
         );
 
-        tracing::info!("Fetching UTXO stakes...");
-        let stakes = db.utxo_stakes(last_tx_id).await?;
-        tracing::info!("{} stake addresses with UTXOs", stakes.len());
+        // UTXO stakes are derived from the per-address balance scan in
+        // `warm_asset_cache` below (summed per stake credential), so there's no
+        // separate `utxo_stakes` query.
 
         let current_epoch = Self::epoch_for_slot(slot, genesis);
         tracing::info!("Fetching rewards (epoch {})...", current_epoch);
@@ -783,6 +795,7 @@ impl State {
         );
         let WarmedCache {
             address_balances,
+            stakes,
             asset_fp_to_ref,
             asset_meta,
             address_assets,
@@ -790,6 +803,11 @@ impl State {
             address_utxos,
             stake_utxos,
         } = Self::warm_asset_cache(db, last_tx_id, balance_rows).await?;
+        tracing::info!(
+            "{} addresses with UTXOs, {} stake credentials",
+            address_balances.len(),
+            stakes.len()
+        );
         tracing::info!(
             "owned-asset cache: {} addresses, {} stakes, {} distinct assets",
             address_assets.len(),
