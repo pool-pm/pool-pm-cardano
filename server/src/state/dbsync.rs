@@ -666,18 +666,26 @@ impl DbSync {
         current_epoch: u64,
         last_tx_id: i64,
     ) -> Result<HashMap<Vec<u8>, i64>, sqlx::Error> {
+        // Aggregate by the integer `addr_id` BEFORE joining `stake_address`.
+        // Grouping the ~437M-row union by an int collapses it to ~5M groups in
+        // memory; joining `stake_address` then runs on those via the PK index.
+        // Grouping by the 38-byte `hash_raw` instead (i.e. joining first) forces a
+        // 437M-row hash join + a disk-spilling group-by (EXPLAIN ~7x costlier).
+        // `addr_id` ↔ `hash_raw` is 1:1, so the result is identical.
         let mut rows = sqlx::query!(
-            r#"SELECT sa.hash_raw AS stake_address,
-                      SUM(t.amount)::bigint AS "net!"
+            r#"SELECT sa.hash_raw AS stake_address, t.net AS "net!"
             FROM (
-                SELECT addr_id, amount FROM reward WHERE spendable_epoch <= $1
-                UNION ALL
-                SELECT addr_id, amount FROM reward_rest WHERE spendable_epoch <= $1
-                UNION ALL
-                SELECT addr_id, -amount FROM withdrawal WHERE tx_id <= $2
+                SELECT addr_id, SUM(amount)::bigint AS net
+                FROM (
+                    SELECT addr_id, amount FROM reward WHERE spendable_epoch <= $1
+                    UNION ALL
+                    SELECT addr_id, amount FROM reward_rest WHERE spendable_epoch <= $1
+                    UNION ALL
+                    SELECT addr_id, -amount FROM withdrawal WHERE tx_id <= $2
+                ) u
+                GROUP BY addr_id
             ) t
-            JOIN stake_address sa ON sa.id = t.addr_id
-            GROUP BY sa.hash_raw"#,
+            JOIN stake_address sa ON sa.id = t.addr_id"#,
             current_epoch as i64,
             last_tx_id
         )
