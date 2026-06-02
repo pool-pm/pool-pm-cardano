@@ -540,27 +540,54 @@ impl DbSync {
     /// stakes the caller already identified from the free per-stake `unspent_utxos`
     /// sums (see `State::warm_asset_cache`), so this does NOT re-discover them.
     /// Caching the whole stake (not just its heavy addresses) keeps the union
-    /// complete. The heavy set is injected as a small relation and matched against
-    /// `stake_address` on the credential (`hash_raw` minus its 1-byte header),
-    /// replacing the old `tx_out … GROUP BY stake_address_id HAVING` discovery
-    /// scan; the downstream join is unchanged. Returns the 28-byte credential as
-    /// key, matching how `stakes`/`pool_delegations` are keyed. Cold-reset / warm
-    /// only.
+    /// complete. Returns the 28-byte credential as key, matching how
+    /// `stakes`/`pool_delegations` are keyed. Cold-reset / warm only.
+    ///
+    /// Two steps, because the holdings join only gets an index-driven plan when it
+    /// receives **concrete** `stake_address_id`s: matching `stake_address` by a
+    /// `substring(hash_raw)` expression inside the holdings query defeats the index
+    /// AND mis-estimates cardinality, making the planner seq-scan all ~472M
+    /// `ma_tx_out` rows. So we first resolve creds → ids (a cheap `stake_address`-
+    /// only scan), then fetch holdings by the explicit id list (nested loop over
+    /// `idx_tx_out_stake_address_id`).
     pub async fn heavy_stake_assets(
         &self,
         last_tx_id: i64,
         creds: &[Vec<u8>],
     ) -> Result<Vec<(Vec<u8>, String, Vec<u8>, i64)>, sqlx::Error> {
+        if creds.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Step 1: resolve heavy creds → stake_address ids. Scans only
+        // `stake_address` (the `substring` is confined here, never joined to
+        // `ma_tx_out`), so it stays cheap.
+        let ids: Vec<i64> = sqlx::query!(
+            r#"SELECT id FROM stake_address
+               WHERE substring(hash_raw FROM 2) = ANY($1::bytea[])"#,
+            creds
+        )
+        .fetch_all(&self.db)
+        .await?
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Step 2: holdings via the concrete id list — index-driven nested loop.
         let rows = sqlx::query!(
-            r#"WITH heavy(cred) AS (
-                SELECT * FROM unnest($2::bytea[])
+            r#"WITH heavy(sid) AS (
+                SELECT * FROM unnest($2::bigint[])
             )
             SELECT sa.hash_raw AS "hash_raw!", ma.id AS "id!",
                    ma.fingerprint AS "fingerprint!", ma.name AS "name!",
                    SUM(mto.quantity)::bigint AS "qty!"
             FROM heavy h
-            JOIN stake_address sa ON substring(sa.hash_raw FROM 2) = h.cred
-            JOIN tx_out txo ON txo.stake_address_id = sa.id
+            JOIN stake_address sa ON sa.id = h.sid
+            JOIN tx_out txo ON txo.stake_address_id = h.sid
             JOIN ma_tx_out mto ON mto.tx_out_id = txo.id
             JOIN multi_asset ma ON ma.id = mto.ident
             WHERE txo.tx_id <= $1
@@ -568,7 +595,7 @@ impl DbSync {
             GROUP BY sa.hash_raw, ma.id, ma.fingerprint, ma.name
             ORDER BY ma.id"#,
             last_tx_id,
-            creds
+            &ids
         )
         .fetch_all(&self.db)
         .await?;
