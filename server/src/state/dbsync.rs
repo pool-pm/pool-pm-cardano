@@ -585,69 +585,103 @@ impl DbSync {
     /// sums (see `State::warm_asset_cache`), so this does NOT re-discover them.
     /// Caching the whole stake (not just its heavy addresses) keeps the union
     /// complete. Returns the 28-byte credential as key, matching how
-    /// `stakes`/`pool_delegations` are keyed. Cold-reset / warm only.
+    /// `stakes`/`pool_delegations` are keyed, ordered by `multi_asset.id` (mint
+    /// order ⇒ ref DESC = newest-first pagination). Cold-reset / warm only.
     ///
-    /// Two steps, because the holdings join only gets an index-driven plan when it
-    /// receives **concrete** `stake_address_id`s: matching `stake_address` by a
-    /// `substring(hash_raw)` expression inside the holdings query defeats the index
-    /// AND mis-estimates cardinality, making the planner seq-scan all ~472M
-    /// `ma_tx_out` rows. So we first resolve creds → ids (a cheap `stake_address`-
-    /// only scan), then fetch holdings by the explicit id list (nested loop over
-    /// `idx_tx_out_stake_address_id`).
+    /// First resolve creds → concrete `stake_address` ids (a cheap
+    /// `stake_address`-only scan; the `substring` match is confined here, never
+    /// joined to `ma_tx_out`). Then fetch holdings **per stake id**, not as one
+    /// bulk `unnest(ids)`: a single constant id keeps the index-driven plan
+    /// (nested loop over `idx_tx_out_stake_address_id` → `idx_ma_tx_out_tx_out_id`),
+    /// whereas a bulk set that includes scan-bound stakes flips the planner to a
+    /// parallel seq scan of all ~472M `ma_tx_out` rows and runs silently for
+    /// minutes. Per-stake also bounds each fetch and logs progress.
     pub async fn heavy_stake_assets(
         &self,
         last_tx_id: i64,
         creds: &[Vec<u8>],
     ) -> Result<Vec<(Vec<u8>, String, Vec<u8>, i64)>, sqlx::Error> {
+        use futures::stream::StreamExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Concurrent per-stake fetches; kept under the 8-connection pool size.
+        const CONCURRENCY: usize = 6;
+
         if creds.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Step 1: resolve heavy creds → stake_address ids. Scans only
-        // `stake_address` (the `substring` is confined here, never joined to
-        // `ma_tx_out`), so it stays cheap.
-        let ids: Vec<i64> = sqlx::query!(
-            r#"SELECT id FROM stake_address
+        // Step 1: resolve heavy creds → (stake_address id, hash_raw). Scans only
+        // `stake_address`, so it stays cheap.
+        let stakes: Vec<(i64, Vec<u8>)> = sqlx::query!(
+            r#"SELECT id, hash_raw FROM stake_address
                WHERE substring(hash_raw FROM 2) = ANY($1::bytea[])"#,
             creds
         )
         .fetch_all(&self.db)
         .await?
         .into_iter()
-        .map(|r| r.id)
+        .map(|r| (r.id, r.hash_raw))
         .collect();
 
-        if ids.is_empty() {
+        if stakes.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Step 2: holdings via the concrete id list — index-driven nested loop.
-        let rows = sqlx::query!(
-            r#"WITH heavy(sid) AS (
-                SELECT * FROM unnest($2::bigint[])
-            )
-            SELECT sa.hash_raw AS "hash_raw!", ma.id AS "id!",
-                   ma.fingerprint AS "fingerprint!", ma.name AS "name!",
-                   SUM(mto.quantity)::bigint AS "qty!"
-            FROM heavy h
-            JOIN stake_address sa ON sa.id = h.sid
-            JOIN tx_out txo ON txo.stake_address_id = h.sid
-            JOIN ma_tx_out mto ON mto.tx_out_id = txo.id
-            JOIN multi_asset ma ON ma.id = mto.ident
-            WHERE txo.tx_id <= $1
-              AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $1)
-            GROUP BY sa.hash_raw, ma.id, ma.fingerprint, ma.name
-            ORDER BY ma.id"#,
-            last_tx_id,
-            &ids
-        )
-        .fetch_all(&self.db)
-        .await?;
+        let total = stakes.len();
+        let done = AtomicUsize::new(0);
 
+        // Step 2: per-stake, index-forced holdings fetch (see doc above).
+        let per_stake = futures::stream::iter(stakes.iter())
+            .map(|(sid, hash_raw)| {
+                let done = &done;
+                async move {
+                    let cred = hash_raw[1..].to_vec(); // strip the 1-byte header
+                    let rows = sqlx::query!(
+                        r#"WITH holdings AS MATERIALIZED (
+                            SELECT mto.ident AS id, mto.quantity
+                            FROM tx_out txo
+                            JOIN ma_tx_out mto ON mto.tx_out_id = txo.id
+                            WHERE txo.stake_address_id = $1
+                              AND txo.tx_id <= $2
+                              AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $2)
+                        )
+                        SELECT ma.id AS "id!", ma.fingerprint AS "fingerprint!",
+                               ma.name AS "name!", SUM(h.quantity)::bigint AS "qty!"
+                        FROM holdings h
+                        JOIN multi_asset ma ON ma.id = h.id
+                        GROUP BY ma.id, ma.fingerprint, ma.name"#,
+                        *sid,
+                        last_tx_id
+                    )
+                    .fetch_all(&self.db)
+                    .await?;
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    tracing::info!(
+                        "owned-asset stake warmup {n}/{total}: {} ({} assets)",
+                        hex::encode(&cred),
+                        rows.len()
+                    );
+                    Ok::<_, sqlx::Error>(
+                        rows.into_iter()
+                            .map(|r| (r.id, cred.clone(), r.fingerprint, r.name, r.qty))
+                            .collect::<Vec<_>>(),
+                    )
+                }
+            })
+            .buffer_unordered(CONCURRENCY)
+            .collect::<Vec<Result<Vec<_>, sqlx::Error>>>()
+            .await;
+
+        // Flatten and sort by `multi_asset.id` so refs intern in global mint order.
+        let mut rows: Vec<HoldingRow> = Vec::new();
+        for r in per_stake {
+            rows.extend(r?);
+        }
+        rows.sort_by_key(|(id, ..)| *id);
         Ok(rows
             .into_iter()
-            // strip the 1-byte header → 28-byte stake credential
-            .map(|r| (r.hash_raw[1..].to_vec(), r.fingerprint, r.name, r.qty))
+            .map(|(_, cred, fp, name, qty)| (cred, fp, name, qty))
             .collect())
     }
 
