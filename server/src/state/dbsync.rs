@@ -14,6 +14,12 @@ use crate::model::{asset_fingerprint, parse_handle_name, DRep, Pool, CIP67_LABEL
 type ResolvedUtxos =
     std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<(String, u64)>, bool)>;
 
+/// Statements slower than this are logged at WARN. Sized to the ~100 ms
+/// per-query target with headroom: anything over 1s in steady state signals a
+/// regression. The reset/warm-up scans are deliberately slower and trip this
+/// during init (as they did at the previous 15s threshold).
+const SLOW_QUERY_THRESHOLD: Duration = Duration::from_secs(1);
+
 /// Cheap to clone — `sqlx::Pool` is internally `Arc`-shared, so a `DbSync`
 /// clone reuses the same underlying connection pool. Cloning hands a db
 /// handle to a caller that wants to run queries without holding a lock on the
@@ -26,7 +32,7 @@ pub struct DbSync {
 impl DbSync {
     pub async fn new(url: &Url) -> Result<Self, sqlx::Error> {
         let options = PgConnectOptions::from_url(url)?
-            .log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(15));
+            .log_slow_statements(log::LevelFilter::Warn, SLOW_QUERY_THRESHOLD);
 
         let db = PgPoolOptions::new()
             .max_connections(8)
