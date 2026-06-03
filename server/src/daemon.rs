@@ -165,7 +165,6 @@ pub fn run(args: Args) -> Result<(), Error> {
                 rt.block_on(state.populate_handles());
                 rt.block_on(state.populate_gov_titles());
                 rt.block_on(state.populate_address_balances());
-                rt.block_on(state.populate_address_assets());
             }
 
             if let Some(snap) = state.current() {

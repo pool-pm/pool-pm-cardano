@@ -1316,18 +1316,10 @@ async fn filtered_events(
             let cred = payload[1..].to_vec();
             let stake_address = replay_filter.feed_id();
             let db = replay_state.chain_state.read().await.db_handle();
-            // Cache-first: a scan-bound stake's count is the cached OrdMap len.
-            let assets_count = match replay_state
-                .chain_state
-                .read()
-                .await
-                .cached_stake_asset_count(&cred)
-            {
-                Some(c) => c,
-                None => match &db {
-                    Some(db) => db.stake_assets_count(&payload).await.unwrap_or(0) as u32,
-                    None => 0,
-                },
+            // Connect-time count, served off the lock via the two-step index path.
+            let assets_count = match &db {
+                Some(db) => db.stake_assets_count(&payload).await.unwrap_or(0) as u32,
+                None => 0,
             };
             send_stake_info(
                 &sender,
@@ -1374,18 +1366,10 @@ async fn filtered_events(
         } else if let Some(addr) = replay_filter.address().map(str::to_string) {
             let addr_bytes = address_bytes(&addr).unwrap_or_default();
             let db = replay_state.chain_state.read().await.db_handle();
-            // Cache-first: a scan-bound address's count is the cached OrdMap len.
-            let assets_count = match replay_state
-                .chain_state
-                .read()
-                .await
-                .cached_address_asset_count(&addr_bytes)
-            {
-                Some(c) => c,
-                None => match &db {
-                    Some(db) => db.address_assets_count(&addr).await.unwrap_or(0) as u32,
-                    None => 0,
-                },
+            // Connect-time count, served off the lock via the two-step index path.
+            let assets_count = match &db {
+                Some(db) => db.address_assets_count(&addr).await.unwrap_or(0) as u32,
+                None => 0,
             };
             send_address_info(
                 &sender,
@@ -1491,38 +1475,15 @@ async fn filtered_events(
         filter,
         filter::FeedFilter::Stake(_) | filter::FeedFilter::Address(_)
     ) {
-        // Cache-first (count = cached OrdMap len) for scan-bound payment addresses
-        // and stake credentials; uncached feeds fall back to the db count.
-        let cached_count = match &filter {
-            filter::FeedFilter::Address(addr) => match address_bytes(addr) {
-                Some(b) => state
-                    .chain_state
-                    .read()
-                    .await
-                    .cached_address_asset_count(&b),
-                None => None,
-            },
-            filter::FeedFilter::Stake(payload) => state
-                .chain_state
-                .read()
-                .await
-                .cached_stake_asset_count(&payload[1..]),
-            _ => None,
-        };
-        let count = match cached_count {
-            Some(c) => c,
-            None => {
-                let db = state.chain_state.read().await.db_handle();
-                match (&filter, db) {
-                    (filter::FeedFilter::Stake(payload), Some(db)) => {
-                        db.stake_assets_count(payload).await.unwrap_or(0) as u32
-                    }
-                    (filter::FeedFilter::Address(addr), Some(db)) => {
-                        db.address_assets_count(addr).await.unwrap_or(0) as u32
-                    }
-                    _ => 0,
-                }
+        let db = state.chain_state.read().await.db_handle();
+        let count = match (&filter, db) {
+            (filter::FeedFilter::Stake(payload), Some(db)) => {
+                db.stake_assets_count(payload).await.unwrap_or(0) as u32
             }
+            (filter::FeedFilter::Address(addr), Some(db)) => {
+                db.address_assets_count(addr).await.unwrap_or(0) as u32
+            }
+            _ => 0,
         };
         LiveState {
             assets_count: Some(count),
@@ -1783,44 +1744,9 @@ async fn owned_assets(
 ) -> Result<axum::Json<AssetsResponse>, StatusCode> {
     let filter = filter::FeedFilter::from_path(&feed_id).ok_or(StatusCode::BAD_REQUEST)?;
 
-    // Cache-first for scan-bound feeds: serve the page from memory (intern table
-    // + OrdMap) instead of the slow db scan. Both payment addresses and stake
-    // credentials are cached — the stake cache (`heavy_stake_assets`) unions all
-    // of the stake's payment addresses, so it's complete even when assets live in
-    // light, individually-uncached member addresses. Uncached feeds fall through
-    // to the (Part-1-rewritten) db query below.
-    let cached = {
-        let guard = state.chain_state.read().await;
-        match &filter {
-            filter::FeedFilter::Address(addr) => {
-                pallas::ledger::addresses::Address::from_bech32(addr)
-                    .ok()
-                    .and_then(|a| {
-                        guard.cached_address_assets(&a.to_vec(), query.cursor, POLICY_PAGE_SIZE)
-                    })
-            }
-            filter::FeedFilter::Stake(payload) => {
-                guard.cached_stake_assets(&payload[1..], query.cursor, POLICY_PAGE_SIZE)
-            }
-            _ => None,
-        }
-    };
-    if let Some(rows) = cached {
-        let has_more = rows.len() as i64 == POLICY_PAGE_SIZE;
-        let cursor = rows.last().map(|(id, ..)| *id);
-        let assets = rows
-            .into_iter()
-            .map(|(_, fingerprint, name_bytes)| row_to_asset(&state, fingerprint, name_bytes))
-            .collect();
-        return Ok(axum::Json(AssetsResponse {
-            assets,
-            cursor,
-            has_more,
-        }));
-    }
-
-    // Drop the chain_state guard before the slow db query — see comment in
-    // policy_assets for the rationale.
+    // Take the db handle under the read lock but release it before the query so a
+    // page fetch never queues other readers behind the sink's pending writer.
+    // The query itself is the bullet-proof two-step index path (see dbsync).
     let db = state
         .chain_state
         .read()

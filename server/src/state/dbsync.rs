@@ -14,15 +14,10 @@ use crate::model::{asset_fingerprint, parse_handle_name, DRep, Pool, CIP67_LABEL
 type ResolvedUtxos =
     std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<(String, u64)>, bool)>;
 
-/// A warmed owned-asset holding tagged with its `multi_asset.id`:
-/// `(id, key_bytes, fingerprint, name, quantity)`. The `id` is used to sort into
-/// global mint order before interning, then dropped.
-type HoldingRow = (i64, Vec<u8>, String, Vec<u8>, i64);
-
 /// Statements slower than this are logged at WARN. Sized to the ~100 ms
 /// per-query target with headroom: anything over 1s in steady state signals a
-/// regression. The reset/warm-up scans are deliberately slower and trip this
-/// during init (as they did at the previous 15s threshold).
+/// regression. The reset scans are deliberately slower and trip this during
+/// init (as they did at the previous 15s threshold).
 const SLOW_QUERY_THRESHOLD: Duration = Duration::from_secs(1);
 
 /// Cheap to clone — `sqlx::Pool` is internally `Arc`-shared, so a `DbSync`
@@ -41,6 +36,21 @@ impl DbSync {
 
         let db = PgPoolOptions::new()
             .max_connections(8)
+            // Per-address point queries (current-holdings lookups via the partial
+            // unconsumed index) are planned at ~125k cost — just over Postgres's
+            // default `jit_above_cost` of 100k — so JIT fires and adds ~80 ms of
+            // compile time to a query that runs in ~5 ms. Raise the threshold
+            // above those point queries while staying far below the million-cost
+            // reset scans (which still benefit from JIT). Scoped to this pool, so
+            // db-sync's own connections are unaffected.
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("SET jit_above_cost = 200000")
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            })
             .connect_with(options)
             .await?;
 
@@ -245,39 +255,8 @@ impl DbSync {
         cursor: Option<i64>,
         limit: i64,
     ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
-        // Resolve (fingerprint, name) for only the returned page, not for every
-        // asset the address holds. The MATERIALIZED CTE forces the address-first
-        // bitmap path (without it the planner picks a catastrophic backward
-        // multi_asset index scan); we keyset-paginate the distinct ids first and
-        // join multi_asset for just this page. The old form materialized metadata
-        // for *all* of the address's assets merely to return one page — e.g. a
-        // 30k-asset address spent ~700ms resolving 30k rows to show 60.
-        let rows = sqlx::query!(
-            r#"WITH ids AS MATERIALIZED (
-                SELECT DISTINCT mto.ident AS id
-                FROM ma_tx_out mto
-                JOIN tx_out txo ON txo.id = mto.tx_out_id
-                WHERE txo.address = $1 AND txo.consumed_by_tx_id IS NULL
-            )
-            SELECT ma.id AS "id!", ma.fingerprint AS "fingerprint!", ma.name AS "name!"
-            FROM (
-                SELECT id FROM ids
-                WHERE ($2::bigint IS NULL OR id < $2)
-                ORDER BY id DESC
-                LIMIT $3
-            ) page
-            JOIN multi_asset ma ON ma.id = page.id
-            ORDER BY ma.id DESC"#,
-            address,
-            cursor,
-            limit
-        )
-        .fetch_all(&self.db)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| (r.id, r.fingerprint, r.name))
-            .collect())
+        let ids = self.address_unspent_ids(address).await?;
+        self.assets_page(&ids, cursor, limit).await
     }
 
     /// All distinct assets currently held across every payment address that
@@ -290,35 +269,8 @@ impl DbSync {
         cursor: Option<i64>,
         limit: i64,
     ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
-        // See `address_assets` for the rationale: resolve metadata for only the
-        // returned page, keyset-paginating the distinct ids first.
-        let rows = sqlx::query!(
-            r#"WITH ids AS MATERIALIZED (
-                SELECT DISTINCT mto.ident AS id
-                FROM ma_tx_out mto
-                JOIN tx_out txo ON txo.id = mto.tx_out_id
-                WHERE txo.stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
-                  AND txo.consumed_by_tx_id IS NULL
-            )
-            SELECT ma.id AS "id!", ma.fingerprint AS "fingerprint!", ma.name AS "name!"
-            FROM (
-                SELECT id FROM ids
-                WHERE ($2::bigint IS NULL OR id < $2)
-                ORDER BY id DESC
-                LIMIT $3
-            ) page
-            JOIN multi_asset ma ON ma.id = page.id
-            ORDER BY ma.id DESC"#,
-            hash_raw,
-            cursor,
-            limit
-        )
-        .fetch_all(&self.db)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| (r.id, r.fingerprint, r.name))
-            .collect())
+        let ids = self.stake_unspent_ids(hash_raw).await?;
+        self.assets_page(&ids, cursor, limit).await
     }
 
     /// Batch-resolve UTXOs. Returns (address, lovelace, assets, unspent).
@@ -461,22 +413,17 @@ impl DbSync {
         Ok((delegations, delegators))
     }
 
-    /// Per-address balance **and unspent-UTXO count** at `last_tx_id`, from one
-    /// grouped scan of unconsumed UTXOs — expensive on mainnet (paid once on cold
-    /// reset / first run after upgrade); see `populate_address_balances`. The
-    /// `COUNT(*)` rides free on the scan we already run for balances and is the
-    /// signal that selects the scan-bound owned-asset cache set (see plan: Part
-    /// 2 — "membership = unspent_utxos, free"), so the caller needs no separate
-    /// discovery scan. Returns `(bech32 address, lovelace, unspent_utxos)`;
-    /// addresses are returned bech32-encoded (the caller parses to bytes and
-    /// skips Byron / non-bech32 ones — they don't appear in feeds).
+    /// Per-address balance at `last_tx_id`, from one grouped scan of unconsumed
+    /// UTXOs — expensive on mainnet (paid once on cold reset / first run after
+    /// upgrade); see `populate_address_balances`. Returns `(bech32 address,
+    /// lovelace)`; addresses are returned bech32-encoded (the caller parses to
+    /// bytes and skips Byron / non-bech32 ones — they don't appear in feeds).
     pub async fn address_balances(
         &self,
         last_tx_id: i64,
-    ) -> Result<Vec<(String, i64, i64)>, sqlx::Error> {
+    ) -> Result<Vec<(String, i64)>, sqlx::Error> {
         let rows = sqlx::query!(
-            r#"SELECT address AS "address!", SUM(value)::bigint AS "balance!",
-                      COUNT(*)::bigint AS "n_utxos!"
+            r#"SELECT address AS "address!", SUM(value)::bigint AS "balance!"
             FROM tx_out
             WHERE tx_id <= $1
               AND (consumed_by_tx_id IS NULL OR consumed_by_tx_id > $1)
@@ -486,235 +433,116 @@ impl DbSync {
         .fetch_all(&self.db)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|r| (r.address, r.balance, r.n_utxos))
-            .collect())
-    }
-
-    /// Asset holdings (fingerprint, name, summed quantity) for the given explicit
-    /// set of payment `addresses` (bech32) — the scan-bound set the caller already
-    /// identified from the free `unspent_utxos` counts (see `address_balances`).
-    /// Returns (address_bytes, fingerprint, name, quantity) ordered by
-    /// `multi_asset.id` so the caller can intern refs in mint order (ref DESC ⇒
-    /// newest-first pagination). Byron (non-bech32) addresses are skipped.
-    /// Cold-reset / warm only.
-    ///
-    /// Fetched **per address**, not as one bulk `unnest`. A constant address lets
-    /// the planner use `idx_tx_out_address` → `ma_tx_out` by `tx_out_id` (the same
-    /// index path the `/assets` page query forces with its `MATERIALIZED` CTE). A
-    /// single bulk `unnest` of the heavy set instead flips the planner to a
-    /// parallel seq scan of all ~472M `ma_tx_out` rows — the whale's millions of
-    /// matches blow up the estimate — which ran >10 min and stalled the reset.
-    /// Per-address queries run with a small concurrency bound to use the pool
-    /// without exhausting it; the heaviest address (~4.2M historical outputs) is
-    /// still the floor (~minutes) but stays on the index path.
-    pub async fn heavy_address_assets(
-        &self,
-        last_tx_id: i64,
-        addresses: &[String],
-    ) -> Result<Vec<(Vec<u8>, String, Vec<u8>, i64)>, sqlx::Error> {
-        use futures::stream::StreamExt;
-        use pallas::ledger::addresses::Address;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        /// Concurrent per-address fetches; kept under the 8-connection pool size.
-        const CONCURRENCY: usize = 6;
-
-        let total = addresses.len();
-        let done = AtomicUsize::new(0);
-
-        let per_address = futures::stream::iter(addresses.iter())
-            .map(|bech32| {
-                let done = &done;
-                async move {
-                    let Ok(addr) = Address::from_bech32(bech32) else {
-                        return Ok::<_, sqlx::Error>(Vec::new());
-                    };
-                    let bytes = addr.to_vec();
-                    let rows = sqlx::query!(
-                        r#"WITH holdings AS MATERIALIZED (
-                            SELECT mto.ident AS id, mto.quantity
-                            FROM tx_out txo
-                            JOIN ma_tx_out mto ON mto.tx_out_id = txo.id
-                            WHERE txo.address = $1
-                              AND txo.tx_id <= $2
-                              AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $2)
-                        )
-                        SELECT ma.id AS "id!", ma.fingerprint AS "fingerprint!",
-                               ma.name AS "name!", SUM(h.quantity)::bigint AS "qty!"
-                        FROM holdings h
-                        JOIN multi_asset ma ON ma.id = h.id
-                        GROUP BY ma.id, ma.fingerprint, ma.name"#,
-                        bech32,
-                        last_tx_id
-                    )
-                    .fetch_all(&self.db)
-                    .await?;
-                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    tracing::info!(
-                        "owned-asset warmup {n}/{total}: {bech32} ({} assets)",
-                        rows.len()
-                    );
-                    Ok(rows
-                        .into_iter()
-                        .map(|r| (r.id, bytes.clone(), r.fingerprint, r.name, r.qty))
-                        .collect::<Vec<_>>())
-                }
-            })
-            .buffer_unordered(CONCURRENCY)
-            .collect::<Vec<Result<Vec<_>, sqlx::Error>>>()
-            .await;
-
-        // Flatten and sort by `multi_asset.id` so refs intern in global mint order
-        // (the per-address fetches arrive unordered).
-        let mut rows: Vec<HoldingRow> = Vec::new();
-        for r in per_address {
-            rows.extend(r?);
-        }
-        rows.sort_by_key(|(id, ..)| *id);
-        Ok(rows
-            .into_iter()
-            .map(|(_, addr, fp, name, qty)| (addr, fp, name, qty))
-            .collect())
-    }
-
-    /// Asset holdings (summed across **all** of a stake credential's payment
-    /// addresses) for the given explicit set of 28-byte `creds` — the scan-bound
-    /// stakes the caller already identified from the free per-stake `unspent_utxos`
-    /// sums (see `State::warm_asset_cache`), so this does NOT re-discover them.
-    /// Caching the whole stake (not just its heavy addresses) keeps the union
-    /// complete. Returns the 28-byte credential as key, matching how
-    /// `stakes`/`pool_delegations` are keyed, ordered by `multi_asset.id` (mint
-    /// order ⇒ ref DESC = newest-first pagination). Cold-reset / warm only.
-    ///
-    /// First resolve creds → concrete `stake_address` ids (a cheap
-    /// `stake_address`-only scan; the `substring` match is confined here, never
-    /// joined to `ma_tx_out`). Then fetch holdings **per stake id**, not as one
-    /// bulk `unnest(ids)`: a single constant id keeps the index-driven plan
-    /// (nested loop over `idx_tx_out_stake_address_id` → `idx_ma_tx_out_tx_out_id`),
-    /// whereas a bulk set that includes scan-bound stakes flips the planner to a
-    /// parallel seq scan of all ~472M `ma_tx_out` rows and runs silently for
-    /// minutes. Per-stake also bounds each fetch and logs progress.
-    pub async fn heavy_stake_assets(
-        &self,
-        last_tx_id: i64,
-        creds: &[Vec<u8>],
-    ) -> Result<Vec<(Vec<u8>, String, Vec<u8>, i64)>, sqlx::Error> {
-        use futures::stream::StreamExt;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        /// Concurrent per-stake fetches; kept under the 8-connection pool size.
-        const CONCURRENCY: usize = 6;
-
-        if creds.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Step 1: resolve heavy creds → (stake_address id, hash_raw). Scans only
-        // `stake_address`, so it stays cheap.
-        let stakes: Vec<(i64, Vec<u8>)> = sqlx::query!(
-            r#"SELECT id, hash_raw FROM stake_address
-               WHERE substring(hash_raw FROM 2) = ANY($1::bytea[])"#,
-            creds
-        )
-        .fetch_all(&self.db)
-        .await?
-        .into_iter()
-        .map(|r| (r.id, r.hash_raw))
-        .collect();
-
-        if stakes.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let total = stakes.len();
-        let done = AtomicUsize::new(0);
-
-        // Step 2: per-stake, index-forced holdings fetch (see doc above).
-        let per_stake = futures::stream::iter(stakes.iter())
-            .map(|(sid, hash_raw)| {
-                let done = &done;
-                async move {
-                    let cred = hash_raw[1..].to_vec(); // strip the 1-byte header
-                    let rows = sqlx::query!(
-                        r#"WITH holdings AS MATERIALIZED (
-                            SELECT mto.ident AS id, mto.quantity
-                            FROM tx_out txo
-                            JOIN ma_tx_out mto ON mto.tx_out_id = txo.id
-                            WHERE txo.stake_address_id = $1
-                              AND txo.tx_id <= $2
-                              AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $2)
-                        )
-                        SELECT ma.id AS "id!", ma.fingerprint AS "fingerprint!",
-                               ma.name AS "name!", SUM(h.quantity)::bigint AS "qty!"
-                        FROM holdings h
-                        JOIN multi_asset ma ON ma.id = h.id
-                        GROUP BY ma.id, ma.fingerprint, ma.name"#,
-                        *sid,
-                        last_tx_id
-                    )
-                    .fetch_all(&self.db)
-                    .await?;
-                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    tracing::info!(
-                        "owned-asset stake warmup {n}/{total}: {} ({} assets)",
-                        hex::encode(&cred),
-                        rows.len()
-                    );
-                    Ok::<_, sqlx::Error>(
-                        rows.into_iter()
-                            .map(|r| (r.id, cred.clone(), r.fingerprint, r.name, r.qty))
-                            .collect::<Vec<_>>(),
-                    )
-                }
-            })
-            .buffer_unordered(CONCURRENCY)
-            .collect::<Vec<Result<Vec<_>, sqlx::Error>>>()
-            .await;
-
-        // Flatten and sort by `multi_asset.id` so refs intern in global mint order.
-        let mut rows: Vec<HoldingRow> = Vec::new();
-        for r in per_stake {
-            rows.extend(r?);
-        }
-        rows.sort_by_key(|(id, ..)| *id);
-        Ok(rows
-            .into_iter()
-            .map(|(_, cred, fp, name, qty)| (cred, fp, name, qty))
-            .collect())
+        Ok(rows.into_iter().map(|r| (r.address, r.balance)).collect())
     }
 
     /// Distinct unconsumed multi-assets currently held by a payment address.
     /// Connect-time query for the feed header's `assets_count` — no live
     /// update, the user refreshes to re-fetch.
     pub async fn address_assets_count(&self, address: &str) -> Result<i64, sqlx::Error> {
-        let row = sqlx::query!(
-            r#"SELECT COUNT(DISTINCT mto.ident)::bigint AS "count!"
-            FROM ma_tx_out mto
-            JOIN tx_out txo ON txo.id = mto.tx_out_id
-            WHERE txo.address = $1 AND txo.consumed_by_tx_id IS NULL"#,
+        let ids = self.address_unspent_ids(address).await?;
+        self.assets_count(&ids).await
+    }
+
+    /// Distinct unconsumed multi-assets across every payment address sharing
+    /// the stake credential (29-byte `hash_raw`). Connect-time only.
+    pub async fn stake_assets_count(&self, hash_raw: &[u8]) -> Result<i64, sqlx::Error> {
+        let ids = self.stake_unspent_ids(hash_raw).await?;
+        self.assets_count(&ids).await
+    }
+
+    // --- Two-step current-holdings queries (count + /assets pages) ---
+    //
+    // Every per-address/stake holdings query runs in two steps:
+    //   1. fetch the current (unconsumed) `tx_out.id`s via the partial index
+    //      (`idx_tx_out_address_unspent` / `idx_tx_out_stake_unspent`), bounded
+    //      by the address's *current* UTXO count;
+    //   2. resolve assets from `ma_tx_out` keyed on that explicit id array.
+    // Splitting it this way is what makes the queries bullet-proof: step 2's
+    // `tx_out_id = ANY($ids)` has an exact, known cardinality, so the planner
+    // always takes `idx_ma_tx_out_tx_out_id` and can never flip to a parallel
+    // seq scan of all ~472M `ma_tx_out` rows — the failure mode that a single
+    // joined query hits whenever the address's row-estimate creeps over the
+    // join-flip threshold (drained whales, expression-indexed keys, etc.).
+
+    /// Current (unconsumed) `tx_out.id`s for a payment address, via the partial
+    /// `idx_tx_out_address_unspent`. Cost ∝ the address's *current* holdings.
+    async fn address_unspent_ids(&self, address: &str) -> Result<Vec<i64>, sqlx::Error> {
+        sqlx::query_scalar!(
+            r#"SELECT id FROM tx_out WHERE address = $1 AND consumed_by_tx_id IS NULL"#,
             address
+        )
+        .fetch_all(&self.db)
+        .await
+    }
+
+    /// Current (unconsumed) `tx_out.id`s across every payment address sharing a
+    /// stake credential (29-byte `hash_raw`), via `idx_tx_out_stake_unspent`.
+    async fn stake_unspent_ids(&self, hash_raw: &[u8]) -> Result<Vec<i64>, sqlx::Error> {
+        sqlx::query_scalar!(
+            r#"SELECT id FROM tx_out
+               WHERE stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+                 AND consumed_by_tx_id IS NULL"#,
+            hash_raw
+        )
+        .fetch_all(&self.db)
+        .await
+    }
+
+    /// Distinct multi-asset count held across the given `tx_out` ids.
+    async fn assets_count(&self, ids: &[i64]) -> Result<i64, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let row = sqlx::query!(
+            r#"SELECT COUNT(DISTINCT ident)::bigint AS "count!"
+               FROM ma_tx_out WHERE tx_out_id = ANY($1)"#,
+            ids
         )
         .fetch_one(&self.db)
         .await?;
         Ok(row.count)
     }
 
-    /// Distinct unconsumed multi-assets across every payment address sharing
-    /// the stake credential (29-byte `hash_raw`). Connect-time only.
-    pub async fn stake_assets_count(&self, hash_raw: &[u8]) -> Result<i64, sqlx::Error> {
-        let row = sqlx::query!(
-            r#"SELECT COUNT(DISTINCT mto.ident)::bigint AS "count!"
-            FROM ma_tx_out mto
-            JOIN tx_out txo ON txo.id = mto.tx_out_id
-            WHERE txo.stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
-              AND txo.consumed_by_tx_id IS NULL"#,
-            hash_raw
+    /// One page of distinct assets held across the given `tx_out` ids, newest-
+    /// minted first, keyset-paginated on `multi_asset.id` (same scheme as
+    /// `assets_by_policy`). Returns (id, fingerprint, name). **No CIP-68
+    /// reference-token filter** — owned listings show what the wallet holds.
+    async fn assets_page(
+        &self,
+        ids: &[i64],
+        cursor: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Distinct assets over the explicit id array (index-driven; see the
+        // module note above), then keyset-paginate and join `multi_asset` for
+        // only this page's metadata.
+        let rows = sqlx::query!(
+            r#"WITH held AS MATERIALIZED (
+                SELECT DISTINCT ident AS id FROM ma_tx_out WHERE tx_out_id = ANY($1)
+            )
+            SELECT ma.id AS "id!", ma.fingerprint AS "fingerprint!", ma.name AS "name!"
+            FROM (
+                SELECT id FROM held
+                WHERE ($2::bigint IS NULL OR id < $2)
+                ORDER BY id DESC
+                LIMIT $3
+            ) page
+            JOIN multi_asset ma ON ma.id = page.id
+            ORDER BY ma.id DESC"#,
+            ids,
+            cursor,
+            limit
         )
-        .fetch_one(&self.db)
+        .fetch_all(&self.db)
         .await?;
-        Ok(row.count)
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.id, r.fingerprint, r.name))
+            .collect())
     }
 
     pub async fn rewards(
