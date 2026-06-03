@@ -6,8 +6,9 @@ use std::path::Path;
 use url::Url;
 
 use crate::cip26;
-use crate::cip68;
-use crate::model::{parse_virtual_handle_address, DRep, Pool, TxOutput, HANDLE_POLICIES};
+use crate::model::{
+    asset_fingerprint, parse_virtual_handle_address, DRep, Pool, TxOutput, HANDLE_POLICIES,
+};
 use crate::pallas::{stake_credential_from_address_bytes, PoolUpdate};
 use dbsync::DbSync;
 pub use feed_index::FeedIndex;
@@ -346,12 +347,12 @@ impl State {
         tracing::info!("Fetching CIP-68 reference token decimals...");
         let cip68_rows = db.cip68_decimals(last_tx_id).await?;
         let mut decimals = HashMap::new();
+        // `cip68_decimals` returns the real (333/444) user token, so store exactly
+        // one fingerprint per token (the same key `decimals.get` computes at
+        // display time) — no dead ft/rft variant.
         for (policy, name, d) in &cip68_rows {
             if *d > 0 && *d <= 255 {
-                let fp = cip68::ft_fingerprint(policy, name);
-                decimals.insert(fp, *d as u8);
-                let rfp = cip68::rft_fingerprint(policy, name);
-                decimals.insert(rfp, *d as u8);
+                decimals.insert(asset_fingerprint(policy, name), *d as u8);
             }
         }
         tracing::info!("{} CIP-68 tokens with decimals", decimals.len());

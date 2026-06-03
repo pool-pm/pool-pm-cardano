@@ -708,34 +708,58 @@ impl DbSync {
         Ok(dreps)
     }
 
-    /// Fetch CIP-68 decimals from reference token datums.
-    /// Queries unspent outputs holding label-100 assets and extracts "decimals"
-    /// from their inline datum JSONB. Returns (policy_id, asset_name, decimals).
+    /// Fetch CIP-68 decimals, keyed by the **user token** that actually carries
+    /// them. Returns `(policy, user_token_name, decimals)` — the caller stores one
+    /// fingerprint per token.
+    ///
+    /// Inverted search: per CIP-68 only (333) FT / (444) RFT user tokens have
+    /// decimals (never a (222) NFT), and there are only ~5k of those vs ~297k
+    /// (100) reference tokens. So we enumerate the FT/RFT (via the partial
+    /// `idx_multi_asset_cip68_ft`), resolve each to its (100) reference token's id
+    /// (`unique_multi_asset`), and read decimals from that reference's current
+    /// datum — ~5k `ma_tx_out.ident` index lookups instead of a 472M-row scan
+    /// (~230s → ~2s).
     pub async fn cip68_decimals(
         &self,
         last_tx_id: i64,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>, i32)>, sqlx::Error> {
-        // Reference tokens have asset name starting with 000643b0 (CIP-67 label 100).
-        // The datum value JSONB is: {"constructor":0,"fields":[{"map":[...]}, ...]}
-        // We look for a "decimals" key in the first field's map entries.
-        let label_prefix: Vec<u8> = vec![0x00, 0x06, 0x43, 0xb0];
+        // The datum value JSONB is {"fields":[{"map":[{"k":…,"v":{"int":…}}]}, …]};
+        // we read the "decimals" key (hex 646563696d616c73) from the first field's
+        // map. Two indexed datum joins + COALESCE cover both inline and hash-
+        // referenced datums — the single `ON d.id=… OR d.hash=…` form is a ~180s
+        // trap (neither index usable).
         let rows = sqlx::query!(
-            r#"SELECT ma.policy AS "policy!", ma.name AS "name!",
-                      entry->'v'->>'int' AS "decimals"
-            FROM tx_out
-            JOIN ma_tx_out ON ma_tx_out.tx_out_id = tx_out.id
-            JOIN multi_asset ma ON ma.id = ma_tx_out.ident
-            JOIN datum ON datum.hash = tx_out.data_hash OR datum.id = tx_out.inline_datum_id
+            r#"WITH ref AS MATERIALIZED (
+                -- real 333/444 user token paired with its (100) reference id
+                SELECT ft.policy AS policy, ft.name AS user_name, rma.id AS ref_id
+                FROM multi_asset ft
+                JOIN multi_asset rma ON rma.policy = ft.policy
+                  AND rma.name = '\x000643b0'::bytea || substring(ft.name FROM 5)
+                WHERE substring(ft.name FROM 1 FOR 4) IN ('\x0014df10', '\x001bc280')
+            ),
+            held AS MATERIALIZED (
+                -- reference-token UTXO held as of last_tx_id. `ident = ANY(array)`
+                -- keeps the index path; a plain join from the ref set flips to a
+                -- parallel seq scan of all 472M ma_tx_out rows.
+                SELECT mto.ident AS ref_id, txo.inline_datum_id, txo.data_hash
+                FROM ma_tx_out mto
+                JOIN tx_out txo ON txo.id = mto.tx_out_id
+                WHERE mto.ident = ANY(ARRAY(SELECT DISTINCT ref_id FROM ref))
+                  AND txo.tx_id <= $1
+                  AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $1)
+            )
+            SELECT ref.policy AS "policy!", ref.user_name AS "name!",
+                   e->'v'->>'int' AS "decimals"
+            FROM held
+            JOIN ref ON ref.ref_id = held.ref_id
+            LEFT JOIN datum di ON di.id = held.inline_datum_id
+            LEFT JOIN datum dh ON dh.hash = held.data_hash
             CROSS JOIN LATERAL jsonb_array_elements(
-                datum.value->'fields'->0->'map'
-            ) AS entry
-            WHERE substring(ma.name from 1 for 4) = $2
-              AND tx_out.tx_id <= $1
-              AND (tx_out.consumed_by_tx_id IS NULL OR tx_out.consumed_by_tx_id > $1)
-              AND (entry->'k') @> '{"bytes":"646563696d616c73"}'
-              AND (entry->'v'->>'int') IS NOT NULL"#,
-            last_tx_id,
-            &label_prefix
+                COALESCE(di.value, dh.value)->'fields'->0->'map'
+            ) AS e
+            WHERE (e->'k') @> '{"bytes":"646563696d616c73"}'
+              AND (e->'v'->>'int') IS NOT NULL"#,
+            last_tx_id
         )
         .fetch_all(&self.db)
         .await?;
