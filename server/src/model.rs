@@ -182,6 +182,16 @@ pub fn parse_virtual_handle_address_from_datum(
     None
 }
 
+/// Compute CIP-14 asset fingerprint from policy_id and asset_name.
+/// Returns bech32 string with "asset" HRP (e.g. "asset1...").
+pub fn asset_fingerprint(policy_id: &[u8], asset_name: &[u8]) -> String {
+    let mut data = Vec::with_capacity(policy_id.len() + asset_name.len());
+    data.extend_from_slice(policy_id);
+    data.extend_from_slice(asset_name);
+    let hash = Hasher::<160>::hash(&data);
+    bech32::encode::<Bech32>(Hrp::parse("asset").unwrap(), hash.as_ref()).unwrap()
+}
+
 #[cfg(test)]
 mod handle_tests {
     use super::*;
@@ -318,14 +328,4 @@ mod handle_tests {
     fn test_parse_empty_datum() {
         assert!(parse_virtual_handle_address(&[]).is_none());
     }
-}
-
-/// Compute CIP-14 asset fingerprint from policy_id and asset_name.
-/// Returns bech32 string with "asset" HRP (e.g. "asset1...").
-pub fn asset_fingerprint(policy_id: &[u8], asset_name: &[u8]) -> String {
-    let mut data = Vec::with_capacity(policy_id.len() + asset_name.len());
-    data.extend_from_slice(policy_id);
-    data.extend_from_slice(asset_name);
-    let hash = Hasher::<160>::hash(&data);
-    bech32::encode::<Bech32>(Hrp::parse("asset").unwrap(), hash.as_ref()).unwrap()
 }
