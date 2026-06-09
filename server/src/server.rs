@@ -662,6 +662,90 @@ struct ReplaySse<'a> {
     size: u16,
 }
 
+/// Build per-tx delegation info for a single stake credential from the feed
+/// index, keyed by tx hash and ready to inject into replayed blocks on
+/// stake/address feeds. The pool and DRep delegation events of a tx are merged
+/// into one `DelegationInfo` (a tx may change both at once). `from`/`to` labels
+/// are resolved against the current snapshot. Returns empty if the credential
+/// has no delegation events in the (5-day) feed-index window.
+fn build_stake_deleg_info(
+    feed_index: &crate::state::FeedIndex,
+    cred: &[u8],
+    mainnet: bool,
+    snap: Option<&BlockSnapshot>,
+) -> HashMap<String, Vec<DelegationInfo>> {
+    let (pool_entries, drep_entries) = feed_index.delegation_entries_by_cred(cred);
+    if pool_entries.is_empty() && drep_entries.is_empty() {
+        return HashMap::new();
+    }
+
+    let resolve_pool = |hash: &[u8]| -> (String, Option<String>) {
+        let ticker = snap
+            .and_then(|s| s.pools.get(&hex::encode(hash)))
+            .and_then(|p| p.ticker.clone());
+        (pool_bech32_id(hash), ticker)
+    };
+    let resolve_drep = |bytes: &[u8]| -> (String, Option<String>) {
+        let name = match bytes.first() {
+            Some(0x02) => Some("Always Abstain".to_string()),
+            Some(0x03) => Some("Always No Confidence".to_string()),
+            _ => snap
+                .and_then(|s| s.dreps.get(bytes))
+                .and_then(|d| d.given_name.clone()),
+        };
+        (drep_bech32_id(bytes), name)
+    };
+
+    let stake_address = crate::pallas::stake_address_from_cred_bytes(cred, mainnet);
+    let blank = |live_stake: i64| DelegationInfo {
+        stake_address: stake_address.clone(),
+        from_pool_id: None,
+        from_ticker: None,
+        to_pool_id: None,
+        to_ticker: None,
+        from_drep_id: None,
+        from_drep_name: None,
+        to_drep_id: None,
+        to_drep_name: None,
+        live_stake,
+    };
+
+    let mut merged: HashMap<String, DelegationInfo> = HashMap::new();
+    for e in pool_entries {
+        let info = merged
+            .entry(e.tx_hash.clone())
+            .or_insert_with(|| blank(e.live_stake));
+        info.live_stake = e.live_stake;
+        if let Some(h) = &e.from {
+            let (id, t) = resolve_pool(h);
+            info.from_pool_id = Some(id);
+            info.from_ticker = t;
+        }
+        if let Some(h) = &e.to {
+            let (id, t) = resolve_pool(h);
+            info.to_pool_id = Some(id);
+            info.to_ticker = t;
+        }
+    }
+    for e in drep_entries {
+        let info = merged
+            .entry(e.tx_hash.clone())
+            .or_insert_with(|| blank(e.live_stake));
+        if let Some(b) = &e.from {
+            let (id, n) = resolve_drep(b);
+            info.from_drep_id = Some(id);
+            info.from_drep_name = n;
+        }
+        if let Some(b) = &e.to {
+            let (id, n) = resolve_drep(b);
+            info.to_drep_id = Some(id);
+            info.to_drep_name = n;
+        }
+    }
+
+    merged.into_iter().map(|(k, v)| (k, vec![v])).collect()
+}
+
 /// `deleg_info` maps tx_hash -> Vec<DelegationInfo> for injecting correct delegation data.
 async fn send_replay_blocks(
     sse: &ReplaySse<'_>,
@@ -1315,7 +1399,18 @@ async fn filtered_events(
         } else if let Some(payload) = replay_filter.stake_payload().cloned() {
             let cred = payload[1..].to_vec();
             let stake_address = replay_filter.feed_id();
-            let db = replay_state.chain_state.read().await.db_handle();
+            // One short read lock: grab the db handle and build delegation info for
+            // this credential from the feed index (no await held — see db_handle).
+            let (db, deleg_info) = {
+                let guard = replay_state.chain_state.read().await;
+                let info = build_stake_deleg_info(
+                    &guard.feed_index,
+                    &cred,
+                    replay_state.mainnet,
+                    guard.current(),
+                );
+                (guard.db_handle(), info)
+            };
             // Connect-time count, served off the lock via the two-step index path.
             let assets_count = match &db {
                 Some(db) => db.stake_assets_count(&payload).await.unwrap_or(0) as u32,
@@ -1357,7 +1452,7 @@ async fn filtered_events(
                 &mut replay_blocks,
                 &replay_delegators,
                 &replay_filter,
-                &HashMap::new(),
+                &deleg_info,
                 0,
             )
             .await;
@@ -1365,7 +1460,21 @@ async fn filtered_events(
             exclude_slots
         } else if let Some(addr) = replay_filter.address().map(str::to_string) {
             let addr_bytes = address_bytes(&addr).unwrap_or_default();
-            let db = replay_state.chain_state.read().await.db_handle();
+            // One short read lock: grab the db handle and build delegation info for
+            // the address's stake credential (if any) from the feed index.
+            let (db, deleg_info) = {
+                let guard = replay_state.chain_state.read().await;
+                let info = match filter::stake_credential(&addr) {
+                    Some(cred) => build_stake_deleg_info(
+                        &guard.feed_index,
+                        &cred,
+                        replay_state.mainnet,
+                        guard.current(),
+                    ),
+                    None => HashMap::new(),
+                };
+                (guard.db_handle(), info)
+            };
             // Connect-time count, served off the lock via the two-step index path.
             let assets_count = match &db {
                 Some(db) => db.address_assets_count(&addr).await.unwrap_or(0) as u32,
@@ -1408,7 +1517,7 @@ async fn filtered_events(
                 &mut replay_blocks,
                 &replay_delegators,
                 &replay_filter,
-                &HashMap::new(),
+                &deleg_info,
                 0,
             )
             .await;

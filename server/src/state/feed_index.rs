@@ -142,6 +142,28 @@ impl FeedIndex {
             .unwrap_or_default()
     }
 
+    /// Pool and DRep delegation events for a given stake credential, returned as
+    /// `(pool_events, drep_events)`. Used by stake/address feeds to inject
+    /// delegation info onto replayed blocks. Events are indexed by target
+    /// (pool/DRep), not by credential, so this is a linear scan — cheap because
+    /// the logs are pruned to a 5-day window.
+    pub fn delegation_entries_by_cred(
+        &self,
+        cred: &[u8],
+    ) -> (Vec<&DelegationEntry>, Vec<&DelegationEntry>) {
+        let pool = self
+            .delegation_events
+            .iter()
+            .filter(|e| e.cred == cred)
+            .collect();
+        let drep = self
+            .drep_delegation_events
+            .iter()
+            .filter(|e| e.cred == cred)
+            .collect();
+        (pool, drep)
+    }
+
     pub fn rollback(&mut self, slot: u64) {
         for entries in self.pool_minted.values_mut() {
             let keep = entries.partition_point(|r| r.slot <= slot);
