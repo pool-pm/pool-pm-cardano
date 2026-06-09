@@ -3,7 +3,7 @@
   import { slide } from 'svelte/transition';
   import { sections, config, pool, drep, stake, address, blockCount } from '../stores';
   import type { GenesisConfig, Section } from '../types';
-  import { TX_WIDTH, SUBJECT_TX_WIDTH, FLIP_DURATION, poolColor, formatTicker, layoutGrid } from '../layout';
+  import { TX_WIDTH, FLIP_DURATION, poolColor, formatTicker, layoutGrid } from '../layout';
   import Transaction from './Transaction.svelte';
 
   const MAX_BLOCKS = 30;
@@ -24,11 +24,6 @@
   // A subject feed (pool/drep/stake) vs the global homepage feed. Drives block
   // spacing, coloring, and whether the per-block minting-pool ticker is shown.
   const isSubjectFeed = $derived(!!($pool || $drep || $stake || $address));
-
-  // Subject feeds usually have one tx per block, so widen tiles to fit full
-  // addresses — but only when the block can fit the wide tile; otherwise fall back
-  // to the homepage width (addresses truncate). Two discrete sizes, no in-between.
-  const txWidth = $derived(isSubjectFeed && feedWidth - BLOCK_INSET >= SUBJECT_TX_WIDTH ? SUBJECT_TX_WIDTH : TX_WIDTH);
 
   // Section positioning: absolute layout with smooth CSS transitions
   let sectionRefs = new Map<string, HTMLElement>();
@@ -569,13 +564,7 @@
         {#if section.txs.length > 0}
           <div
             class="tx-grid"
-            style:--tx-width="{txWidth}px"
-            use:layoutGrid={{
-              landscape,
-              availableWidth: feedWidth - BLOCK_INSET,
-              availableHeight: txAreaHeight,
-              txWidth,
-            }}
+            use:layoutGrid={{ landscape, availableWidth: feedWidth - BLOCK_INSET, availableHeight: txAreaHeight }}
           >
             {#each section.txs as tx (tx.hash)}
               <div class="tx-grid-item">
@@ -850,7 +839,7 @@
 
   .tx-grid-item {
     position: absolute;
-    width: var(--tx-width, 108px);
+    width: 108px;
     transition: transform var(--flip-duration) ease;
     will-change: transform;
   }
