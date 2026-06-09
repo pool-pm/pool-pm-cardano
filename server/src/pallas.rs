@@ -1,28 +1,73 @@
 use pallas::ledger::primitives::{alonzo, conway, Metadatum, StakeCredential};
 use pallas::ledger::traverse::{MultiEraCert, MultiEraTx};
 
-/// Extract CIP-20 message from transaction metadata (label 674 → msg).
-pub fn extract_cip20_message(tx: &MultiEraTx<'_>) -> Option<Vec<String>> {
+/// CIP-20 transaction message standard (label 674 → `{ "msg": [lines] }`).
+const CIP20_MESSAGE: u64 = 674;
+/// CIP-36/CIP-15 Catalyst voting registration and its separate witness label.
+const CATALYST_REGISTRATION: u64 = 61284;
+const CATALYST_WITNESS: u64 = 61285;
+/// Badge shown for a Catalyst registration (label 61284).
+const CATALYST_LABEL: &str = "Catalyst voting registration";
+
+/// Display lines for a tx's metadata, one per label, ordered by label value: the
+/// CIP-20 message text for 674, a Catalyst-registration badge for the CIP-36
+/// registration (its witness label is folded in), and a generic "metadata N" for
+/// any other label. `None` if the tx carries no metadata. Stateless — derived
+/// purely from the tx's auxiliary data.
+pub fn extract_tx_metadata(tx: &MultiEraTx<'_>) -> Option<Vec<String>> {
     let metadata = tx.metadata();
-    let meta = metadata.find(674)?;
-    if let Metadatum::Map(entries) = meta {
-        for (key, value) in entries.iter() {
-            if let Metadatum::Text(k) = key {
-                if k == "msg" {
-                    if let Metadatum::Array(items) = value {
-                        let lines: Vec<String> = items
-                            .iter()
-                            .filter_map(|item| {
-                                if let Metadatum::Text(s) = item {
-                                    Some(s.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        if !lines.is_empty() {
-                            return Some(lines);
-                        }
+    let mut entries: Vec<(u64, &Metadatum)> = metadata.collect();
+    if entries.is_empty() {
+        return None;
+    }
+    entries.sort_by_key(|(label, _)| *label);
+    let lines = metadata_lines(&entries);
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines)
+    }
+}
+
+/// Pure label → display-line mapping. `entries` must be sorted by label. Split out
+/// from `extract_tx_metadata` so the ordering/labeling rules are unit-testable.
+fn metadata_lines(entries: &[(u64, &Metadatum)]) -> Vec<String> {
+    let has_catalyst = entries
+        .iter()
+        .any(|(label, _)| *label == CATALYST_REGISTRATION);
+    let mut lines = Vec::new();
+    for (label, datum) in entries {
+        match *label {
+            CIP20_MESSAGE => match cip20_message_lines(datum) {
+                Some(msg) => lines.extend(msg),
+                None => lines.push(format!("metadata {label}")),
+            },
+            CATALYST_REGISTRATION => lines.push(CATALYST_LABEL.to_string()),
+            CATALYST_WITNESS if has_catalyst => {} // folded into the registration line
+            _ => lines.push(format!("metadata {label}")),
+        }
+    }
+    lines
+}
+
+/// CIP-20: the `msg` field of label 674 is an array of text lines.
+fn cip20_message_lines(datum: &Metadatum) -> Option<Vec<String>> {
+    let Metadatum::Map(entries) = datum else {
+        return None;
+    };
+    for (key, value) in entries.iter() {
+        if let Metadatum::Text(k) = key {
+            if k == "msg" {
+                if let Metadatum::Array(items) = value {
+                    let lines: Vec<String> = items
+                        .iter()
+                        .filter_map(|item| match item {
+                            Metadatum::Text(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    if !lines.is_empty() {
+                        return Some(lines);
                     }
                 }
             }
@@ -225,5 +270,63 @@ impl MultiEraTxExt for MultiEraTx<'_> {
             }
         }
         votes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(s: &str) -> Metadatum {
+        Metadatum::Text(s.to_string())
+    }
+
+    /// A label whose datum content is irrelevant to the line it produces.
+    fn opaque() -> Metadatum {
+        Metadatum::Int(0.into())
+    }
+
+    fn cip20(lines: &[&str]) -> Metadatum {
+        let items = lines.iter().map(|s| text(s)).collect();
+        Metadatum::Map(vec![(text("msg"), Metadatum::Array(items))].into())
+    }
+
+    #[test]
+    fn orders_by_label_and_labels_each_kind() {
+        let msg = cip20(&["hi", "there"]);
+        let cat = opaque();
+        let nft = opaque();
+        // Deliberately unsorted; extract sorts, but metadata_lines documents sorted input.
+        let entries = [
+            (CIP20_MESSAGE, &msg),
+            (CATALYST_WITNESS, &opaque()),
+            (CATALYST_REGISTRATION, &cat),
+            (721u64, &nft),
+        ];
+        let mut sorted = entries;
+        sorted.sort_by_key(|(l, _)| *l);
+        let lines = metadata_lines(&sorted);
+        // 674 (two msg lines) < 721 < 61284 (witness 61285 folded away)
+        assert_eq!(
+            lines,
+            vec![
+                "hi".to_string(),
+                "there".to_string(),
+                "metadata 721".to_string(),
+                CATALYST_LABEL.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn catalyst_witness_alone_is_generic() {
+        let lines = metadata_lines(&[(CATALYST_WITNESS, &opaque())]);
+        assert_eq!(lines, vec!["metadata 61285"]);
+    }
+
+    #[test]
+    fn unparseable_674_falls_back_to_generic() {
+        let lines = metadata_lines(&[(CIP20_MESSAGE, &opaque())]);
+        assert_eq!(lines, vec!["metadata 674"]);
     }
 }

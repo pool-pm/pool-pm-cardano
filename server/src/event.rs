@@ -41,6 +41,8 @@ pub struct BlockTx {
     pub delegations: Vec<DelegationInfo>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub votes: Vec<VoteInfo>,
+    /// Ordered metadata display lines: CIP-20 message text plus a badge per other
+    /// metadata label (Catalyst registration, "metadata N"). See `extract_tx_metadata`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<Vec<String>>,
     /// Net stake change in lovelace for pool feed stake-change blocks.

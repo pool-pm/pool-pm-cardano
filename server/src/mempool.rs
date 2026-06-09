@@ -15,7 +15,7 @@ use crate::filter;
 use crate::model::{asset_fingerprint, drep_bech32_id, pool_bech32_id, TxOutput};
 use crate::nftcdn::NftcdnConfig;
 use crate::pallas::{
-    extract_cip20_message, stake_address_bech32, stake_credential_bytes, MultiEraTxExt,
+    extract_tx_metadata, stake_address_bech32, stake_credential_bytes, MultiEraTxExt,
 };
 use crate::state::State;
 
@@ -161,7 +161,7 @@ pub async fn extract_tx(
         }
     }
 
-    let message = extract_cip20_message(tx);
+    let message = extract_tx_metadata(tx);
     let votes = extract_votes(tx, state);
 
     let mut block_tx = BlockTx {

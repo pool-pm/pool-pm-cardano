@@ -486,7 +486,7 @@ fn decode_block_txs(
                 }
             }
 
-            let message = crate::pallas::extract_cip20_message(tx);
+            let message = crate::pallas::extract_tx_metadata(tx);
 
             let votes = state
                 .map(|s| crate::mempool::extract_votes(tx, s))
