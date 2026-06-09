@@ -215,7 +215,11 @@
               >
             {/if}
             <span class="ada">{@html formatAda(deleg.live_stake)}</span>
-            <span class="addr mono">{deleg.stake_address}</span>
+            <svelte:element
+              this={addrHref(deleg.stake_address) ? 'a' : 'span'}
+              href={addrHref(deleg.stake_address)}
+              class="addr mono">{deleg.stake_address}</svelte:element
+            >
           </div>
         {/each}
       </div>
