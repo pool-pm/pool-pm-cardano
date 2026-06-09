@@ -336,9 +336,11 @@
   }
 
   .stake-change {
+    background: rgb(0 0 0 / 0.6);
+    border-radius: 6px;
+    padding: 8px 10px;
     font-size: 13px;
     font-weight: 700;
-    margin-bottom: 8px;
   }
 
   .msg-section {

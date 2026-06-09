@@ -1,4 +1,8 @@
 export const TX_WIDTH = 108;
+// Wide tile width for subject feeds (pool/drep/address/stake), used only when the
+// block can fit it — wide enough for a full 103-char base address at the .addr
+// 10px monospace; otherwise feeds fall back to TX_WIDTH (truncated).
+export const SUBJECT_TX_WIDTH = 660;
 export const TX_GAP = 6;
 export const FLIP_DURATION = 300;
 
@@ -68,6 +72,7 @@ export type LayoutGridParams = {
   landscape: boolean;
   availableWidth: number;
   availableHeight: number;
+  txWidth?: number;
 };
 
 function colsForMaxH(heights: number[], gap: number, maxH: number): number {
@@ -91,8 +96,9 @@ function layoutPortrait(
   gap: number,
   availableWidth: number,
   containerWidth: number,
+  txWidth: number,
 ): { gridWidth: number; gridHeight: number } {
-  const colCount = Math.max(1, Math.floor((availableWidth + gap) / (TX_WIDTH + gap)));
+  const colCount = Math.max(1, Math.floor((availableWidth + gap) / (txWidth + gap)));
   const colHeights = new Array(colCount).fill(0);
   const itemData: { idx: number; col: number; y: number; height: number }[] = [];
   let maxColUsed = -1;
@@ -124,12 +130,12 @@ function layoutPortrait(
 
   const totalHeight = Math.max(0, Math.max(...colHeights) - gap);
   const actualCols = maxColUsed + 1;
-  const gridWidth = actualCols * TX_WIDTH + Math.max(0, actualCols - 1) * gap;
+  const gridWidth = actualCols * txWidth + Math.max(0, actualCols - 1) * gap;
   // Center within the actual container width, not the available layout width
   const offsetX = Math.max(0, (containerWidth - gridWidth) / 2);
 
   for (const { idx, col, y, height } of itemData) {
-    const displayX = offsetX + col * (TX_WIDTH + gap);
+    const displayX = offsetX + col * (txWidth + gap);
     const displayY = totalHeight - y - height;
     items[idx].style.transform = `translate(${displayX}px, ${displayY}px)`;
   }
@@ -143,6 +149,7 @@ function layoutLandscape(
   heights: number[],
   gap: number,
   availableHeight: number,
+  txWidth: number,
 ): { gridWidth: number; gridHeight: number } {
   const total = heights.reduce((s, h) => s + h, 0) + Math.max(0, items.length - 1) * gap;
   const maxItem = Math.max(...heights);
@@ -178,7 +185,7 @@ function layoutLandscape(
   }
 
   // Compute grid dimensions
-  const gridWidth = cols.length * TX_WIDTH + Math.max(0, cols.length - 1) * gap;
+  const gridWidth = cols.length * txWidth + Math.max(0, cols.length - 1) * gap;
   let gridHeight = 0;
   for (const col of cols) {
     const ch = col.reduce((s, it) => s + it.h, 0) + Math.max(0, col.length - 1) * gap;
@@ -189,7 +196,7 @@ function layoutLandscape(
   for (let ci = 0; ci < cols.length; ci++) {
     const col = cols[ci];
     const colTotal = col.reduce((s, it) => s + it.h, 0) + Math.max(0, col.length - 1) * gap;
-    const x = ci * (TX_WIDTH + gap);
+    const x = ci * (txWidth + gap);
     let y = gridHeight - colTotal;
     for (const { idx, h } of col) {
       items[idx].style.transform = `translate(${x}px, ${y}px)`;
@@ -206,7 +213,7 @@ function layoutLandscape(
  * Landscape: balanced sequential columns (binary-search optimal height).
  */
 export function layoutGrid(node: HTMLElement, params: LayoutGridParams) {
-  let { landscape, availableWidth, availableHeight } = params;
+  let { landscape, availableWidth, availableHeight, txWidth = TX_WIDTH } = params;
   let pendingFrame = 0;
 
   function doLayout() {
@@ -223,11 +230,11 @@ export function layoutGrid(node: HTMLElement, params: LayoutGridParams) {
 
     let gridWidth: number, gridHeight: number;
     if (landscape) {
-      ({ gridWidth, gridHeight } = layoutLandscape(items, heights, gap, availableHeight));
+      ({ gridWidth, gridHeight } = layoutLandscape(items, heights, gap, availableHeight, txWidth));
       node.style.width = `${gridWidth}px`;
     } else {
       const w = availableWidth || node.offsetWidth;
-      ({ gridWidth, gridHeight } = layoutPortrait(items, heights, gap, w, node.offsetWidth));
+      ({ gridWidth, gridHeight } = layoutPortrait(items, heights, gap, w, node.offsetWidth, txWidth));
       node.style.width = '';
       node.dispatchEvent(new CustomEvent('gridwidth', { detail: gridWidth, bubbles: true }));
     }
@@ -256,6 +263,7 @@ export function layoutGrid(node: HTMLElement, params: LayoutGridParams) {
       landscape = newParams.landscape;
       availableWidth = newParams.availableWidth;
       availableHeight = newParams.availableHeight;
+      txWidth = newParams.txWidth ?? TX_WIDTH;
       doLayout();
     },
     destroy() {

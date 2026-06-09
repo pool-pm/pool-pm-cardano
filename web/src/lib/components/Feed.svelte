@@ -3,7 +3,7 @@
   import { slide } from 'svelte/transition';
   import { sections, config, pool, drep, stake, address, blockCount } from '../stores';
   import type { GenesisConfig, Section } from '../types';
-  import { TX_WIDTH, FLIP_DURATION, poolColor, formatTicker, layoutGrid } from '../layout';
+  import { TX_WIDTH, SUBJECT_TX_WIDTH, FLIP_DURATION, poolColor, formatTicker, layoutGrid } from '../layout';
   import Transaction from './Transaction.svelte';
 
   const MAX_BLOCKS = 30;
@@ -24,6 +24,11 @@
   // A subject feed (pool/drep/stake) vs the global homepage feed. Drives block
   // spacing, coloring, and whether the per-block minting-pool ticker is shown.
   const isSubjectFeed = $derived(!!($pool || $drep || $stake || $address));
+
+  // Subject feeds usually have one tx per block, so widen tiles to fit full
+  // addresses — but only when the block can fit the wide tile; otherwise fall back
+  // to the homepage width (addresses truncate). Two discrete sizes, no in-between.
+  const txWidth = $derived(isSubjectFeed && feedWidth - BLOCK_INSET >= SUBJECT_TX_WIDTH ? SUBJECT_TX_WIDTH : TX_WIDTH);
 
   // Section positioning: absolute layout with smooth CSS transitions
   let sectionRefs = new Map<string, HTMLElement>();
@@ -308,26 +313,10 @@
     });
   });
 
-  const STAKE_POSITIVE = 'oklch(0.7 0.25 145)';
-  const STAKE_NEGATIVE = 'oklch(0.7 0.25 25)';
-
   function sectionColors(section: Section): { bg: string; border: string; accent: string } {
     if (!section.block) return { bg: '#222', border: '#222', accent: 'rgb(255 255 255 / 0.4)' };
-    if (!isSubjectFeed) {
-      const c = poolColor(section.block.pool_id);
-      return { bg: c, border: c, accent: c };
-    }
-    if ($pool && section.block.pool_id === $pool.pool_id) {
-      const c = poolColor($pool.pool_id);
-      return { bg: c, border: c, accent: c };
-    }
-    let net = 0n;
-    for (const tx of section.txs) {
-      if (tx.stake_change) net += BigInt(tx.stake_change);
-    }
-    if (net > 0n) return { bg: '#222', border: '#222', accent: STAKE_POSITIVE };
-    if (net < 0n) return { bg: '#222', border: '#222', accent: STAKE_NEGATIVE };
-    return { bg: '#555', border: '#555', accent: '#555' };
+    const c = poolColor(section.block.pool_id);
+    return { bg: c, border: c, accent: c };
   }
 
   function introScale(node: HTMLElement) {
@@ -374,7 +363,11 @@
     const date = new Date(timestamp * 1000);
     const today = new Date(now);
     if (date.toDateString() === today.toDateString()) return 'Today';
-    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    return date.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      ...(date.getFullYear() !== today.getFullYear() ? { year: 'numeric' } : {}),
+    });
   }
 
   function formatTime(timestamp: number): string {
@@ -565,18 +558,24 @@
             </span>
           {/if}
         </div>
-        {#if section.block && (!isSubjectFeed || ($pool && section.block.pool_id === $pool.pool_id))}
+        {#if section.block}
           <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
             >{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</a
           >
-        {:else if !section.block}
+        {:else}
           <span class="block-ticker">MEMPOOL</span>
         {/if}
 
         {#if section.txs.length > 0}
           <div
             class="tx-grid"
-            use:layoutGrid={{ landscape, availableWidth: feedWidth - BLOCK_INSET, availableHeight: txAreaHeight }}
+            style:--tx-width="{txWidth}px"
+            use:layoutGrid={{
+              landscape,
+              availableWidth: feedWidth - BLOCK_INSET,
+              availableHeight: txAreaHeight,
+              txWidth,
+            }}
           >
             {#each section.txs as tx (tx.hash)}
               <div class="tx-grid-item">
@@ -851,7 +850,7 @@
 
   .tx-grid-item {
     position: absolute;
-    width: 108px;
+    width: var(--tx-width, 108px);
     transition: transform var(--flip-duration) ease;
     will-change: transform;
   }
