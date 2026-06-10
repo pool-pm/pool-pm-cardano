@@ -216,7 +216,6 @@
 
   let now = $state(Date.now());
 
-  const MAINNET_MAGIC = 764824073;
   const PREVIEW_MAGIC = 2;
   const PREPROD_MAGIC = 1;
 
@@ -644,6 +643,7 @@
     text-overflow: ellipsis;
     display: -webkit-box;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
   }
 

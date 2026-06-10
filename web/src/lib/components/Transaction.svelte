@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AssetInfo, DelegationInfo, FeedTx, TxInput, TxOutputInfo, VoteInfo } from '../types';
+  import type { AssetInfo, DelegationInfo, FeedTx } from '../types';
   import { config, stake, address } from '../stores';
   import { poolColor, formatTicker } from '../layout';
   import { nonChangeOutputs as computeNonChangeOutputs } from '../change';
