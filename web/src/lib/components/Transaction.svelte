@@ -17,6 +17,17 @@
     if ($address) return addr === $address.address ? ownedColor : null;
     return null;
   }
+  // Same idea for a reward (stake1…) address — e.g. the delegator in a delegation
+  // change. Reward addresses need rewardCredential() (bytes 1-28), not
+  // stakeCredential() (bytes 29-56, payment addresses); colors it as the feed
+  // subject when it shares the feed's stake credential, else null (grey).
+  function ownedStakeColor(stakeAddr: string | null | undefined): string | null {
+    if (!stakeAddr) return null;
+    const cred = rewardCredential(stakeAddr);
+    if (!cred) return null;
+    const feedCred = feedStakeCred ?? ($address ? stakeCredential($address.address) : null);
+    return cred === feedCred ? ownedColor : null;
+  }
 
   // Link an address to its feed: addr1…/stake1… have one; Byron and unresolved
   // addresses don't, so they render as plain text.
@@ -222,7 +233,7 @@
             <svelte:element
               this={addrHref(deleg.stake_address) ? 'a' : 'span'}
               href={addrHref(deleg.stake_address)}
-              style:color={ownedAddressColor(deleg.stake_address)}
+              style:color={ownedStakeColor(deleg.stake_address)}
               class="addr mono">{deleg.stake_address}</svelte:element
             >
           </div>
