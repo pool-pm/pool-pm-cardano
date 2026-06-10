@@ -35,9 +35,14 @@
   let scrolledAway = false;
   let ignoreScroll = false;
 
-  // Pool feeds: logarithmic spacing — 2px/sec for small gaps, ~100px/day
-  function logGap(seconds: number): number {
-    return 10 * Math.log1p(seconds / 5);
+  // Subject feeds: space blocks by elapsed time, compressing the enormous range
+  // (seconds → years). A cube-root-ish power curve keeps same-day blocks tight
+  // while still visibly separating day-, week- and month-scale gaps — a log
+  // flattened the high end too much, so months looked barely farther than hours.
+  // Roughly: 1h≈15px, 6h≈26, 1d≈41, 1wk≈77, 1mo≈124, 6mo≈219 (then clamped).
+  const GAP_TIME_EXP = 0.33;
+  function timeGap(seconds: number): number {
+    return Math.pow(seconds, GAP_TIME_EXP);
   }
 
   // Available height for tx columns in landscape mode.
@@ -105,7 +110,7 @@
         const maxSpacing = Math.round((landscape ? feedWidth : feedHeight) / 2);
         spacing = Math.min(
           maxSpacing,
-          Math.max(2, Math.round(isSubjectFeed ? logGap(timeDelta) : PX_PER_SECOND * timeDelta)),
+          Math.max(2, Math.round(isSubjectFeed ? timeGap(timeDelta) : PX_PER_SECOND * timeDelta)),
         );
         pos += spacing;
       }
