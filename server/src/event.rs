@@ -50,12 +50,26 @@ pub struct BlockTx {
     #[serde(default)]
     #[serde(with = "opt_string_i64")]
     pub stake_change: Option<i64>,
+    /// CIP-36/CIP-15 Catalyst voting registration (label 61284), if present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalyst: Option<CatalystInfo>,
     /// Pre-extracted stake credentials from input/output addresses.
     #[serde(skip)]
     pub stake_credentials: Vec<Vec<u8>>,
     /// Withdrawals: (stake_credential, lovelace). Used for stake_change computation.
     #[serde(skip)]
     pub withdrawals: Vec<(Vec<u8>, u64)>,
+}
+
+/// Catalyst (CIP-36/CIP-15) voting registration: the registrant's stake address
+/// (derived from the registered stake key) and, on a stake feed, its live stake at
+/// the registration block (filled by the backward walk; `None` elsewhere).
+#[derive(Clone, Serialize)]
+pub struct CatalystInfo {
+    pub stake_address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(with = "opt_string_i64")]
+    pub live_stake: Option<i64>,
 }
 
 #[derive(Clone, Serialize)]

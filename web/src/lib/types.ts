@@ -91,6 +91,11 @@ export interface VoteInfo {
   action_title?: string;
 }
 
+export interface CatalystInfo {
+  stake_address: string;
+  live_stake?: string;
+}
+
 export interface BlockTx {
   hash: string;
   fee: string;
@@ -102,6 +107,7 @@ export interface BlockTx {
   votes?: VoteInfo[];
   message?: string[];
   stake_change?: string;
+  catalyst?: CatalystInfo;
 }
 
 export interface MempoolTxEvent extends BlockTx {

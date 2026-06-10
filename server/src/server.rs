@@ -496,6 +496,7 @@ fn decode_block_txs(
             }
 
             let message = crate::pallas::extract_tx_metadata(tx);
+            let catalyst = crate::pallas::extract_catalyst(tx, mainnet);
 
             let votes = state
                 .map(|s| crate::mempool::extract_votes(tx, s))
@@ -512,6 +513,7 @@ fn decode_block_txs(
                 votes,
                 message,
                 stake_change: None,
+                catalyst,
                 stake_credentials: vec![],
                 withdrawals,
             }
@@ -668,6 +670,9 @@ struct ReplayBlock {
 struct SubjectReplay {
     /// Live stake walking backward; starts at the current snapshot value.
     running: i64,
+    /// The feed subject's reward (stake1…) address — to attach the pre-block stake to
+    /// a Catalyst registration of this same credential.
+    subject_stake_address: String,
     /// tx_hash → delegation (from/to resolved); `live_stake` filled in during the walk.
     deleg_by_tx: HashMap<String, DelegationInfo>,
     /// Reward additions per epoch (`spendable_epoch`, delta), sorted by epoch desc.
@@ -935,6 +940,7 @@ async fn build_subject_replay(
 
     SubjectReplay {
         running: anchor,
+        subject_stake_address: crate::pallas::stake_address_from_cred_bytes(cred, mainnet),
         deleg_by_tx,
         reward_deltas,
         reward_cursor: 0,
@@ -1031,6 +1037,13 @@ async fn send_replay_blocks(
                                 let mut info = info.clone();
                                 info.live_stake = pre;
                                 tx.delegations = vec![info];
+                            }
+                            // A Catalyst registration of this same credential gets the
+                            // same pre-block stake.
+                            if let Some(cat) = &mut tx.catalyst {
+                                if cat.stake_address == sr.subject_stake_address {
+                                    cat.live_stake = Some(pre);
+                                }
                             }
                         }
                     }
@@ -2215,6 +2228,7 @@ mod tests {
     fn pre_block_stake_undoes_rewards_withdrawals_and_block_delta() {
         let mut sr = SubjectReplay {
             running: 1000,
+            subject_stake_address: String::new(),
             deleg_by_tx: HashMap::new(),
             reward_deltas: vec![(640, 50), (639, 30)], // epoch desc
             reward_cursor: 0,

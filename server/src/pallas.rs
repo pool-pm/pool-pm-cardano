@@ -1,13 +1,18 @@
+use pallas::crypto::hash::Hasher;
 use pallas::ledger::primitives::{alonzo, conway, Metadatum, StakeCredential};
 use pallas::ledger::traverse::{MultiEraCert, MultiEraTx};
+
+use crate::event::CatalystInfo;
 
 /// CIP-20 transaction message standard (label 674 → `{ "msg": [lines] }`).
 const CIP20_MESSAGE: u64 = 674;
 /// CIP-36/CIP-15 Catalyst voting registration and its separate witness label.
+/// Surfaced as a structured `CatalystInfo` (see `extract_catalyst`), not a text line.
 const CATALYST_REGISTRATION: u64 = 61284;
 const CATALYST_WITNESS: u64 = 61285;
-/// Badge shown for a Catalyst registration (label 61284).
-const CATALYST_LABEL: &str = "Catalyst voting registration";
+/// SundaeSwap on-chain governance tally (the number is the first digits of π).
+const SUNDAE_GOVERNANCE: u64 = 31415;
+const SUNDAE_LABEL: &str = "SundaeSwap governance";
 
 /// Display lines for a tx's metadata, one per label, ordered by label value: the
 /// CIP-20 message text for 674, a Catalyst-registration badge for the CIP-36
@@ -32,9 +37,6 @@ pub fn extract_tx_metadata(tx: &MultiEraTx<'_>) -> Option<Vec<String>> {
 /// Pure label → display-line mapping. `entries` must be sorted by label. Split out
 /// from `extract_tx_metadata` so the ordering/labeling rules are unit-testable.
 fn metadata_lines(entries: &[(u64, &Metadatum)]) -> Vec<String> {
-    let has_catalyst = entries
-        .iter()
-        .any(|(label, _)| *label == CATALYST_REGISTRATION);
     let mut lines = Vec::new();
     for (label, datum) in entries {
         match *label {
@@ -42,12 +44,33 @@ fn metadata_lines(entries: &[(u64, &Metadatum)]) -> Vec<String> {
                 Some(msg) => lines.extend(msg),
                 None => lines.push(format!("metadata {label}")),
             },
-            CATALYST_REGISTRATION => lines.push(CATALYST_LABEL.to_string()),
-            CATALYST_WITNESS if has_catalyst => {} // folded into the registration line
+            // Catalyst registration (+witness) is surfaced structurally, not as text.
+            CATALYST_REGISTRATION | CATALYST_WITNESS => {}
+            SUNDAE_GOVERNANCE => lines.push(SUNDAE_LABEL.to_string()),
             _ => lines.push(format!("metadata {label}")),
         }
     }
     lines
+}
+
+/// Extract a CIP-36/CIP-15 Catalyst voting registration (label 61284). The
+/// registrant's stake address is `blake2b-224(staking vkey)` (field `2`) built into
+/// a reward address. `live_stake` is left `None` (filled by the stake-feed walk).
+pub fn extract_catalyst(tx: &MultiEraTx<'_>, mainnet: bool) -> Option<CatalystInfo> {
+    let metadata = tx.metadata();
+    let Metadatum::Map(entries) = metadata.find(CATALYST_REGISTRATION)? else {
+        return None;
+    };
+    // Field 2 = the staking public key (32-byte ed25519 vkey).
+    let vkey = entries.iter().find_map(|(k, v)| match (k, v) {
+        (Metadatum::Int(i), Metadatum::Bytes(b)) if i128::from(*i) == 2 => Some(b),
+        _ => None,
+    })?;
+    let cred = Hasher::<224>::hash(vkey);
+    Some(CatalystInfo {
+        stake_address: stake_address_from_cred_bytes(cred.as_ref(), mainnet),
+        live_stake: None,
+    })
 }
 
 /// CIP-20: the `msg` field of label 674 is an array of text lines.
@@ -294,34 +317,36 @@ mod tests {
     #[test]
     fn orders_by_label_and_labels_each_kind() {
         let msg = cip20(&["hi", "there"]);
-        let cat = opaque();
         let nft = opaque();
+        let sundae = opaque();
         // Deliberately unsorted; extract sorts, but metadata_lines documents sorted input.
         let entries = [
             (CIP20_MESSAGE, &msg),
+            (SUNDAE_GOVERNANCE, &sundae),
             (CATALYST_WITNESS, &opaque()),
-            (CATALYST_REGISTRATION, &cat),
+            (CATALYST_REGISTRATION, &opaque()),
             (721u64, &nft),
         ];
         let mut sorted = entries;
         sorted.sort_by_key(|(l, _)| *l);
         let lines = metadata_lines(&sorted);
-        // 674 (two msg lines) < 721 < 61284 (witness 61285 folded away)
+        // 674 (msg) < 721 < 31415 (Sundae) < 61284/61285 (Catalyst → structured, no line)
         assert_eq!(
             lines,
             vec![
                 "hi".to_string(),
                 "there".to_string(),
                 "metadata 721".to_string(),
-                CATALYST_LABEL.to_string()
+                SUNDAE_LABEL.to_string(),
             ]
         );
     }
 
     #[test]
-    fn catalyst_witness_alone_is_generic() {
-        let lines = metadata_lines(&[(CATALYST_WITNESS, &opaque())]);
-        assert_eq!(lines, vec!["metadata 61285"]);
+    fn catalyst_labels_produce_no_text_line() {
+        // Both Catalyst labels are surfaced structurally (CatalystInfo), never as text.
+        let lines = metadata_lines(&[(CATALYST_REGISTRATION, &opaque()), (CATALYST_WITNESS, &opaque())]);
+        assert!(lines.is_empty());
     }
 
     #[test]

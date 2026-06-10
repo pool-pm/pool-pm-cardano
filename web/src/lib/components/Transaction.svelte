@@ -196,6 +196,7 @@
         {#each visibleDelegations as deleg}
           {@const isDeregistration =
             !deleg.to_pool_id && !deleg.to_drep_id && (!!deleg.from_pool_id || !!deleg.from_drep_id)}
+          {@const hasFrom = !!(deleg.from_pool_id || deleg.from_drep_id)}
           <div class="addr-item">
             {#if deleg.to_pool_id}
               <span class="deleg-kind">POOL</span>
@@ -230,15 +231,37 @@
                 href="/{deleg.from_drep_id}">{deleg.from_drep_name ?? deleg.from_drep_id.slice(5, 13)}</a
               >
             {/if}
-            <span class="ada">{@html formatAda(deleg.live_stake)}</span>
-            <svelte:element
-              this={addrHref(deleg.stake_address) ? 'a' : 'span'}
-              href={addrHref(deleg.stake_address)}
-              style:color={ownedStakeColor(deleg.stake_address)}
-              class="addr mono">{deleg.stake_address}</svelte:element
-            >
+            <div class="stake-group" class:spaced={hasFrom}>
+              <span class="ada">{@html formatAda(deleg.live_stake)}</span>
+              <svelte:element
+                this={addrHref(deleg.stake_address) ? 'a' : 'span'}
+                href={addrHref(deleg.stake_address)}
+                style:color={ownedStakeColor(deleg.stake_address)}
+                class="addr mono">{deleg.stake_address}</svelte:element
+              >
+            </div>
           </div>
         {/each}
+      </div>
+    </div>
+  {/if}
+  {#if tx.catalyst}
+    <div class="deleg-section">
+      <div class="addr-list">
+        <div class="addr-item">
+          <span class="catalyst-label">Catalyst voting registration</span>
+          <div class="stake-group spaced">
+            {#if tx.catalyst.live_stake}
+              <span class="ada">{@html formatAda(tx.catalyst.live_stake)}</span>
+            {/if}
+            <svelte:element
+              this={addrHref(tx.catalyst.stake_address) ? 'a' : 'span'}
+              href={addrHref(tx.catalyst.stake_address)}
+              style:color={ownedStakeColor(tx.catalyst.stake_address)}
+              class="addr mono">{tx.catalyst.stake_address}</svelte:element
+            >
+          </div>
+        </div>
       </div>
     </div>
   {/if}
@@ -537,6 +560,27 @@
     color: rgb(255 255 255 / 0.4);
     font-size: 12px;
     line-height: 1;
+  }
+
+  /* Stake value + address; centered column like the rest of the delegation item. */
+  .stake-group {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 0;
+    max-width: 100%;
+  }
+  /* Separate the stake value/address from the change/registration above it (only
+     when there's a previous target, i.e. a real from→to change, or a registration). */
+  .stake-group.spaced {
+    margin-top: 6px;
+  }
+
+  .catalyst-label {
+    font-family: Inter, sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    color: white;
   }
 
   /* Grey caption above each pool/DRep target, like the stake-address grey. */

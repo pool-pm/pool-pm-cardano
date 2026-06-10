@@ -163,6 +163,7 @@ pub async fn extract_tx(
 
     let message = extract_tx_metadata(tx);
     let votes = extract_votes(tx, state);
+    let catalyst = crate::pallas::extract_catalyst(tx, mainnet);
 
     let mut block_tx = BlockTx {
         hash,
@@ -175,6 +176,7 @@ pub async fn extract_tx(
         votes,
         message,
         stake_change: None,
+        catalyst,
         stake_credentials: Vec::new(),
         withdrawals,
     };
