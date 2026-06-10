@@ -418,13 +418,13 @@
 >
   {#if $pool}
     {@const color = poolColor($pool.pool_id)}
-    <div class="pool-circle" style:border-color={color}>
+    <div class="subject-card" style:--subject-color={color}>
       <span class="pool-name" style:color>{formatTicker($pool.ticker ?? $pool.pool_id.slice(5, 10))}</span>
-      {#if $pool.delegators != null}
-        <span class="pool-delegators">{$pool.delegators.toLocaleString()} delegators</span>
-      {/if}
       {#if $pool.live_stake}
         <span class="pool-stake">{formatAda($pool.live_stake)}</span>
+      {/if}
+      {#if $pool.delegators != null}
+        <span class="pool-delegators">{$pool.delegators.toLocaleString()} delegators</span>
       {/if}
       <div class="pool-params">
         <div class="pool-param">
@@ -435,27 +435,27 @@
           <span class="pool-param-label">cost</span>
           <span class="pool-param-value">{formatAda($pool.fixed_cost)}</span>
         </div>
-      </div>
-      <div class="pool-param">
-        <span class="pool-param-label">pledge</span>
-        <span class="pool-param-value">{formatAda($pool.pledge)}</span>
+        <div class="pool-param">
+          <span class="pool-param-label">pledge</span>
+          <span class="pool-param-value">{formatAda($pool.pledge)}</span>
+        </div>
       </div>
     </div>
   {:else if $drep}
     {@const color = poolColor($drep.drep_id)}
-    <div class="pool-circle" style:border-color={color}>
+    <div class="subject-card" style:--subject-color={color}>
       <span class="drep-name" style:color>{$drep.given_name ?? $drep.drep_id.slice(5, 13)}</span>
-      {#if $drep.delegators != null}
-        <span class="pool-delegators">{$drep.delegators.toLocaleString()} delegators</span>
-      {/if}
       {#if $drep.live_stake}
         <span class="pool-stake">{formatAda($drep.live_stake)}</span>
+      {/if}
+      {#if $drep.delegators != null}
+        <span class="pool-delegators">{$drep.delegators.toLocaleString()} delegators</span>
       {/if}
     </div>
   {:else if $stake}
     {@const color = poolColor($stake.stake_address)}
     {@const total = (BigInt($stake.balance ?? '0') + BigInt($stake.rewards ?? '0')).toString()}
-    <div class="pool-circle" style:border-color={color}>
+    <div class="subject-card" style:--subject-color={color}>
       <span class="pool-stake">{formatAda(total)}</span>
       {#if $stake.rewards && $stake.rewards !== '0'}
         <span class="pool-delegators">incl. {formatAda($stake.rewards)} rewards</span>
@@ -497,7 +497,7 @@
     </div>
   {:else if $address}
     {@const color = poolColor($address.address)}
-    <div class="pool-circle" style:border-color={color}>
+    <div class="subject-card" style:--subject-color={color}>
       {#if $address.balance}
         <span class="pool-stake">{formatAda($address.balance)}</span>
       {/if}
@@ -616,24 +616,32 @@
     overflow-x: auto;
   }
 
-  .pool-circle {
-    width: 250px;
-    height: 250px;
-    border-radius: 50%;
-    border: 2px solid;
+  /* Subject header: compact glass card with a subject-color ridge on top and a
+     soft radial glow behind. Centered at the top in portrait (narrow enough to
+     clear the corner logo/search buttons); a center-right column in landscape. */
+  .subject-card {
+    width: 290px;
+    max-width: calc(100vw - 32px);
+    border-radius: 14px;
+    background: rgb(0 0 0 / 0.6);
+    border: 1px solid rgb(255 255 255 / 0.12);
+    border-top: 3px solid var(--subject-color);
+    /* Keep the halo tight and faint: on the pure-black page a wide/strong glow
+       lights up the whole area around the card and the page stops reading as black. */
+    box-shadow: 0 0 32px -6px color-mix(in srgb, var(--subject-color) 22%, transparent);
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
     gap: 6px;
     text-align: center;
-    padding: 20px;
+    padding: 16px 20px 12px;
     box-sizing: border-box;
     margin: 0 auto 16px;
     flex-shrink: 0;
   }
 
-  .landscape .pool-circle {
+  .landscape .subject-card {
+    width: 250px;
     margin: 0 16px;
     direction: ltr;
   }
@@ -646,10 +654,10 @@
 
   .drep-name {
     font-weight: 600;
-    font-size: 14px;
+    font-size: 16px;
     line-height: 1.2;
     text-align: center;
-    max-width: 120px;
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     display: -webkit-box;
@@ -692,6 +700,9 @@
     display: flex;
     gap: 0;
     width: 100%;
+    border-top: 1px solid rgb(255 255 255 / 0.15);
+    padding-top: 8px;
+    margin-top: 4px;
   }
 
   .pool-params .pool-param {
