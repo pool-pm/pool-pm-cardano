@@ -889,9 +889,14 @@ impl DbSync {
             JOIN off_chain_vote_drep_data dd ON dd.off_chain_vote_data_id = ovd.id
             WHERE dr.tx_id <= $1
               AND dh.raw IS NOT NULL
+              -- Latest registration that carried an anchor: a deregistration (and the
+              -- initial register cert) has voting_anchor_id NULL, so picking the plain
+              -- MAX(id) would drop the name of a deregistered/updated DRep whose
+              -- metadata is still in db-sync.
               AND dr.id = (
                   SELECT MAX(dr2.id) FROM drep_registration dr2
                   WHERE dr2.drep_hash_id = dr.drep_hash_id AND dr2.tx_id <= $1
+                    AND dr2.voting_anchor_id IS NOT NULL
               )"#,
             last_tx_id
         )
