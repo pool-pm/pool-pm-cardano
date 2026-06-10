@@ -186,11 +186,13 @@
             !deleg.to_pool_id && !deleg.to_drep_id && (!!deleg.from_pool_id || !!deleg.from_drep_id)}
           <div class="addr-item">
             {#if deleg.to_pool_id}
+              <span class="deleg-kind">POOL</span>
               <a class="deleg-pool" style:color={poolColor(deleg.to_pool_id)} href="/{deleg.to_pool_id}"
                 >{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a
               >
             {/if}
             {#if deleg.to_drep_id}
+              <span class="deleg-kind">DREP</span>
               <a class="deleg-drep" style:color={poolColor(deleg.to_drep_id)} href="/{deleg.to_drep_id}"
                 >{deleg.to_drep_name ?? deleg.to_drep_id.slice(5, 13)}</a
               >
@@ -199,6 +201,7 @@
               <span class="deleg-arrow">{@html '&#x2191;'}</span>
             {/if}
             {#if deleg.from_pool_id}
+              <span class="deleg-kind">POOL</span>
               <a
                 class="deleg-pool"
                 class:deregistered={isDeregistration}
@@ -207,6 +210,7 @@
               >
             {/if}
             {#if deleg.from_drep_id}
+              <span class="deleg-kind">DREP</span>
               <a
                 class="deleg-drep"
                 class:deregistered={isDeregistration}
@@ -520,6 +524,16 @@
     color: rgb(255 255 255 / 0.4);
     font-size: 12px;
     line-height: 1;
+  }
+
+  /* Grey caption above each pool/DRep target, like the stake-address grey. */
+  .deleg-kind {
+    color: rgb(255 255 255 / 0.4);
+    font-size: 8px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    line-height: 1.2;
+    margin-top: 3px;
   }
 
   .assets {
