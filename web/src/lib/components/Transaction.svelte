@@ -576,11 +576,11 @@
     margin-top: 6px;
   }
 
+  /* Match the CIP-20 message text style (not bold). */
   .catalyst-label {
-    font-family: Inter, sans-serif;
-    font-size: 11px;
-    font-weight: 700;
-    color: white;
+    font-size: 10px;
+    color: rgb(255 255 255 / 0.8);
+    word-break: break-word;
   }
 
   /* Grey caption above each pool/DRep target, like the stake-address grey. */
