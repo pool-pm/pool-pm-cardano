@@ -209,7 +209,7 @@
               >
             {/if}
             {#if deleg.to_pool_id || deleg.to_drep_id}
-              <span class="deleg-arrow">{@html '&#x2191;'}</span>
+              <span class="deleg-arrow" style:color={ownedStakeColor(deleg.stake_address)}>{@html '&#x2191;'}</span>
             {/if}
             {#if deleg.from_pool_id}
               <span class="deleg-kind">POOL</span>
