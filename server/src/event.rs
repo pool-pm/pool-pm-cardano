@@ -129,6 +129,18 @@ pub enum Event {
     MempoolPrune {
         removed: Vec<String>,
     },
+    /// Emitted once at the end of a stake/address replay so the client can paginate
+    /// older history: `slot` = oldest replayed block; `stake`/`epoch` = the pre-block
+    /// stake walk anchor for the next page (absent on address feeds — no walk).
+    ReplayCursor {
+        slot: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        epoch: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(with = "opt_string_i64")]
+        #[serde(default)]
+        stake: Option<i64>,
+    },
 }
 
 #[derive(Clone, Serialize)]

@@ -106,12 +106,14 @@ impl DbSync {
     /// Recent blocks containing a transaction that touches the given stake address
     /// (`hash_raw` is the full 29-byte reward address = db-sync
     /// `stake_address.hash_raw`): either an output paid to it, or one of its
-    /// outputs being consumed. Newest-first, capped at `limit`. Returns
-    /// (slot_no, block_hash_hex, block_no). Used to drive feed replay; an unknown
-    /// address yields an empty result.
+    /// outputs being consumed. Newest-first with `slot_no < before_slot` (pass
+    /// `i64::MAX` for the first page), capped at `limit`. Returns
+    /// (slot_no, block_hash_hex, block_no, epoch). Used to drive feed replay and its
+    /// infinite-scroll pagination; an unknown address yields an empty result.
     pub async fn stake_recent_blocks(
         &self,
         hash_raw: &[u8],
+        before_slot: i64,
         limit: i64,
     ) -> Result<Vec<(u64, String, u64, u64)>, sqlx::Error> {
         let rows = sqlx::query!(
@@ -127,10 +129,12 @@ impl DbSync {
             ) t
             JOIN tx ON tx.id = t.tx_id
             JOIN block b ON b.id = tx.block_id
+            WHERE b.slot_no < $2
             GROUP BY b.id, b.slot_no, b.hash, b.block_no, b.epoch_no
             ORDER BY b.slot_no DESC
-            LIMIT $2"#,
+            LIMIT $3"#,
             hash_raw,
+            before_slot,
             limit
         )
         .fetch_all(&self.db)
@@ -149,12 +153,14 @@ impl DbSync {
     }
 
     /// Recent blocks containing a transaction that touches the given payment
-    /// address (an output paid to it, or one of its outputs consumed). Newest-first,
-    /// capped at `limit`. Returns (slot_no, block_hash_hex, block_no). Mirrors
+    /// address (an output paid to it, or one of its outputs consumed). Newest-first
+    /// with `slot_no < before_slot` (pass `i64::MAX` for the first page), capped at
+    /// `limit`. Returns (slot_no, block_hash_hex, block_no, epoch). Mirrors
     /// `stake_recent_blocks` but matches the exact address.
     pub async fn address_recent_blocks(
         &self,
         address: &str,
+        before_slot: i64,
         limit: i64,
     ) -> Result<Vec<(u64, String, u64, u64)>, sqlx::Error> {
         let rows = sqlx::query!(
@@ -168,10 +174,12 @@ impl DbSync {
             ) t
             JOIN tx ON tx.id = t.tx_id
             JOIN block b ON b.id = tx.block_id
+            WHERE b.slot_no < $2
             GROUP BY b.id, b.slot_no, b.hash, b.block_no, b.epoch_no
             ORDER BY b.slot_no DESC
-            LIMIT $2"#,
+            LIMIT $3"#,
             address,
+            before_slot,
             limit
         )
         .fetch_all(&self.db)

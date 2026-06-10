@@ -135,7 +135,14 @@ export interface MempoolPruneEvent {
   removed: string[];
 }
 
-export type Event = MempoolTxEvent | BlockEvent | RollbackEvent | MempoolPruneEvent;
+export interface ReplayCursorEvent {
+  type: 'ReplayCursor';
+  slot: number;
+  epoch?: number;
+  stake?: string;
+}
+
+export type Event = MempoolTxEvent | BlockEvent | RollbackEvent | MempoolPruneEvent | ReplayCursorEvent;
 
 export interface DRepInfo {
   drep_id: string;

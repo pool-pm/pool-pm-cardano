@@ -189,7 +189,11 @@ impl FeedFilter {
                     })
                 }
             }
-            Event::Rollback { .. } | Event::MempoolPrune { .. } => Some(event.clone()),
+            // ReplayCursor is replay-only (sent directly, never broadcast through here),
+            // but pass non-tx events through unchanged.
+            Event::Rollback { .. } | Event::MempoolPrune { .. } | Event::ReplayCursor { .. } => {
+                Some(event.clone())
+            }
         }
     }
 }

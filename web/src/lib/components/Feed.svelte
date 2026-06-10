@@ -4,6 +4,7 @@
   import { sections, config, pool, drep, stake, address, blockCount } from '../stores';
   import type { GenesisConfig, Section } from '../types';
   import { TX_WIDTH, FLIP_DURATION, poolColor, formatTicker, layoutGrid } from '../layout';
+  import { loadOlder } from '../sse';
   import Transaction from './Transaction.svelte';
 
   const MAX_BLOCKS = 30;
@@ -78,6 +79,16 @@
     // row-reverse: scrollLeft ≈ 0 at right edge (can be slightly negative
     // due to padding/scrollbar gutter), goes more negative when scrolled left
     scrolledAway = landscape ? feedEl.scrollLeft < -30 : feedEl.scrollTop > 10;
+
+    // Near the oldest edge (left in landscape, bottom in portrait) → prefetch the
+    // next page of older blocks (loadOlder self-guards against re-entry / end).
+    if (isSubjectFeed) {
+      const threshold = landscape ? feedEl.clientWidth : feedEl.clientHeight;
+      const fromOldest = landscape
+        ? -feedEl.scrollLeft + feedEl.clientWidth // distance scrolled toward oldest
+        : feedEl.scrollTop + feedEl.clientHeight;
+      if (fromOldest >= canvasSize - threshold) loadOlder();
+    }
   }
 
   function measureSections() {

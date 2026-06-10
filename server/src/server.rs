@@ -344,7 +344,9 @@ fn resolve_event_assets(event: &mut crate::event::Event, size: u16) {
     let txs: &mut [BlockTx] = match event {
         crate::event::Event::MempoolTx(tx) => std::slice::from_mut(tx),
         crate::event::Event::Block { txs, .. } => txs.as_mut_slice(),
-        crate::event::Event::Rollback { .. } | crate::event::Event::MempoolPrune { .. } => return,
+        crate::event::Event::Rollback { .. }
+        | crate::event::Event::MempoolPrune { .. }
+        | crate::event::Event::ReplayCursor { .. } => return,
     };
     for tx in txs {
         for inp in &mut tx.inputs {
@@ -681,6 +683,11 @@ struct SubjectReplay {
     /// Off-window reward withdrawals (slot, amount), sorted by slot desc.
     withdrawals: Vec<(u64, i64)>,
     wd_cursor: usize,
+    /// Slot/epoch of the last block walked — the pagination cursor anchor (with
+    /// `running`). Tracks the last *walked* block, not the last *sent*, so an
+    /// empty/failed boundary block can't corrupt the next page's anchor.
+    last_slot: u64,
+    last_epoch: u64,
 }
 
 impl SubjectReplay {
@@ -703,7 +710,15 @@ impl SubjectReplay {
             self.wd_cursor += 1;
         }
         self.running -= block_delta;
+        self.last_slot = block_slot;
+        self.last_epoch = block_epoch;
         self.running
+    }
+
+    /// Pagination cursor after the walk: `(oldest walked slot, its epoch, pre-block
+    /// stake)`. The next page continues the walk from this stake/epoch below this slot.
+    fn cursor(&self) -> (u64, u64, i64) {
+        (self.last_slot, self.last_epoch, self.running)
     }
 }
 
@@ -812,6 +827,10 @@ fn build_stake_deleg_info(
 /// **off the lock**, and resolves delegation targets under a second short lock.
 /// `from`/`to` are correct at any age (full db history); `live_stake` is filled in
 /// per block during the walk in `send_replay_blocks`.
+/// `anchor`: `None` for the first page — read the current snapshot live stake +
+/// epoch; `Some((stake, epoch))` for an older page — continue the walk from the
+/// previous page's cursor (no snapshot read; reward deltas are capped at `epoch`).
+#[allow(clippy::too_many_arguments)]
 async fn build_subject_replay(
     chain_state: &RwLock<State>,
     db: &crate::state::DbSync,
@@ -820,16 +839,20 @@ async fn build_subject_replay(
     blocks: &[(u64, String, u64, u64)],
     exclude_slots: &HashSet<u64>,
     mainnet: bool,
+    anchor: Option<(i64, u64)>,
 ) -> SubjectReplay {
-    // Anchor: current live stake (UTXO + rewards) and epoch — one short lock, no await.
-    let (anchor, current_epoch) = {
-        let guard = chain_state.read().await;
-        let snap = guard.current();
-        let anchor = snap.map_or(0, |s| {
-            s.stakes.get(cred).copied().unwrap_or(0) + s.rewards.get(cred).copied().unwrap_or(0)
-        });
-        let epoch = snap.and_then(|s| s.last_epoch).unwrap_or(0);
-        (anchor, epoch)
+    // Anchor: cursor (older page) or the current live stake + epoch (first page).
+    let (anchor, current_epoch) = match anchor {
+        Some(ac) => ac,
+        None => {
+            let guard = chain_state.read().await;
+            let snap = guard.current();
+            let stake = snap.map_or(0, |s| {
+                s.stakes.get(cred).copied().unwrap_or(0) + s.rewards.get(cred).copied().unwrap_or(0)
+            });
+            let epoch = snap.and_then(|s| s.last_epoch).unwrap_or(0);
+            (stake, epoch)
+        }
     };
 
     // Window bounds from the oldest replayed block (blocks aren't yet sorted).
@@ -946,7 +969,132 @@ async fn build_subject_replay(
         reward_cursor: 0,
         withdrawals,
         wd_cursor: 0,
+        last_slot: 0,
+        last_epoch: 0,
     }
+}
+
+/// Transport-less inputs shared by SSE replay and the `/older` HTTP handler when
+/// turning one fetched block into an `Event::Block`.
+struct ReplayCtx<'a> {
+    nftcdn: &'a NftcdnConfig,
+    genesis: &'a GenesisConfig,
+    chain_state: &'a RwLock<State>,
+    mainnet: bool,
+}
+
+/// Fetch one block via N2N, decode + resolve + inject delegations + (for
+/// stake/address feeds) walk the stake backward, and build the `Event::Block` —
+/// or `None` on fetch/decode failure or when it filters to no txs. `deleg_info`
+/// maps tx_hash -> delegations to inject. Shared by `send_replay_blocks` and the
+/// `/older` endpoint; the caller owns the (single-flight) N2N client.
+#[allow(clippy::too_many_arguments)]
+async fn process_replay_block(
+    client: &mut PeerClient,
+    ctx: &ReplayCtx<'_>,
+    block: &ReplayBlock,
+    delegators: &imbl::hashset::HashSet<Vec<u8>>,
+    feed_filter: &filter::FeedFilter,
+    deleg_info: &HashMap<String, Vec<DelegationInfo>>,
+    stake_threshold: u64,
+    subject: Option<&mut SubjectReplay>,
+) -> Option<crate::event::Event> {
+    let hash_bytes = hex::decode(&block.hash).ok()?;
+    let point = Point::Specific(block.slot, hash_bytes);
+    let cbor = match client.blockfetch().fetch_single(point).await {
+        Ok(cbor) => cbor,
+        Err(e) => {
+            warn!(block.slot, "block-fetch failed: {}", e);
+            return None;
+        }
+    };
+
+    let state_guard = ctx.chain_state.read().await;
+    let (mut txs, cbor_pool_id, cbor_pool_ticker) = decode_block_txs(
+        &cbor,
+        ctx.nftcdn,
+        Some(&state_guard),
+        ctx.mainnet,
+        !block.filter_by_delegators,
+    );
+    drop(state_guard);
+    resolve_block_inputs(&mut txs, ctx.chain_state, ctx.nftcdn).await;
+    for tx in &mut txs {
+        tx.stake_credentials = filter::extract_stake_credentials(tx);
+    }
+
+    if block.filter_by_delegators {
+        // Computes UTXO changes + delegation impact in one pass. For pool/DRep feeds
+        // this uses tx.delegations, so the feed-index injection must precede it;
+        // stake/address feeds ignore delegations here (display-only) and inject after.
+        if subject.is_none() {
+            for tx in &mut txs {
+                if let Some(delegations) = deleg_info.get(&tx.hash) {
+                    tx.delegations = delegations.clone();
+                }
+            }
+        }
+        filter::apply_stake_changes(&mut txs, delegators, feed_filter);
+
+        // Stake/address feeds: walk the stake backward to the exact pre-block value
+        // and attach delegations from the full db history (correct from/to at any
+        // age). Undo, newest→oldest: epoch reward accruals (epoch > this block's),
+        // then off-window withdrawals (slot > this block's), then this block's own
+        // net stake change (sum over all decoded txs, before the retain).
+        if let Some(sr) = subject {
+            let block_delta: i64 = txs.iter().filter_map(|t| t.stake_change).sum();
+            let pre = sr.pre_block_stake(block.epoch, block.slot, block_delta);
+            for tx in &mut txs {
+                // Feed index wins (authoritative near the tip where db-sync may lag);
+                // fall back to db history otherwise.
+                if let Some(delegations) = deleg_info.get(&tx.hash) {
+                    tx.delegations = delegations.clone();
+                } else if let Some(info) = sr.deleg_by_tx.get(&tx.hash) {
+                    let mut info = info.clone();
+                    info.live_stake = pre;
+                    tx.delegations = vec![info];
+                }
+                // A Catalyst registration of this same credential gets the same stake.
+                if let Some(cat) = &mut tx.catalyst {
+                    if cat.stake_address == sr.subject_stake_address {
+                        cat.live_stake = Some(pre);
+                    }
+                }
+            }
+        }
+
+        let single_subject = matches!(
+            feed_filter,
+            filter::FeedFilter::Stake(_) | filter::FeedFilter::Address(_)
+        );
+        txs.retain(|tx| {
+            if single_subject {
+                // Single stake/payment address: show every tx that touches it, like
+                // the live path — not the pool/drep threshold.
+                feed_filter.matches_tx(tx, delegators)
+            } else {
+                !tx.delegations.is_empty()
+                    || tx
+                        .stake_change
+                        .is_some_and(|sc| sc.unsigned_abs() > stake_threshold)
+            }
+        });
+        if txs.is_empty() {
+            return None;
+        }
+    }
+
+    let pool_id = block.pool_id.clone().or(cbor_pool_id);
+    let pool_ticker = block.pool_ticker.clone().or(cbor_pool_ticker);
+    Some(crate::event::Event::Block {
+        slot: block.slot,
+        hash: block.hash.clone(),
+        number: block.number,
+        timestamp: slot_to_timestamp(block.slot, ctx.genesis),
+        pool_id,
+        pool_ticker,
+        txs,
+    })
 }
 
 /// `deleg_info` maps tx_hash -> Vec<DelegationInfo> for injecting correct delegation data.
@@ -982,115 +1130,32 @@ async fn send_replay_blocks(
             return;
         }
     };
+    let ctx = ReplayCtx {
+        nftcdn,
+        genesis,
+        chain_state,
+        mainnet,
+    };
     let mut sent = 0usize;
     for block in blocks.iter() {
-        let hash_bytes = match hex::decode(&block.hash) {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let point = Point::Specific(block.slot, hash_bytes);
-        match client.blockfetch().fetch_single(point).await {
-            Ok(cbor) => {
-                let state_guard = chain_state.read().await;
-                let (mut txs, cbor_pool_id, cbor_pool_ticker) = decode_block_txs(
-                    &cbor,
-                    nftcdn,
-                    Some(&state_guard),
-                    mainnet,
-                    !block.filter_by_delegators,
-                );
-                drop(state_guard);
-                resolve_block_inputs(&mut txs, chain_state, nftcdn).await;
-                for tx in &mut txs {
-                    tx.stake_credentials = filter::extract_stake_credentials(tx);
+        let event = process_replay_block(
+            &mut client,
+            &ctx,
+            block,
+            delegators,
+            feed_filter,
+            deleg_info,
+            stake_threshold,
+            subject.as_deref_mut(),
+        )
+        .await;
+        if let Some(event) = event {
+            if let Some(sse) = serialize_event(event, size) {
+                let _ = sender.send(sse).await;
+                sent += 1;
+                if sent >= MAX_REPLAY_BLOCKS {
+                    break;
                 }
-
-                if block.filter_by_delegators {
-                    // Computes UTXO changes + delegation impact in one pass. For
-                    // pool/DRep feeds this uses tx.delegations, so the feed-index
-                    // injection must precede it; stake/address feeds ignore
-                    // delegations here (display-only), so they inject afterward.
-                    if subject.is_none() {
-                        for tx in &mut txs {
-                            if let Some(delegations) = deleg_info.get(&tx.hash) {
-                                tx.delegations = delegations.clone();
-                            }
-                        }
-                    }
-                    filter::apply_stake_changes(&mut txs, delegators, feed_filter);
-
-                    // Stake/address feeds: walk the snapshot stake backward to the
-                    // exact pre-block value and attach delegations from the full db
-                    // history (correct from/to at any age). Undo, newest→oldest:
-                    // epoch reward accruals (epoch > this block's), then off-window
-                    // withdrawals (slot > this block's), then this block's own net
-                    // stake change (sum over all decoded txs, before the retain).
-                    if let Some(sr) = subject.as_deref_mut() {
-                        let block_delta: i64 = txs.iter().filter_map(|t| t.stake_change).sum();
-                        let pre = sr.pre_block_stake(block.epoch, block.slot, block_delta);
-                        for tx in &mut txs {
-                            // Feed index wins (authoritative near the tip where
-                            // db-sync may lag); fall back to db history otherwise.
-                            if let Some(delegations) = deleg_info.get(&tx.hash) {
-                                tx.delegations = delegations.clone();
-                            } else if let Some(info) = sr.deleg_by_tx.get(&tx.hash) {
-                                let mut info = info.clone();
-                                info.live_stake = pre;
-                                tx.delegations = vec![info];
-                            }
-                            // A Catalyst registration of this same credential gets the
-                            // same pre-block stake.
-                            if let Some(cat) = &mut tx.catalyst {
-                                if cat.stake_address == sr.subject_stake_address {
-                                    cat.live_stake = Some(pre);
-                                }
-                            }
-                        }
-                    }
-
-                    let single_subject = matches!(
-                        feed_filter,
-                        filter::FeedFilter::Stake(_) | filter::FeedFilter::Address(_)
-                    );
-                    txs.retain(|tx| {
-                        if single_subject {
-                            // Single stake/payment address: show every tx that touches
-                            // it, like the live path — not the pool/drep threshold.
-                            feed_filter.matches_tx(tx, delegators)
-                        } else {
-                            !tx.delegations.is_empty()
-                                || tx
-                                    .stake_change
-                                    .is_some_and(|sc| sc.unsigned_abs() > stake_threshold)
-                        }
-                    });
-                }
-                if txs.is_empty() && block.filter_by_delegators {
-                    continue;
-                }
-
-                let pool_id = block.pool_id.clone().or(cbor_pool_id);
-                let pool_ticker = block.pool_ticker.clone().or(cbor_pool_ticker);
-
-                let event = crate::event::Event::Block {
-                    slot: block.slot,
-                    hash: block.hash.clone(),
-                    number: block.number,
-                    timestamp: slot_to_timestamp(block.slot, genesis),
-                    pool_id,
-                    pool_ticker,
-                    txs,
-                };
-                if let Some(sse) = serialize_event(event, size) {
-                    let _ = sender.send(sse).await;
-                    sent += 1;
-                    if sent >= MAX_REPLAY_BLOCKS {
-                        break;
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(block.slot, "block-fetch failed: {}", e);
             }
         }
     }
@@ -1669,7 +1734,7 @@ async fn filtered_events(
 
             let blocks = match &db {
                 Some(db) => db
-                    .stake_recent_blocks(&payload, STAKE_REPLAY_BLOCKS)
+                    .stake_recent_blocks(&payload, i64::MAX, STAKE_REPLAY_BLOCKS)
                     .await
                     .unwrap_or_default(),
                 None => Vec::new(),
@@ -1688,6 +1753,7 @@ async fn filtered_events(
                         &blocks,
                         &exclude_slots,
                         replay_state.mainnet,
+                        None,
                     )
                     .await,
                 ),
@@ -1706,6 +1772,7 @@ async fn filtered_events(
                     filter_by_delegators: true,
                 })
                 .collect();
+            let full_page = replay_blocks.len() >= STAKE_REPLAY_BLOCKS as usize;
 
             send_replay_blocks(
                 &sse,
@@ -1717,6 +1784,22 @@ async fn filtered_events(
                 subject.as_mut(),
             )
             .await;
+
+            // Seed the client's pagination cursor (only if the page was full — else
+            // there's nothing older). Stake feeds carry the walk anchor.
+            if full_page {
+                if let Some(sr) = &subject {
+                    let (slot, epoch, stake) = sr.cursor();
+                    let ev = crate::event::Event::ReplayCursor {
+                        slot,
+                        epoch: Some(epoch),
+                        stake: Some(stake),
+                    };
+                    if let Some(e) = serialize_event(ev, sse.size) {
+                        let _ = sse.sender.send(e).await;
+                    }
+                }
+            }
 
             exclude_slots
         } else if let Some(addr) = replay_filter.address().map(str::to_string) {
@@ -1753,7 +1836,7 @@ async fn filtered_events(
 
             let blocks = match &db {
                 Some(db) => db
-                    .address_recent_blocks(&addr, STAKE_REPLAY_BLOCKS)
+                    .address_recent_blocks(&addr, i64::MAX, STAKE_REPLAY_BLOCKS)
                     .await
                     .unwrap_or_default(),
                 None => Vec::new(),
@@ -1781,6 +1864,10 @@ async fn filtered_events(
                     filter_by_delegators: true,
                 })
                 .collect();
+            // Slot-only cursor for address feeds (no walk); only if the page was full.
+            let older_cursor_slot = (replay_blocks.len() >= STAKE_REPLAY_BLOCKS as usize)
+                .then(|| replay_blocks.iter().map(|b| b.slot).min())
+                .flatten();
 
             send_replay_blocks(
                 &sse,
@@ -1792,6 +1879,17 @@ async fn filtered_events(
                 subject.as_mut(),
             )
             .await;
+
+            if let Some(slot) = older_cursor_slot {
+                let ev = crate::event::Event::ReplayCursor {
+                    slot,
+                    epoch: None,
+                    stake: None,
+                };
+                if let Some(e) = serialize_event(ev, sse.size) {
+                    let _ = sse.sender.send(e).await;
+                }
+            }
 
             exclude_slots
         } else {
@@ -2160,6 +2258,179 @@ async fn owned_assets(
     }))
 }
 
+#[derive(serde::Deserialize)]
+struct OlderQuery {
+    /// Fetch blocks strictly older than this slot (the client's current oldest).
+    before: u64,
+    /// Walk anchor from the previous page (stake feeds): the pre-block stake at
+    /// `before`'s block, as a string (can exceed JS MAX_SAFE_INTEGER).
+    stake: Option<String>,
+    epoch: Option<u64>,
+    dpr: Option<f64>,
+}
+
+/// Pagination cursor for the next (older) page. `stake`/`epoch` only for stake feeds.
+#[derive(serde::Serialize)]
+struct OlderCursor {
+    slot: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    epoch: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stake: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct OlderResponse {
+    blocks: Vec<crate::event::Event>,
+    /// `None` ⇒ reached the address's first transaction (stop paginating).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cursor: Option<OlderCursor>,
+}
+
+/// Infinite-scroll pagination: blocks older than `before` for a stake/address feed,
+/// continuing the backward stake walk from the client's cursor. Mirrors the SSE
+/// replay (reuses `process_replay_block`) but returns JSON. Stake/Address only.
+async fn older_blocks(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(feed_id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<OlderQuery>,
+) -> Result<axum::Json<OlderResponse>, StatusCode> {
+    let filter = filter::FeedFilter::from_path(&feed_id).ok_or(StatusCode::BAD_REQUEST)?;
+    let limit = STAKE_REPLAY_BLOCKS;
+    let size = rung_for_dpr(query.dpr.unwrap_or(1.0));
+
+    // db handle under a short lock (released before the query); fetch the older page.
+    let db = state
+        .chain_state
+        .read()
+        .await
+        .db_handle()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let (hash_raw, blocks) = match &filter {
+        filter::FeedFilter::Stake(payload) => (
+            Some(payload.clone()),
+            db.stake_recent_blocks(payload, query.before as i64, limit)
+                .await,
+        ),
+        filter::FeedFilter::Address(addr) => (
+            stake_hash_raw_of(addr, state.mainnet),
+            db.address_recent_blocks(addr, query.before as i64, limit)
+                .await,
+        ),
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+    let blocks = blocks.map_err(|_| StatusCode::BAD_GATEWAY)?;
+    if blocks.is_empty() {
+        return Ok(axum::Json(OlderResponse {
+            blocks: vec![],
+            cursor: None,
+        }));
+    }
+    // Reached the first tx when the db returns a short page (independent of filtering).
+    let has_more = blocks.len() as i64 == limit;
+    let exclude_slots: HashSet<u64> = blocks.iter().map(|(slot, ..)| *slot).collect();
+
+    // Continue the walk from the cursor (stake feeds with a cursor). Older pages are
+    // outside the 5-day feed-index window, so the (empty) overlay isn't needed.
+    let mut subject = match (&filter, &hash_raw, &query.stake, query.epoch) {
+        (filter::FeedFilter::Stake(_), Some(hr), Some(stake_str), Some(epoch)) => {
+            let stake = stake_str
+                .parse::<i64>()
+                .map_err(|_| StatusCode::BAD_REQUEST)?;
+            let cred = hr[1..].to_vec();
+            Some(
+                build_subject_replay(
+                    &state.chain_state,
+                    &db,
+                    hr,
+                    &cred,
+                    &blocks,
+                    &exclude_slots,
+                    state.mainnet,
+                    Some((stake, epoch)),
+                )
+                .await,
+            )
+        }
+        _ => None,
+    };
+    let deleg_info: HashMap<String, Vec<DelegationInfo>> = HashMap::new();
+    let delegators: imbl::hashset::HashSet<Vec<u8>> = match &filter {
+        filter::FeedFilter::Stake(payload) => imbl::hashset::HashSet::unit(payload[1..].to_vec()),
+        _ => imbl::hashset::HashSet::new(),
+    };
+
+    let mut replay_blocks: Vec<ReplayBlock> = blocks
+        .into_iter()
+        .map(|(slot, hash, number, epoch)| ReplayBlock {
+            slot,
+            hash,
+            number,
+            epoch,
+            pool_id: None,
+            pool_ticker: None,
+            filter_by_delegators: true,
+        })
+        .collect();
+    replay_blocks.sort_by(|a, b| b.slot.cmp(&a.slot));
+
+    let mut client = PeerClient::connect(state.n2n_addr, state.magic)
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let ctx = ReplayCtx {
+        nftcdn: &state.nftcdn,
+        genesis: &state.genesis,
+        chain_state: &state.chain_state,
+        mainnet: state.mainnet,
+    };
+    let mut events = Vec::new();
+    for block in &replay_blocks {
+        if let Some(mut ev) = process_replay_block(
+            &mut client,
+            &ctx,
+            block,
+            &delegators,
+            &filter,
+            &deleg_info,
+            0,
+            subject.as_mut(),
+        )
+        .await
+        {
+            resolve_event_assets(&mut ev, size);
+            events.push(ev);
+        }
+    }
+    let _ = client.abort().await;
+
+    let cursor = if !has_more {
+        None
+    } else if let Some(sr) = &subject {
+        let (slot, epoch, stake) = sr.cursor();
+        Some(OlderCursor {
+            slot,
+            epoch: Some(epoch),
+            stake: Some(stake.to_string()),
+        })
+    } else {
+        // Address feeds (no walk): slot-only cursor at the oldest block.
+        replay_blocks
+            .iter()
+            .map(|b| b.slot)
+            .min()
+            .map(|slot| OlderCursor {
+                slot,
+                epoch: None,
+                stake: None,
+            })
+    };
+
+    Ok(axum::Json(OlderResponse {
+        blocks: events,
+        cursor,
+    }))
+}
+
 /// Everything the SSE server needs to run. Bundled so `serve` takes one arg.
 pub struct ServeConfig {
     pub addr: SocketAddr,
@@ -2210,6 +2481,7 @@ pub async fn serve(config: ServeConfig) {
         .route("/api/asset/{fingerprint}", get(asset_media))
         .route("/api/policy/{policy_id}", get(policy_assets))
         .route("/api/assets/{feed_id}", get(owned_assets))
+        .route("/api/feed/{feed_id}/older", get(older_blocks))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -2234,6 +2506,8 @@ mod tests {
             reward_cursor: 0,
             withdrawals: vec![(900, 20)], // slot desc
             wd_cursor: 0,
+            last_slot: 0,
+            last_epoch: 0,
         };
 
         // B0 in epoch 640 at slot 1000, net stake change +100. Nothing accrued after
@@ -2244,5 +2518,42 @@ mod tests {
         // deltas 640(+50) & 639(+30) and the withdrawal(-20) are undone, then -(-40):
         // 900 - 50 - 30 + 20 + 40 = 880.
         assert_eq!(sr.pre_block_stake(638, 800, -40), 880);
+    }
+
+    /// Pagination continuity: walking B1 on a fresh page seeded with page 1's cursor
+    /// (running = pre(B0), reward deltas capped at the cursor epoch, withdrawals below
+    /// the cursor slot) reaches the same pre(B1) as a single deep walk over [B0, B1].
+    #[test]
+    fn cursor_continues_the_walk() {
+        // Page 1: walk only B0 → cursor.
+        let mut p1 = SubjectReplay {
+            running: 1000,
+            subject_stake_address: String::new(),
+            deleg_by_tx: HashMap::new(),
+            reward_deltas: vec![(640, 50), (639, 30)],
+            reward_cursor: 0,
+            withdrawals: vec![(900, 20)],
+            wd_cursor: 0,
+            last_slot: 0,
+            last_epoch: 0,
+        };
+        assert_eq!(p1.pre_block_stake(640, 1000, 100), 900);
+        let (cur_slot, cur_epoch, cur_stake) = p1.cursor();
+        assert_eq!((cur_slot, cur_epoch, cur_stake), (1000, 640, 900));
+
+        // Page 2: fresh walk seeded from the cursor — reward deltas with
+        // spendable_epoch <= cur_epoch, off-window withdrawals below cur_slot.
+        let mut p2 = SubjectReplay {
+            running: cur_stake,
+            subject_stake_address: String::new(),
+            deleg_by_tx: HashMap::new(),
+            reward_deltas: vec![(640, 50), (639, 30)], // epoch <= 640
+            reward_cursor: 0,
+            withdrawals: vec![(900, 20)], // slot < 1000
+            wd_cursor: 0,
+            last_slot: 0,
+            last_epoch: 0,
+        };
+        assert_eq!(p2.pre_block_stake(638, 800, -40), 880);
     }
 }

@@ -345,7 +345,10 @@ mod tests {
     #[test]
     fn catalyst_labels_produce_no_text_line() {
         // Both Catalyst labels are surfaced structurally (CatalystInfo), never as text.
-        let lines = metadata_lines(&[(CATALYST_REGISTRATION, &opaque()), (CATALYST_WITNESS, &opaque())]);
+        let lines = metadata_lines(&[
+            (CATALYST_REGISTRATION, &opaque()),
+            (CATALYST_WITNESS, &opaque()),
+        ]);
         assert!(lines.is_empty());
     }
 

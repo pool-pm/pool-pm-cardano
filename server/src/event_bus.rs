@@ -62,6 +62,8 @@ impl EventBus {
                     _ => true,
                 });
             }
+            // Per-connection replay marker — never broadcast through the bus.
+            Event::ReplayCursor { .. } => {}
         }
 
         let _ = inner.tx.send(event);
