@@ -13,6 +13,9 @@
   const ownedColor = $derived($stake ? poolColor($stake.stake_address) : $address ? poolColor($address.address) : null);
   function ownedAddressColor(addr: string | null | undefined): string | null {
     if (!addr) return null;
+    // Reward (stake1…) addresses — e.g. a withdrawal's pseudo-input — carry their
+    // credential directly, so go through ownedStakeColor.
+    if (addr.startsWith('stake')) return ownedStakeColor(addr);
     if (feedStakeCred) return stakeCredential(addr) === feedStakeCred ? ownedColor : null;
     if ($address) return addr === $address.address ? ownedColor : null;
     return null;
