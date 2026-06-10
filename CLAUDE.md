@@ -75,6 +75,59 @@ Cardano Node (N2C) → Source Stage (Oura) → Sink Stage → Cursor Stage (JSON
 - **Async throughout**: tokio runtime with sqlx async database access.
 - **Compile-time SQL checking**: sqlx `query_as!` macros validate SQL against the DB schema at compile time.
 
+### Backward reconstruction of historical per-block state (feed replay)
+
+When a feed must show a value that depends on **pre-block state at an old block**
+(e.g. the `live_stake` and previous delegation target at a delegation tx from a
+year ago), three naive approaches all fail:
+- **Resolve against current state** — *wrong*: shows the present value as if it were
+  historical (e.g. the address's current DRep shown as the `from` of an old cert).
+- **Point-in-time db query** — *too slow*: e.g. summing an address's unspent UTXOs
+  as-of a block is a random-heap scan (~18s for a 177k-UTXO address; `value` isn't
+  in the partial index).
+- **Keep more history in memory** — the feed index is pruned to 5 days; older items
+  fall out.
+
+The technique that works (`build_subject_replay` + `SubjectReplay::pre_block_stake`
+in `server.rs`, db queries in `state/dbsync.rs`): a feed only ever replays a bounded
+window (the last `STAKE_REPLAY_BLOCKS` blocks touching the subject), and we know the
+**exact current value** from the snapshot. So walk **backward** from the current
+value, undoing each replayed block, to recover the exact pre-block value at every
+displayed block — cheaply and without ever resolving against stale current state.
+
+Concretely, for stake feeds (`live_stake(cred) = stakes[cred] + rewards[cred]`,
+forward deltas defined in `state/mod.rs::apply_block`):
+- Start `running` = snapshot `stakes[cred] + rewards[cred]`.
+- Process replayed blocks **newest→oldest**; per block, undo (then assign the result
+  as that block's pre-block value):
+  1. **Epoch reward accruals** applied after this block — `spendable_epoch > block.epoch`
+     (a pure epoch-number compare; no boundary slots needed, since `delta(E)` is
+     already in any non-boundary block of epoch `E`). From `reward ∪ reward_rest`.
+  2. **Off-window withdrawals** at `slot > block.slot` whose tx isn't in the replayed
+     set (in-window withdrawals are already inside the block's net stake change).
+  3. The block's **own net stake change** = `Σ tx.stake_change` over *all* decoded txs
+     (before the `retain` filter, so dropped withdrawal-only txs still count).
+- Delegation `from`/`to` come from the **full db history** (`LAG` over
+  `delegation ∪ stake_deregistration`, per credential — deregs interleaved so `from`
+  is correct across them), so both are exact at any age. The 5-day feed-index overlay
+  still wins near the tip (db-sync lags the chain by seconds).
+
+**Applicability criteria for reusing this on another feed** (evaluate before
+assuming feasible *or* infeasible):
+- The replayed window must contain **every** state change to the reconstructed
+  quantity for that subject. ✔ Stake feeds: all the credential's UTXO-touching blocks
+  are in the window. ✘ **Address feeds**: blocks/`stake_change` are scoped to one
+  payment address, but a delegation's stake is credential-level (other addresses of
+  the key, withdrawals the address branch doesn't net out) — so the walk would be
+  wrong and is deliberately **not** applied there (they keep the feed-index overlay).
+- Out-of-window contributions (here: epoch rewards, off-window withdrawals) must be
+  recoverable from **cheap `addr_id`-indexed** db queries (ms-scale), not heap scans.
+- All db lookups run **off the `chain_state` lock** (`db_handle()` + short
+  await-free guard scopes only) — see the never-block-the-feeds rule.
+
+The per-block arithmetic is isolated in `pre_block_stake` and unit-tested; keep new
+variants equally testable (pure function over the event lists).
+
 ## Runtime Configuration
 
 The server is configured via CLI args:
