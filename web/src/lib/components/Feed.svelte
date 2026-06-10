@@ -341,13 +341,13 @@
     const whole = padded.slice(0, -6) || '0';
     const frac = padded.slice(-6);
     const wholeNum = Number(whole);
-    if (wholeNum >= 1000) return '₳\u2009' + wholeNum.toLocaleString();
+    if (wholeNum >= 1000) return wholeNum.toLocaleString() + '\u2009₳';
     if (wholeNum >= 1) {
       const trimmed = frac.slice(0, 2).replace(/0+$/, '');
-      return trimmed ? '₳\u2009' + whole + '.' + trimmed : '₳\u2009' + whole;
+      return trimmed ? whole + '.' + trimmed + '\u2009₳' : whole + '\u2009₳';
     }
     const trimmed = frac.replace(/0+$/, '');
-    return trimmed ? '₳\u20090.' + trimmed : '₳\u20090';
+    return trimmed ? '0.' + trimmed + '\u2009₳' : '0' + '\u2009₳';
   }
 
   function formatMargin(m: number): string {

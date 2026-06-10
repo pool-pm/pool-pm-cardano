@@ -84,15 +84,16 @@
     const whole = padded.slice(0, -6) || '0';
     const frac = padded.slice(-6);
     const wholeNum = Number(whole);
-    const sym = '<span class="ada-sym">₳\u2009</span>' + (sign ?? '');
+    const s = sign ?? '';
+    const sym = '<span class="ada-sym">\u2009₳</span>';
     const dec = (d: string) => `<span class="ada-dec">.${d}</span>`;
-    if (wholeNum >= 1000) return sym + wholeNum.toLocaleString();
+    if (wholeNum >= 1000) return s + wholeNum.toLocaleString() + sym;
     if (wholeNum >= 1) {
       const trimmed = frac.slice(0, 2).replace(/0+$/, '');
-      return trimmed ? sym + whole + dec(trimmed) : sym + whole;
+      return trimmed ? s + whole + dec(trimmed) + sym : s + whole + sym;
     }
     const trimmed = frac.replace(/0+$/, '');
-    return trimmed ? sym + '0' + dec(trimmed) : sym + '0';
+    return trimmed ? s + '0' + dec(trimmed) + sym : s + '0' + sym;
   }
 
   function compactNumber(n: number): string {
