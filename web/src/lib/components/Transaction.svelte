@@ -222,6 +222,7 @@
             <svelte:element
               this={addrHref(deleg.stake_address) ? 'a' : 'span'}
               href={addrHref(deleg.stake_address)}
+              style:color={ownedAddressColor(deleg.stake_address)}
               class="addr mono">{deleg.stake_address}</svelte:element
             >
           </div>
