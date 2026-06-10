@@ -219,7 +219,11 @@ async fn send_stake_info(
 /// The bech32 stake (reward) address of a payment address, or `None` for an
 /// address with no stake part (enterprise/pointer). Preserves the key/script
 /// credential type and network so it round-trips to db-sync.
-fn stake_address_of(address: &str, mainnet: bool) -> Option<String> {
+/// The 29-byte reward-address `hash_raw` (network+type header + 28-byte stake
+/// credential) for a payment address's stake part — matching db-sync's
+/// `stake_address.hash_raw`. `None` for enterprise addresses (no stake part) or
+/// non-Shelley addresses.
+fn stake_hash_raw_of(address: &str, mainnet: bool) -> Option<Vec<u8>> {
     use pallas::ledger::addresses::{Address, ShelleyDelegationPart};
     let Address::Shelley(sh) = Address::from_bech32(address).ok()? else {
         return None;
@@ -233,6 +237,11 @@ fn stake_address_of(address: &str, mainnet: bool) -> Option<String> {
     let mut payload = Vec::with_capacity(29);
     payload.push(if is_script { 0xf0 | net } else { 0xe0 | net });
     payload.extend_from_slice(&hash);
+    Some(payload)
+}
+
+fn stake_address_of(address: &str, mainnet: bool) -> Option<String> {
+    let payload = stake_hash_raw_of(address, mainnet)?;
     let hrp = if mainnet { "stake" } else { "stake_test" };
     bech32::encode::<bech32::Bech32>(bech32::Hrp::parse(hrp).unwrap(), &payload).ok()
 }
@@ -641,10 +650,56 @@ struct ReplayBlock {
     slot: u64,
     hash: String,
     number: u64,
+    /// Block's epoch — only used by the stake/address backward stake walk
+    /// (`SubjectReplay`); 0 for pool/DRep replay blocks, which don't walk.
+    epoch: u64,
     pool_id: Option<String>,
     pool_ticker: Option<String>,
     /// If true, filter txs to only those involving pool delegators.
     filter_by_delegators: bool,
+}
+
+/// Backward stake/delegation reconstruction for a single stake credential's feed.
+/// Walks the replayed blocks newest→oldest, undoing each block's net stake change
+/// (plus epoch-boundary reward accruals and off-window withdrawals that happen
+/// between the address's blocks) from the current snapshot stake to recover the
+/// exact pre-block `live_stake` at every displayed block. Delegation `from`/`to`
+/// come from the full db history (`deleg_by_tx`), so both are correct at any age.
+struct SubjectReplay {
+    /// Live stake walking backward; starts at the current snapshot value.
+    running: i64,
+    /// tx_hash → delegation (from/to resolved); `live_stake` filled in during the walk.
+    deleg_by_tx: HashMap<String, DelegationInfo>,
+    /// Reward additions per epoch (`spendable_epoch`, delta), sorted by epoch desc.
+    reward_deltas: Vec<(u64, i64)>,
+    reward_cursor: usize,
+    /// Off-window reward withdrawals (slot, amount), sorted by slot desc.
+    withdrawals: Vec<(u64, i64)>,
+    wd_cursor: usize,
+}
+
+impl SubjectReplay {
+    /// Walk one block backward and return the exact pre-block `live_stake`. Undoes,
+    /// in order: epoch reward accruals applied after this block (`spendable_epoch >
+    /// block_epoch`), off-window withdrawals after it (`slot > block_slot`), then the
+    /// block's own net stake change (`block_delta` = Σ of all its txs' stake_change).
+    /// Must be called newest→oldest; the cursors advance monotonically.
+    fn pre_block_stake(&mut self, block_epoch: u64, block_slot: u64, block_delta: i64) -> i64 {
+        while self.reward_cursor < self.reward_deltas.len()
+            && self.reward_deltas[self.reward_cursor].0 > block_epoch
+        {
+            self.running -= self.reward_deltas[self.reward_cursor].1;
+            self.reward_cursor += 1;
+        }
+        while self.wd_cursor < self.withdrawals.len()
+            && self.withdrawals[self.wd_cursor].0 > block_slot
+        {
+            self.running += self.withdrawals[self.wd_cursor].1;
+            self.wd_cursor += 1;
+        }
+        self.running -= block_delta;
+        self.running
+    }
 }
 
 /// Fetch replay blocks via N2N and send as SSE events. Newest-first order.
@@ -746,6 +801,148 @@ fn build_stake_deleg_info(
     merged.into_iter().map(|(k, v)| (k, vec![v])).collect()
 }
 
+/// Build the backward stake/delegation reconstruction for a stake credential's
+/// feed (29-byte `hash_raw`, 28-byte `cred`). Reads the anchor stake from the
+/// snapshot, then runs the delegation-history / reward-delta / withdrawal queries
+/// **off the lock**, and resolves delegation targets under a second short lock.
+/// `from`/`to` are correct at any age (full db history); `live_stake` is filled in
+/// per block during the walk in `send_replay_blocks`.
+async fn build_subject_replay(
+    chain_state: &RwLock<State>,
+    db: &crate::state::DbSync,
+    hash_raw: &[u8],
+    cred: &[u8],
+    blocks: &[(u64, String, u64, u64)],
+    exclude_slots: &HashSet<u64>,
+    mainnet: bool,
+) -> SubjectReplay {
+    // Anchor: current live stake (UTXO + rewards) and epoch — one short lock, no await.
+    let (anchor, current_epoch) = {
+        let guard = chain_state.read().await;
+        let snap = guard.current();
+        let anchor = snap.map_or(0, |s| {
+            s.stakes.get(cred).copied().unwrap_or(0) + s.rewards.get(cred).copied().unwrap_or(0)
+        });
+        let epoch = snap.and_then(|s| s.last_epoch).unwrap_or(0);
+        (anchor, epoch)
+    };
+
+    // Window bounds from the oldest replayed block (blocks aren't yet sorted).
+    let min_slot = blocks.iter().map(|b| b.0).min().unwrap_or(0);
+    let min_epoch = blocks.iter().map(|b| b.3).min().unwrap_or(0);
+
+    // Off-lock db queries (all addr_id-indexed).
+    let pool_hist = db
+        .pool_delegation_history(hash_raw)
+        .await
+        .unwrap_or_default();
+    let drep_hist = db
+        .drep_delegation_history(hash_raw)
+        .await
+        .unwrap_or_default();
+    let reward_rows = db
+        .stake_reward_deltas(hash_raw, min_epoch as i64, current_epoch as i64)
+        .await
+        .unwrap_or_default();
+    let wd_rows = db
+        .stake_withdrawals_since(hash_raw, min_slot as i64)
+        .await
+        .unwrap_or_default();
+
+    // Resolve delegation target identities under a second short lock (no await).
+    let deleg_by_tx = {
+        let guard = chain_state.read().await;
+        let snap = guard.current();
+        let resolve_pool = |hash: &[u8]| -> (String, Option<String>) {
+            let ticker = snap
+                .and_then(|s| s.pools.get(&hex::encode(hash)))
+                .and_then(|p| p.ticker.clone());
+            (pool_bech32_id(hash), ticker)
+        };
+        let resolve_drep = |bytes: &[u8]| -> (String, Option<String>) {
+            let name = match bytes.first() {
+                Some(0x02) => Some("Always Abstain".to_string()),
+                Some(0x03) => Some("Always No Confidence".to_string()),
+                _ => snap
+                    .and_then(|s| s.dreps.get(bytes))
+                    .and_then(|d| d.given_name.clone()),
+            };
+            (drep_bech32_id(bytes), name)
+        };
+        let stake_address = crate::pallas::stake_address_from_cred_bytes(cred, mainnet);
+        let blank = || DelegationInfo {
+            stake_address: stake_address.clone(),
+            from_pool_id: None,
+            from_ticker: None,
+            to_pool_id: None,
+            to_ticker: None,
+            from_drep_id: None,
+            from_drep_name: None,
+            to_drep_id: None,
+            to_drep_name: None,
+            live_stake: 0, // filled in during the backward walk
+        };
+
+        let mut merged: HashMap<String, DelegationInfo> = HashMap::new();
+        for e in &pool_hist {
+            if e.to == e.from {
+                continue; // same-pool re-delegation: no change to show
+            }
+            let info = merged.entry(e.tx_hash.clone()).or_insert_with(blank);
+            if let Some(h) = &e.from {
+                let (id, t) = resolve_pool(h);
+                info.from_pool_id = Some(id);
+                info.from_ticker = t;
+            }
+            if let Some(h) = &e.to {
+                let (id, t) = resolve_pool(h);
+                info.to_pool_id = Some(id);
+                info.to_ticker = t;
+            }
+        }
+        for e in &drep_hist {
+            if e.to == e.from {
+                continue;
+            }
+            let info = merged.entry(e.tx_hash.clone()).or_insert_with(blank);
+            if let Some(b) = &e.from {
+                let (id, n) = resolve_drep(b);
+                info.from_drep_id = Some(id);
+                info.from_drep_name = n;
+            }
+            if let Some(b) = &e.to {
+                let (id, n) = resolve_drep(b);
+                info.to_drep_id = Some(id);
+                info.to_drep_name = n;
+            }
+        }
+        merged
+    };
+
+    // Reward deltas newest-epoch first; off-window withdrawals newest-slot first
+    // (those in the replayed set are accounted for via each block's net stake change).
+    let mut reward_deltas: Vec<(u64, i64)> = reward_rows
+        .into_iter()
+        .map(|(e, d)| (e as u64, d))
+        .collect();
+    reward_deltas.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut withdrawals: Vec<(u64, i64)> = wd_rows
+        .into_iter()
+        .map(|(s, a)| (s as u64, a))
+        .filter(|(slot, _)| !exclude_slots.contains(slot))
+        .collect();
+    withdrawals.sort_by(|a, b| b.0.cmp(&a.0));
+
+    SubjectReplay {
+        running: anchor,
+        deleg_by_tx,
+        reward_deltas,
+        reward_cursor: 0,
+        withdrawals,
+        wd_cursor: 0,
+    }
+}
+
 /// `deleg_info` maps tx_hash -> Vec<DelegationInfo> for injecting correct delegation data.
 async fn send_replay_blocks(
     sse: &ReplaySse<'_>,
@@ -754,6 +951,7 @@ async fn send_replay_blocks(
     feed_filter: &filter::FeedFilter,
     deleg_info: &HashMap<String, Vec<DelegationInfo>>,
     stake_threshold: u64,
+    mut subject: Option<&mut SubjectReplay>,
 ) {
     let &ReplaySse {
         sender,
@@ -801,16 +999,42 @@ async fn send_replay_blocks(
                     tx.stake_credentials = filter::extract_stake_credentials(tx);
                 }
 
-                // Inject delegation info from feed index (correct from/to)
-                for tx in &mut txs {
-                    if let Some(delegations) = deleg_info.get(&tx.hash) {
-                        tx.delegations = delegations.clone();
-                    }
-                }
-
                 if block.filter_by_delegators {
-                    // Computes UTXO changes + delegation impact in one pass
+                    // Computes UTXO changes + delegation impact in one pass. For
+                    // pool/DRep feeds this uses tx.delegations, so the feed-index
+                    // injection must precede it; stake/address feeds ignore
+                    // delegations here (display-only), so they inject afterward.
+                    if subject.is_none() {
+                        for tx in &mut txs {
+                            if let Some(delegations) = deleg_info.get(&tx.hash) {
+                                tx.delegations = delegations.clone();
+                            }
+                        }
+                    }
                     filter::apply_stake_changes(&mut txs, delegators, feed_filter);
+
+                    // Stake/address feeds: walk the snapshot stake backward to the
+                    // exact pre-block value and attach delegations from the full db
+                    // history (correct from/to at any age). Undo, newest→oldest:
+                    // epoch reward accruals (epoch > this block's), then off-window
+                    // withdrawals (slot > this block's), then this block's own net
+                    // stake change (sum over all decoded txs, before the retain).
+                    if let Some(sr) = subject.as_deref_mut() {
+                        let block_delta: i64 = txs.iter().filter_map(|t| t.stake_change).sum();
+                        let pre = sr.pre_block_stake(block.epoch, block.slot, block_delta);
+                        for tx in &mut txs {
+                            // Feed index wins (authoritative near the tip where
+                            // db-sync may lag); fall back to db history otherwise.
+                            if let Some(delegations) = deleg_info.get(&tx.hash) {
+                                tx.delegations = delegations.clone();
+                            } else if let Some(info) = sr.deleg_by_tx.get(&tx.hash) {
+                                let mut info = info.clone();
+                                info.live_stake = pre;
+                                tx.delegations = vec![info];
+                            }
+                        }
+                    }
+
                     let single_subject = matches!(
                         feed_filter,
                         filter::FeedFilter::Stake(_) | filter::FeedFilter::Address(_)
@@ -1250,6 +1474,7 @@ async fn filtered_events(
                         slot: r.slot,
                         hash: r.hash,
                         number: r.number,
+                        epoch: 0,
                         pool_id: pool_id.clone(),
                         pool_ticker: pool_ticker.clone(),
                         filter_by_delegators: false,
@@ -1258,6 +1483,7 @@ async fn filtered_events(
                         slot: r.slot,
                         hash: r.hash,
                         number: r.number,
+                        epoch: 0,
                         pool_id: None,
                         pool_ticker: None,
                         filter_by_delegators: true,
@@ -1273,6 +1499,7 @@ async fn filtered_events(
                 &replay_filter,
                 &deleg_info,
                 stake_threshold,
+                None,
             )
             .await;
 
@@ -1378,6 +1605,7 @@ async fn filtered_events(
                         slot: r.slot,
                         hash: r.hash,
                         number: r.number,
+                        epoch: 0,
                         pool_id: None,
                         pool_ticker: None,
                         filter_by_delegators: true,
@@ -1392,6 +1620,7 @@ async fn filtered_events(
                 &replay_filter,
                 &deleg_info,
                 stake_threshold,
+                None,
             )
             .await;
 
@@ -1433,14 +1662,32 @@ async fn filtered_events(
                 None => Vec::new(),
             };
 
-            let exclude_slots: HashSet<u64> = blocks.iter().map(|(slot, _, _)| *slot).collect();
+            let exclude_slots: HashSet<u64> = blocks.iter().map(|(slot, ..)| *slot).collect();
+
+            // Backward reconstruction: exact pre-block stake + full delegation history.
+            let mut subject = match &db {
+                Some(db) => Some(
+                    build_subject_replay(
+                        &replay_state.chain_state,
+                        db,
+                        &payload,
+                        &cred,
+                        &blocks,
+                        &exclude_slots,
+                        replay_state.mainnet,
+                    )
+                    .await,
+                ),
+                None => None,
+            };
 
             let mut replay_blocks: Vec<ReplayBlock> = blocks
                 .into_iter()
-                .map(|(slot, hash, number)| ReplayBlock {
+                .map(|(slot, hash, number, epoch)| ReplayBlock {
                     slot,
                     hash,
                     number,
+                    epoch,
                     pool_id: None,
                     pool_ticker: None,
                     filter_by_delegators: true,
@@ -1454,6 +1701,7 @@ async fn filtered_events(
                 &replay_filter,
                 &deleg_info,
                 0,
+                subject.as_mut(),
             )
             .await;
 
@@ -1498,14 +1746,23 @@ async fn filtered_events(
                 None => Vec::new(),
             };
 
-            let exclude_slots: HashSet<u64> = blocks.iter().map(|(slot, _, _)| *slot).collect();
+            let exclude_slots: HashSet<u64> = blocks.iter().map(|(slot, ..)| *slot).collect();
+
+            // No backward stake reconstruction for address feeds: the replayed blocks
+            // and per-tx stake_change are scoped to this single payment address, but a
+            // delegation's stake is credential-level (all addresses sharing the stake
+            // key, plus rewards/withdrawals the address branch doesn't net out). The
+            // walk would be wrong for multi-address credentials, so address feeds keep
+            // the feed-index overlay (correct, recent-only) — see `SubjectReplay`.
+            let mut subject: Option<SubjectReplay> = None;
 
             let mut replay_blocks: Vec<ReplayBlock> = blocks
                 .into_iter()
-                .map(|(slot, hash, number)| ReplayBlock {
+                .map(|(slot, hash, number, epoch)| ReplayBlock {
                     slot,
                     hash,
                     number,
+                    epoch,
                     pool_id: None,
                     pool_ticker: None,
                     filter_by_delegators: true,
@@ -1519,6 +1776,7 @@ async fn filtered_events(
                 &replay_filter,
                 &deleg_info,
                 0,
+                subject.as_mut(),
             )
             .await;
 
@@ -1945,4 +2203,32 @@ pub async fn serve(config: ServeConfig) {
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     info!(%addr, "starting SSE server");
     axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Backward walk: anchor=1000 now. Rewards of 50/30 became spendable in epochs
+    /// 640/639; an off-window withdrawal of 20 at slot 900. Two blocks, newest-first.
+    #[test]
+    fn pre_block_stake_undoes_rewards_withdrawals_and_block_delta() {
+        let mut sr = SubjectReplay {
+            running: 1000,
+            deleg_by_tx: HashMap::new(),
+            reward_deltas: vec![(640, 50), (639, 30)], // epoch desc
+            reward_cursor: 0,
+            withdrawals: vec![(900, 20)], // slot desc
+            wd_cursor: 0,
+        };
+
+        // B0 in epoch 640 at slot 1000, net stake change +100. Nothing accrued after
+        // it (640 not > 640; slot 900 not > 1000) → pre = 1000 - 100.
+        assert_eq!(sr.pre_block_stake(640, 1000, 100), 900);
+
+        // B1 in epoch 638 at slot 800, net change -40. Between B1 and B0: epoch
+        // deltas 640(+50) & 639(+30) and the withdrawal(-20) are undone, then -(-40):
+        // 900 - 50 - 30 + 20 + 40 = 880.
+        assert_eq!(sr.pre_block_stake(638, 800, -40), 880);
+    }
 }

@@ -29,6 +29,37 @@ pub struct DbSync {
     db: sqlx::Pool<sqlx::Postgres>,
 }
 
+/// One delegation or deregistration event in an address's history, with the
+/// previous target resolved via `LAG`. `to`/`from` are pool hashes (28 bytes) for
+/// pool history, or DRep bytes (tag+hash, or 0x02/0x03 sentinels) for DRep history.
+/// `to: None` = a deregistration; `from: None` = no prior delegation (first ever, or
+/// the previous event was a deregistration).
+pub struct DelegationEvent {
+    pub tx_hash: String,
+    pub to: Option<Vec<u8>>,
+    pub from: Option<Vec<u8>>,
+}
+
+/// Build DRep bytes (tag+hash, or 0x02/0x03 for the predefined DReps) from a
+/// `drep_hash` row's `raw`/`has_script`/`view`. `None` if `view` is absent (a
+/// deregistration row). Mirrors the encoding in `drep_delegations`.
+fn drep_bytes(raw: Option<&[u8]>, has_script: Option<bool>, view: Option<&str>) -> Option<Vec<u8>> {
+    let view = view?;
+    if view.starts_with("drep_always_abstain") {
+        Some(vec![0x02])
+    } else if view.starts_with("drep_always_no_confidence") {
+        Some(vec![0x03])
+    } else {
+        let raw = raw?;
+        let tag = if has_script.unwrap_or(false) {
+            0x01u8
+        } else {
+            0x00
+        };
+        Some([&[tag][..], raw].concat())
+    }
+}
+
 impl DbSync {
     pub async fn new(url: &Url) -> Result<Self, sqlx::Error> {
         let options = PgConnectOptions::from_url(url)?
@@ -82,9 +113,10 @@ impl DbSync {
         &self,
         hash_raw: &[u8],
         limit: i64,
-    ) -> Result<Vec<(u64, String, u64)>, sqlx::Error> {
+    ) -> Result<Vec<(u64, String, u64, u64)>, sqlx::Error> {
         let rows = sqlx::query!(
-            r#"SELECT b.slot_no AS "slot_no!", b.hash, b.block_no AS "block_no!"
+            r#"SELECT b.slot_no AS "slot_no!", b.hash, b.block_no AS "block_no!",
+                      b.epoch_no AS "epoch_no!"
             FROM (
                 SELECT tx_id FROM tx_out
                   WHERE stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
@@ -95,7 +127,7 @@ impl DbSync {
             ) t
             JOIN tx ON tx.id = t.tx_id
             JOIN block b ON b.id = tx.block_id
-            GROUP BY b.id, b.slot_no, b.hash, b.block_no
+            GROUP BY b.id, b.slot_no, b.hash, b.block_no, b.epoch_no
             ORDER BY b.slot_no DESC
             LIMIT $2"#,
             hash_raw,
@@ -105,7 +137,14 @@ impl DbSync {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|r| (r.slot_no as u64, hex::encode(r.hash), r.block_no as u64))
+            .map(|r| {
+                (
+                    r.slot_no as u64,
+                    hex::encode(r.hash),
+                    r.block_no as u64,
+                    r.epoch_no as u64,
+                )
+            })
             .collect())
     }
 
@@ -117,9 +156,10 @@ impl DbSync {
         &self,
         address: &str,
         limit: i64,
-    ) -> Result<Vec<(u64, String, u64)>, sqlx::Error> {
+    ) -> Result<Vec<(u64, String, u64, u64)>, sqlx::Error> {
         let rows = sqlx::query!(
-            r#"SELECT b.slot_no AS "slot_no!", b.hash, b.block_no AS "block_no!"
+            r#"SELECT b.slot_no AS "slot_no!", b.hash, b.block_no AS "block_no!",
+                      b.epoch_no AS "epoch_no!"
             FROM (
                 SELECT tx_id FROM tx_out WHERE address = $1
                 UNION
@@ -128,7 +168,7 @@ impl DbSync {
             ) t
             JOIN tx ON tx.id = t.tx_id
             JOIN block b ON b.id = tx.block_id
-            GROUP BY b.id, b.slot_no, b.hash, b.block_no
+            GROUP BY b.id, b.slot_no, b.hash, b.block_no, b.epoch_no
             ORDER BY b.slot_no DESC
             LIMIT $2"#,
             address,
@@ -138,7 +178,14 @@ impl DbSync {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|r| (r.slot_no as u64, hex::encode(r.hash), r.block_no as u64))
+            .map(|r| {
+                (
+                    r.slot_no as u64,
+                    hex::encode(r.hash),
+                    r.block_no as u64,
+                    r.epoch_no as u64,
+                )
+            })
             .collect())
     }
 
@@ -674,6 +721,148 @@ impl DbSync {
         }
 
         Ok((delegations, delegators))
+    }
+
+    /// Full pool-delegation history for one stake credential (29-byte `hash_raw`),
+    /// oldest-first, with each event's previous target via `LAG`. Stake
+    /// deregistrations are interleaved as `to: None` so the `from` chain is correct
+    /// across them. `addr_id`-indexed (small per address).
+    pub async fn pool_delegation_history(
+        &self,
+        hash_raw: &[u8],
+    ) -> Result<Vec<DelegationEvent>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT encode(tx_hash, 'hex') AS "tx_hash!",
+                      to_pool,
+                      lag(to_pool) OVER w AS from_pool
+            FROM (
+                SELECT t.hash AS tx_hash, d.tx_id, d.cert_index, ph.hash_raw AS to_pool
+                FROM delegation d
+                JOIN tx t ON t.id = d.tx_id
+                JOIN pool_hash ph ON ph.id = d.pool_hash_id
+                WHERE d.addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+                UNION ALL
+                SELECT t.hash, sd.tx_id, sd.cert_index, NULL::bytea
+                FROM stake_deregistration sd
+                JOIN tx t ON t.id = sd.tx_id
+                WHERE sd.addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+            ) e
+            WINDOW w AS (ORDER BY tx_id, cert_index)
+            ORDER BY tx_id, cert_index"#,
+            hash_raw
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| DelegationEvent {
+                tx_hash: r.tx_hash,
+                to: r.to_pool,
+                from: r.from_pool,
+            })
+            .collect())
+    }
+
+    /// Full DRep-delegation history for one stake credential, oldest-first, with the
+    /// previous target via `LAG`. Stake deregistrations are interleaved as `to: None`.
+    /// DRep bytes are built the same way as `drep_delegations` (tag+hash, or the
+    /// 0x02/0x03 sentinels for the predefined DReps).
+    pub async fn drep_delegation_history(
+        &self,
+        hash_raw: &[u8],
+    ) -> Result<Vec<DelegationEvent>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT encode(tx_hash, 'hex') AS "tx_hash!",
+                      to_raw, to_script, to_view,
+                      lag(to_raw) OVER w AS from_raw,
+                      lag(to_script) OVER w AS from_script,
+                      lag(to_view) OVER w AS from_view
+            FROM (
+                SELECT t.hash AS tx_hash, dv.tx_id, dv.cert_index,
+                       dh.raw AS to_raw, dh.has_script AS to_script, dh.view AS to_view
+                FROM delegation_vote dv
+                JOIN tx t ON t.id = dv.tx_id
+                JOIN drep_hash dh ON dh.id = dv.drep_hash_id
+                WHERE dv.addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+                UNION ALL
+                SELECT t.hash, sd.tx_id, sd.cert_index, NULL::bytea, NULL::boolean, NULL::varchar
+                FROM stake_deregistration sd
+                JOIN tx t ON t.id = sd.tx_id
+                WHERE sd.addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+            ) e
+            WINDOW w AS (ORDER BY tx_id, cert_index)
+            ORDER BY tx_id, cert_index"#,
+            hash_raw
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| DelegationEvent {
+                tx_hash: r.tx_hash,
+                to: drep_bytes(r.to_raw.as_deref(), r.to_script, r.to_view.as_deref()),
+                from: drep_bytes(r.from_raw.as_deref(), r.from_script, r.from_view.as_deref()),
+            })
+            .collect())
+    }
+
+    /// Reward additions per `spendable_epoch` (`reward ∪ reward_rest`) for one stake
+    /// credential, for epochs in `(min_epoch, max_epoch]`. These are the deltas the
+    /// sink applies to `rewards` at each epoch boundary (mirrors `epoch_reward_delta`),
+    /// used to undo the reward balance backward. `addr_id`-indexed.
+    pub async fn stake_reward_deltas(
+        &self,
+        hash_raw: &[u8],
+        min_epoch: i64,
+        max_epoch: i64,
+    ) -> Result<Vec<(i64, i64)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT spendable_epoch AS "epoch!", SUM(amount)::bigint AS "delta!"
+            FROM (
+                SELECT spendable_epoch, amount FROM reward
+                WHERE addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+                  AND spendable_epoch > $2 AND spendable_epoch <= $3
+                UNION ALL
+                SELECT spendable_epoch, amount FROM reward_rest
+                WHERE addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+                  AND spendable_epoch > $2 AND spendable_epoch <= $3
+            ) t
+            GROUP BY spendable_epoch"#,
+            hash_raw,
+            min_epoch,
+            max_epoch,
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| (r.epoch, r.delta)).collect())
+    }
+
+    /// Reward withdrawals for one stake credential at `slot_no >= min_slot`, as
+    /// `(slot_no, amount)`. Used to undo the reward balance backward for withdrawal
+    /// txs that aren't in the replayed set (their outputs went elsewhere).
+    /// `addr_id`-indexed.
+    pub async fn stake_withdrawals_since(
+        &self,
+        hash_raw: &[u8],
+        min_slot: i64,
+    ) -> Result<Vec<(i64, i64)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT b.slot_no AS "slot!", w.amount::bigint AS "amount!"
+            FROM withdrawal w
+            JOIN tx ON tx.id = w.tx_id
+            JOIN block b ON b.id = tx.block_id
+            WHERE w.addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+              AND b.slot_no >= $2"#,
+            hash_raw,
+            min_slot,
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| (r.slot, r.amount)).collect())
     }
 
     /// Fetch DRep metadata (given_name) from off-chain vote data.

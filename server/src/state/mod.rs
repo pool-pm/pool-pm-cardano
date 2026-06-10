@@ -10,7 +10,7 @@ use crate::model::{
     asset_fingerprint, parse_virtual_handle_address, DRep, Pool, TxOutput, HANDLE_POLICIES,
 };
 use crate::pallas::{stake_credential_from_address_bytes, PoolUpdate};
-use dbsync::DbSync;
+pub use dbsync::DbSync;
 pub use feed_index::FeedIndex;
 
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
