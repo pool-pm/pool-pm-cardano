@@ -432,12 +432,12 @@
           <span class="pool-param-value">{formatMargin($pool.margin)}</span>
         </div>
         <div class="pool-param">
-          <span class="pool-param-label">cost</span>
-          <span class="pool-param-value">{formatAda($pool.fixed_cost)}</span>
-        </div>
-        <div class="pool-param">
           <span class="pool-param-label">pledge</span>
           <span class="pool-param-value">{formatAda($pool.pledge)}</span>
+        </div>
+        <div class="pool-param">
+          <span class="pool-param-label">cost</span>
+          <span class="pool-param-value">{formatAda($pool.fixed_cost)}</span>
         </div>
       </div>
     </div>
