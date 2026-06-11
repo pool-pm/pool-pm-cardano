@@ -96,6 +96,19 @@ export interface CatalystInfo {
   live_stake?: string;
 }
 
+export interface OracleInfo {
+  source: string;
+  feed?: string;
+  value?: string;
+  /** POSIX milliseconds. */
+  valid_from?: number;
+  valid_until?: number;
+}
+
+/** Protocol-specific description of a tx, discriminated by `kind`. Add a protocol by
+ * adding a member here and rendering it in Transaction.svelte — no new BlockTx field. */
+export type TxAnnotation = { kind: 'oracle' } & OracleInfo;
+
 export interface BlockTx {
   hash: string;
   fee: string;
@@ -108,6 +121,7 @@ export interface BlockTx {
   message?: string[];
   stake_change?: string;
   catalyst?: CatalystInfo;
+  annotations?: TxAnnotation[];
 }
 
 export interface MempoolTxEvent extends BlockTx {

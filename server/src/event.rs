@@ -53,12 +53,44 @@ pub struct BlockTx {
     /// CIP-36/CIP-15 Catalyst voting registration (label 61284), if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub catalyst: Option<CatalystInfo>,
+    /// Recognized protocol-specific descriptions of this tx (oracle price updates,
+    /// and in future DEX swaps, lending actions, …). Kept behind a `Vec` so adding a
+    /// protocol never grows `BlockTx`. See `TxAnnotation`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<TxAnnotation>,
     /// Pre-extracted stake credentials from input/output addresses.
     #[serde(skip)]
     pub stake_credentials: Vec<Vec<u8>>,
     /// Withdrawals: (stake_credential, lovelace). Used for stake_change computation.
     #[serde(skip)]
     pub withdrawals: Vec<(Vec<u8>, u64)>,
+}
+
+/// A protocol-specific description of a tx, recognized by a decoder. Serialized
+/// internally-tagged (`{ "kind": "oracle", … }`) so the frontend can render each by
+/// `kind`. Add a protocol by adding a variant plus the decoder that produces it — no
+/// new `BlockTx` field, no growth of the `Event` enum.
+#[derive(Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TxAnnotation {
+    Oracle(OracleInfo),
+}
+
+/// A recognized on-chain oracle price-feed update, decoded from an output's inline
+/// datum (gated on a known feed-token policy). Protocol-specific decoders fill this
+/// in — see `oracle.rs`.
+#[derive(Clone, Serialize)]
+pub struct OracleInfo {
+    /// Protocol name, e.g. "Aegis".
+    pub source: String,
+    /// The priced pair as `BASE/QUOTE` (e.g. "ADA/USD"); the client reads the base to
+    /// render "1 BASE = value". `None` when the pair isn't known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feed: Option<String>,
+    /// Display-formatted price including the quote-currency symbol (e.g. "$0.16461").
+    /// The decoder applies the protocol's scale and symbol.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
 }
 
 /// Catalyst (CIP-36/CIP-15) voting registration: the registrant's stake address

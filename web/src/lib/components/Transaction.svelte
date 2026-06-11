@@ -268,6 +268,18 @@
       </div>
     </div>
   {/if}
+  {#each tx.annotations ?? [] as ann}
+    {#if ann.kind === 'oracle'}
+      <div class="annotation">
+        <span class="annotation-label">{ann.source} price feed</span>
+        {#if ann.value}
+          <span class="oracle-value">
+            {ann.feed ? `1 ${ann.feed.split('/')[0]} = ${ann.value}` : ann.value}
+          </span>
+        {/if}
+      </div>
+    {/if}
+  {/each}
 
   {#if tx.inputs.length > 0 || tx.outputs.length > 0}
     <div class="tx-body">
@@ -584,6 +596,32 @@
     font-size: 10px;
     color: rgb(255 255 255 / 0.8);
     word-break: break-word;
+  }
+
+  /* Generic panel for a recognized protocol annotation (oracle, …). Same dark card as
+     .deleg-section, but a centered column owning its own caption + value. */
+  .annotation {
+    background: rgb(0 0 0 / 0.6);
+    border-radius: 6px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  /* Grey caption above an annotation's value, like the CIP-20 message text. */
+  .annotation-label {
+    font-size: 10px;
+    color: rgb(255 255 255 / 0.8);
+    word-break: break-word;
+  }
+
+  .oracle-value {
+    font-size: 13px;
+    font-weight: 700;
+    color: white;
   }
 
   /* Grey caption above each pool/DRep target, like the stake-address grey. */

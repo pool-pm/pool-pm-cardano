@@ -499,6 +499,8 @@ fn decode_block_txs(
 
             let message = crate::pallas::extract_tx_metadata(tx);
             let catalyst = crate::pallas::extract_catalyst(tx, mainnet);
+            let mut annotations = Vec::new();
+            annotations.extend(crate::oracle::extract_oracle(tx));
 
             let votes = state
                 .map(|s| crate::mempool::extract_votes(tx, s))
@@ -516,6 +518,7 @@ fn decode_block_txs(
                 message,
                 stake_change: None,
                 catalyst,
+                annotations,
                 stake_credentials: vec![],
                 withdrawals,
             }

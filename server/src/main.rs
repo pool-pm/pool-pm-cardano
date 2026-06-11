@@ -14,6 +14,7 @@ mod filter;
 mod mempool;
 mod model;
 mod nftcdn;
+mod oracle;
 mod pallas;
 mod server;
 mod sink;

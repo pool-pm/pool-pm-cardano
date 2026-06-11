@@ -164,6 +164,8 @@ pub async fn extract_tx(
     let message = extract_tx_metadata(tx);
     let votes = extract_votes(tx, state);
     let catalyst = crate::pallas::extract_catalyst(tx, mainnet);
+    let mut annotations = Vec::new();
+    annotations.extend(crate::oracle::extract_oracle(tx));
 
     let mut block_tx = BlockTx {
         hash,
@@ -177,6 +179,7 @@ pub async fn extract_tx(
         message,
         stake_change: None,
         catalyst,
+        annotations,
         stake_credentials: Vec::new(),
         withdrawals,
     };
