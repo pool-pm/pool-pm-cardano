@@ -426,7 +426,7 @@
       {#if $pool.delegators != null}
         <span class="pool-delegators">{$pool.delegators.toLocaleString()} delegators</span>
       {/if}
-      <div class="pool-params">
+      <div class="pool-params pool-stats">
         <div class="pool-param">
           <span class="pool-param-label">margin</span>
           <span class="pool-param-value">{formatMargin($pool.margin)}</span>
@@ -737,6 +737,15 @@
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* Pool stats (margin/cost/pledge): keep three even, symmetric columns, but use a
+     smaller value font so a large pledge fits the card without truncation. */
+  .pool-stats .pool-param-value {
+    font-size: 11px;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
   }
 
   .canvas {
