@@ -619,9 +619,9 @@
   }
 
   .oracle-value {
-    font-size: 13px;
-    font-weight: 700;
+    font-size: 11px;
     color: white;
+    white-space: nowrap;
   }
 
   /* Grey caption above each pool/DRep target, like the stake-address grey. */
