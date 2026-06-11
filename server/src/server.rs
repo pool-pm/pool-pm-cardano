@@ -833,17 +833,17 @@ fn build_stake_deleg_info(
 /// `anchor`: `None` for the first page — read the current snapshot live stake +
 /// epoch; `Some((stake, epoch))` for an older page — continue the walk from the
 /// previous page's cursor (no snapshot read; reward deltas are capped at `epoch`).
-#[allow(clippy::too_many_arguments)]
 async fn build_subject_replay(
     chain_state: &RwLock<State>,
     db: &crate::state::DbSync,
     hash_raw: &[u8],
-    cred: &[u8],
     blocks: &[(u64, String, u64, u64)],
     exclude_slots: &HashSet<u64>,
     mainnet: bool,
     anchor: Option<(i64, u64)>,
 ) -> SubjectReplay {
+    // The stake credential is the reward address minus its 1-byte header.
+    let cred = &hash_raw[1..];
     // Anchor: cursor (older page) or the current live stake + epoch (first page).
     let (anchor, current_epoch) = match anchor {
         Some(ac) => ac,
@@ -986,22 +986,34 @@ struct ReplayCtx<'a> {
     mainnet: bool,
 }
 
+/// Per-feed replay parameters, constant across every block of one replay: the
+/// credential set to filter by, the feed filter, the tx_hash → delegations overlay to
+/// inject, and the minimum stake change a pool/DRep feed shows.
+struct ReplayParams<'a> {
+    delegators: &'a imbl::hashset::HashSet<Vec<u8>>,
+    feed_filter: &'a filter::FeedFilter,
+    deleg_info: &'a HashMap<String, Vec<DelegationInfo>>,
+    stake_threshold: u64,
+}
+
 /// Fetch one block via N2N, decode + resolve + inject delegations + (for
 /// stake/address feeds) walk the stake backward, and build the `Event::Block` —
 /// or `None` on fetch/decode failure or when it filters to no txs. `deleg_info`
 /// maps tx_hash -> delegations to inject. Shared by `send_replay_blocks` and the
 /// `/older` endpoint; the caller owns the (single-flight) N2N client.
-#[allow(clippy::too_many_arguments)]
 async fn process_replay_block(
     client: &mut PeerClient,
     ctx: &ReplayCtx<'_>,
     block: &ReplayBlock,
-    delegators: &imbl::hashset::HashSet<Vec<u8>>,
-    feed_filter: &filter::FeedFilter,
-    deleg_info: &HashMap<String, Vec<DelegationInfo>>,
-    stake_threshold: u64,
+    params: &ReplayParams<'_>,
     subject: Option<&mut SubjectReplay>,
 ) -> Option<crate::event::Event> {
+    let &ReplayParams {
+        delegators,
+        feed_filter,
+        deleg_info,
+        stake_threshold,
+    } = params;
     let hash_bytes = hex::decode(&block.hash).ok()?;
     let point = Point::Specific(block.slot, hash_bytes);
     let cbor = match client.blockfetch().fetch_single(point).await {
@@ -1139,19 +1151,16 @@ async fn send_replay_blocks(
         chain_state,
         mainnet,
     };
+    let params = ReplayParams {
+        delegators,
+        feed_filter,
+        deleg_info,
+        stake_threshold,
+    };
     let mut sent = 0usize;
     for block in blocks.iter() {
-        let event = process_replay_block(
-            &mut client,
-            &ctx,
-            block,
-            delegators,
-            feed_filter,
-            deleg_info,
-            stake_threshold,
-            subject.as_deref_mut(),
-        )
-        .await;
+        let event =
+            process_replay_block(&mut client, &ctx, block, &params, subject.as_deref_mut()).await;
         if let Some(event) = event {
             if let Some(sse) = serialize_event(event, size) {
                 let _ = sender.send(sse).await;
@@ -1752,7 +1761,6 @@ async fn filtered_events(
                         &replay_state.chain_state,
                         db,
                         &payload,
-                        &cred,
                         &blocks,
                         &exclude_slots,
                         replay_state.mainnet,
@@ -2340,13 +2348,11 @@ async fn older_blocks(
             let stake = stake_str
                 .parse::<i64>()
                 .map_err(|_| StatusCode::BAD_REQUEST)?;
-            let cred = hr[1..].to_vec();
             Some(
                 build_subject_replay(
                     &state.chain_state,
                     &db,
                     hr,
-                    &cred,
                     &blocks,
                     &exclude_slots,
                     state.mainnet,
@@ -2386,19 +2392,16 @@ async fn older_blocks(
         chain_state: &state.chain_state,
         mainnet: state.mainnet,
     };
+    let params = ReplayParams {
+        delegators: &delegators,
+        feed_filter: &filter,
+        deleg_info: &deleg_info,
+        stake_threshold: 0,
+    };
     let mut events = Vec::new();
     for block in &replay_blocks {
-        if let Some(mut ev) = process_replay_block(
-            &mut client,
-            &ctx,
-            block,
-            &delegators,
-            &filter,
-            &deleg_info,
-            0,
-            subject.as_mut(),
-        )
-        .await
+        if let Some(mut ev) =
+            process_replay_block(&mut client, &ctx, block, &params, subject.as_mut()).await
         {
             resolve_event_assets(&mut ev, size);
             events.push(ev);
