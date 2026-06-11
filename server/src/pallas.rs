@@ -184,6 +184,9 @@ pub trait MultiEraTxExt {
     /// Pool registration certificates (used for both new pools and parameter updates).
     fn pool_updates(&self) -> Vec<PoolUpdate>;
 
+    /// Pool retirement certificates as `(operator, retiring_epoch)`.
+    fn pool_retirements(&self) -> Vec<(Vec<u8>, u64)>;
+
     /// Governance voting procedures from Conway-era transactions.
     fn voting_procedures(&self) -> Vec<ExtractedVote>;
 }
@@ -277,6 +280,27 @@ impl MultiEraTxExt for MultiEraTx<'_> {
                     margin.numerator,
                     margin.denominator,
                 )
+            })
+            .collect()
+    }
+
+    fn pool_retirements(&self) -> Vec<(Vec<u8>, u64)> {
+        self.certs()
+            .iter()
+            .filter_map(|cert| match cert {
+                MultiEraCert::AlonzoCompatible(c) => match &***c {
+                    alonzo::Certificate::PoolRetirement(operator, epoch) => {
+                        Some((operator.as_ref().to_vec(), *epoch))
+                    }
+                    _ => None,
+                },
+                MultiEraCert::Conway(c) => match &***c {
+                    conway::Certificate::PoolRetirement(operator, epoch) => {
+                        Some((operator.as_ref().to_vec(), *epoch))
+                    }
+                    _ => None,
+                },
+                _ => None,
             })
             .collect()
     }

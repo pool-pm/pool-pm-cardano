@@ -1,8 +1,9 @@
-import { sections, newSection, config, pool, drep, stake, address, blockCount } from './stores';
+import { sections, newSection, config, pool, drep, stake, address, cardano, blockCount } from './stores';
 import type {
   AddressInfo,
   BlockEvent,
   BlockTx,
+  CardanoInfo,
   Config,
   DRepInfo,
   Event,
@@ -215,6 +216,7 @@ export function connectSSE(url: string): void {
   drep.set(null);
   stake.set(null);
   address.set(null);
+  cardano.set(null);
   pendingPrune.clear();
 
   // Reset pagination state for the new feed.
@@ -240,6 +242,8 @@ export function connectSSE(url: string): void {
         stake.set(data as StakeInfo);
       } else if (data.type === 'Address') {
         address.set(data as AddressInfo);
+      } else if (data.type === 'Cardano') {
+        cardano.set(data as CardanoInfo);
       } else if (data.type === 'ReplayCursor') {
         feedCursor = { slot: data.slot, epoch: data.epoch, stake: data.stake };
       } else if (Array.isArray(data)) {

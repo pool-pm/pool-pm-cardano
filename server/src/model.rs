@@ -9,6 +9,11 @@ pub struct Pool {
     pub margin: f64,
     pub fixed_cost: Decimal,
     pub ticker: Option<String>,
+    /// Epoch at which the pool retires, if a retirement is pending and not cancelled by
+    /// a later (re-)registration. The pool is active while this is `None` or still in
+    /// the future. Maintained per block in `apply_block`.
+    #[serde(default)]
+    pub retiring_epoch: Option<i64>,
 }
 
 impl Pool {
@@ -25,6 +30,8 @@ impl Pool {
             margin: margin_num as f64 / margin_den as f64,
             fixed_cost: Decimal::from(cost),
             ticker: None,
+            // A (re-)registration cancels any pending retirement.
+            retiring_epoch: None,
         }
     }
 }

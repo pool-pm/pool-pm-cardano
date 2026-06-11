@@ -38,6 +38,21 @@ struct AppState {
     n2n_addr: SocketAddr,
     magic: u64,
     mainnet: bool,
+    /// Per-epoch cache of the homepage Cardano event's slow-changing fields (reserves,
+    /// active pool/drep counts). All settle at epoch boundaries, so we refetch only
+    /// when the snapshot's epoch advances.
+    cardano_cache: Arc<tokio::sync::Mutex<Option<CardanoCache>>>,
+}
+
+/// Slow-changing homepage stats, refreshed once per epoch (see `cardano_stats_json`).
+#[derive(Clone, Copy)]
+struct CardanoCache {
+    epoch: u64,
+    /// Not-yet-minted ADA; circulating supply (displayed) = max supply − reserves.
+    reserves: i64,
+    /// Delegatable ADA (`utxo + rewards + fees`) — the % staked denominator.
+    stakeable: i64,
+    drep_count: i64,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -66,6 +81,9 @@ const STAKE_CHANGE_DIVISOR: u64 = 1_000; // 0.1%
 /// Recent blocks to replay on a stake-address feed connection (fetched from
 /// db-sync, since stake addresses are not pre-indexed in memory).
 const STAKE_REPLAY_BLOCKS: i64 = 30;
+
+/// Cardano max supply in lovelace (45 G ADA). Circulating supply = this − reserves.
+const MAX_LOVELACE_SUPPLY: i64 = 45_000_000_000_000_000;
 
 // --- SSE event builders ---
 
@@ -126,6 +144,86 @@ fn drep_sse_event(drep_bytes: &[u8], snap: Option<&BlockSnapshot>) -> Result<Sse
         live_stake,
         delegators
     )))
+}
+
+/// Build the homepage `Cardano` event JSON: total ADA in circulation, active pool/drep
+/// counts, and % of ADA staked. `total_staked` is read from the snapshot in O(1)
+/// (updated per block); reserves and the active counts come from a per-epoch cache
+/// (one db query each per epoch — they settle at epoch boundaries — run off-lock).
+/// Returns the JSON string (so callers can dedup live updates) or `None` before the
+/// first snapshot exists.
+async fn cardano_stats_json(state: &AppState) -> Option<String> {
+    let (total_staked, epoch, pool_count, db) = {
+        let guard = state.chain_state.read().await;
+        let snap = guard.current()?;
+        let epoch = snap.last_epoch.unwrap_or(0);
+        // Active pools = registered, not (yet) retired (per-block `retiring_epoch`), and
+        // with live stake > 0. Since every stake/reward term is non-negative, stake > 0
+        // ⟺ some delegator has a positive balance — so `any(..)` short-circuits and the
+        // scan stays ~O(pools).
+        let pool_count = snap
+            .pools
+            .values()
+            .filter(|p| p.retiring_epoch.is_none_or(|e| (e as u64) > epoch))
+            .filter(|p| {
+                snap.pool_delegators.get(&p.hash_raw).is_some_and(|creds| {
+                    creds.iter().any(|c| {
+                        snap.stakes.get(c).copied().unwrap_or(0)
+                            + snap.rewards.get(c).copied().unwrap_or(0)
+                            > 0
+                    })
+                })
+            })
+            .count();
+        (snap.total_staked, epoch, pool_count, guard.db_handle())
+    };
+
+    // Slow-changing fields refreshed once per epoch (they settle at epoch boundaries).
+    // The mutex serializes the refresh so concurrent homepage clients at an epoch
+    // boundary issue the queries once.
+    let cached = {
+        let mut cache = state.cardano_cache.lock().await;
+        match *cache {
+            Some(c) if c.epoch == epoch => c,
+            _ => {
+                let c = match &db {
+                    Some(db) => {
+                        let (reserves, stakeable) =
+                            db.reserves_and_stakeable().await.unwrap_or((0, 0));
+                        CardanoCache {
+                            epoch,
+                            reserves,
+                            stakeable,
+                            drep_count: db.active_drep_count(epoch as i64).await.unwrap_or(0),
+                        }
+                    }
+                    None => CardanoCache {
+                        epoch,
+                        reserves: 0,
+                        stakeable: 0,
+                        drep_count: 0,
+                    },
+                };
+                *cache = Some(c);
+                c
+            }
+        }
+    };
+
+    // Displayed "ADA in circulation" = max supply − reserves. The % staked denominator
+    // is the delegatable supply (utxo + rewards + fees) — everything except the locked
+    // protocol pots (reserves, treasury, deposits) — so the ratio → 100% when all
+    // stakeable ADA is delegated.
+    let circulation = MAX_LOVELACE_SUPPLY - cached.reserves;
+    let staked_percent = if cached.stakeable > 0 {
+        total_staked as f64 / cached.stakeable as f64 * 100.0
+    } else {
+        0.0
+    };
+    Some(format!(
+        r#"{{"type":"Cardano","circulation":"{}","pool_count":{},"drep_count":{},"staked_percent":{:.1}}}"#,
+        circulation, pool_count, cached.drep_count, staked_percent
+    ))
 }
 
 #[derive(serde::Serialize)]
@@ -1396,6 +1494,11 @@ async fn events(
         state.magic,
     ));
 
+    let cardano_json = cardano_stats_json(&state).await;
+    let cardano = cardano_json
+        .clone()
+        .map(|json| Ok(SseEvent::default().data(json)));
+
     let init = if snapshot.is_empty() {
         None
     } else {
@@ -1406,9 +1509,44 @@ async fn events(
             .ok()
             .map(|json| Ok(SseEvent::default().data(json)))
     };
-    let replay = futures::stream::iter(config.into_iter().chain(init));
-    let live = BroadcastStream::new(rx)
-        .filter_map(move |result| result.ok().and_then(|e| serialize_event(e, size)));
+    let replay = futures::stream::iter(config.into_iter().chain(cardano).chain(init));
+
+    // Live: forward each broadcast event, and after every Block recompute the network
+    // stats — re-emitting a `Cardano` event only when the JSON changed (i.e. total ADA,
+    // % staked, pool or drep count moved), so an open homepage updates live. `buf`
+    // lets one input yield two outputs (the block + the stats); `last` dedups.
+    let live = futures::stream::unfold(
+        (
+            BroadcastStream::new(rx),
+            state.clone(),
+            cardano_json,
+            std::collections::VecDeque::<Result<SseEvent, Infallible>>::new(),
+        ),
+        move |(mut rx, state, mut last, mut buf)| async move {
+            loop {
+                if let Some(item) = buf.pop_front() {
+                    return Some((item, (rx, state, last, buf)));
+                }
+                let event = match rx.next().await {
+                    Some(Ok(event)) => event,
+                    Some(Err(_)) => continue,
+                    None => return None,
+                };
+                let is_block = matches!(event, crate::event::Event::Block { .. });
+                if let Some(sse) = serialize_event(event, size) {
+                    buf.push_back(sse);
+                }
+                if is_block {
+                    if let Some(json) = cardano_stats_json(&state).await {
+                        if last.as_deref() != Some(json.as_str()) {
+                            last = Some(json.clone());
+                            buf.push_back(Ok(SseEvent::default().data(json)));
+                        }
+                    }
+                }
+            }
+        },
+    );
     let stream = replay.chain(live);
 
     Sse::new(stream).keep_alive(KeepAlive::default())
@@ -2480,6 +2618,7 @@ pub async fn serve(config: ServeConfig) {
         n2n_addr,
         magic,
         mainnet,
+        cardano_cache: Arc::new(tokio::sync::Mutex::new(None)),
     };
     let app = Router::new()
         .route("/events", get(events))

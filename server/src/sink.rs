@@ -73,6 +73,7 @@ impl Worker {
             pool_deleg,
             drep_deleg,
             pool_updates,
+            pool_retirements,
             stake_changes,
             withdrawal_changes,
             pool_id,
@@ -97,6 +98,7 @@ impl Worker {
             let mut pool_deleg: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
             let mut drep_deleg: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
             let mut pool_updates: Vec<PoolUpdate> = Vec::new();
+            let mut pool_retirements: Vec<(Vec<u8>, u64)> = Vec::new();
             let mut stake_changes: Vec<(Vec<u8>, i64)> = Vec::new();
             let mut withdrawal_changes: Vec<(Vec<u8>, i64)> = Vec::new();
 
@@ -302,6 +304,7 @@ impl Worker {
                 }
                 drep_deleg.extend(drep_changes);
                 pool_updates.extend(tx.pool_updates());
+                pool_retirements.extend(tx.pool_retirements());
             }
 
             let produced: Vec<_> = produced.into_iter().collect();
@@ -383,6 +386,7 @@ impl Worker {
                 pool_deleg,
                 drep_deleg,
                 pool_updates,
+                pool_retirements,
                 stake_changes,
                 withdrawal_changes,
                 pool_id,
@@ -460,6 +464,7 @@ impl Worker {
                 pool_delegation_changes: &pool_deleg,
                 drep_delegation_changes: &drep_deleg,
                 pool_updates: &pool_updates,
+                pool_retirements: &pool_retirements,
                 stake_changes: &stake_changes,
                 withdrawal_changes: &withdrawal_changes,
                 reward_deltas: reward_deltas.as_ref(),

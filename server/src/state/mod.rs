@@ -52,6 +52,13 @@ pub struct BlockSnapshot {
     /// `is_empty()` check and skip the re-populate.
     #[serde(default)]
     pub address_balances_populated: bool,
+    /// Total live stake delegated to pools = Σ over `pool_delegations` of
+    /// `stakes[cred] + rewards[cred]`. Maintained incrementally: exact at `reset()`,
+    /// then adjusted in `apply_block` only when a pool delegation is added/removed (a
+    /// stable delegator's balance drift between resets isn't re-summed — fine for the
+    /// homepage % figure, re-synced on restart via `populate_total_staked`).
+    #[serde(default)]
+    pub total_staked: i64,
 }
 
 impl BlockSnapshot {
@@ -82,6 +89,8 @@ pub struct BlockUpdate<'a> {
     pub pool_delegation_changes: &'a [(Vec<u8>, Option<Vec<u8>>)],
     pub drep_delegation_changes: &'a [(Vec<u8>, Option<Vec<u8>>)],
     pub pool_updates: &'a [PoolUpdate],
+    /// Pool retirement certs `(operator, retiring_epoch)`.
+    pub pool_retirements: &'a [(Vec<u8>, u64)],
     pub stake_changes: &'a [(Vec<u8>, i64)],
     pub withdrawal_changes: &'a [(Vec<u8>, i64)],
     pub reward_deltas: Option<&'a HashMap<Vec<u8>, i64>>,
@@ -152,6 +161,85 @@ impl State {
         tracing::info!(
             addresses = snap.address_balances.len(),
             "address balances populated from db-sync"
+        );
+    }
+
+    /// Σ over `pool_delegations` of `stakes[cred] + rewards[cred]` — the total live
+    /// stake delegated to pools. The one-time full scan behind `total_staked`.
+    fn sum_delegated_stake(
+        pool_delegations: &HashMap<Vec<u8>, Vec<u8>>,
+        stakes: &HashMap<Vec<u8>, i64>,
+        rewards: &HashMap<Vec<u8>, i64>,
+    ) -> i64 {
+        pool_delegations
+            .keys()
+            .map(|cred| {
+                stakes.get(cred).copied().unwrap_or(0) + rewards.get(cred).copied().unwrap_or(0)
+            })
+            .sum()
+    }
+
+    /// Recompute `total_staked` for the current snapshot when it's missing (0 from a
+    /// snapshot saved before the field existed). Pure in-memory; call at startup before
+    /// blocks are applied. A genuinely-populated snapshot (post-feature) keeps its value.
+    pub fn populate_total_staked(&mut self) {
+        let Some(snap) = self.history.last() else {
+            return;
+        };
+        if snap.total_staked != 0 || snap.pool_delegations.is_empty() {
+            return;
+        }
+        let total = Self::sum_delegated_stake(&snap.pool_delegations, &snap.stakes, &snap.rewards);
+        self.history.last_mut().unwrap().total_staked = total;
+        tracing::info!(
+            total_staked = total,
+            "total_staked recomputed from snapshot"
+        );
+    }
+
+    /// Backfill `Pool::retiring_epoch` for the current snapshot from db-sync. Needed
+    /// when resuming from a snapshot saved before the field existed (where it defaults
+    /// to `None`, so long-retired pools would wrongly count as active until the next
+    /// reset). Idempotent — a correctly-populated snapshot is left unchanged. Thereafter
+    /// `apply_block` maintains the field per block.
+    pub async fn populate_pool_retirements(&mut self) {
+        let Some(snap_slot) = self.history.last().map(|s| s.slot) else {
+            return;
+        };
+        let Some(db) = self.db().await else { return };
+        let last_tx_id = match db.slot_info(snap_slot).await {
+            Ok((id, _)) => id,
+            Err(e) => {
+                tracing::warn!("slot_info for pool retirements: {e}");
+                return;
+            }
+        };
+        let pending = match db.pending_pool_retirements(last_tx_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to fetch pool retirements: {e}");
+                return;
+            }
+        };
+        let retiring: HashMap<String, i64> = pending
+            .into_iter()
+            .map(|(h, e)| (hex::encode(h), e))
+            .collect();
+        let Some(snap) = self.history.last_mut() else {
+            return;
+        };
+        let keys: Vec<String> = snap.pools.keys().cloned().collect();
+        for key in keys {
+            let want = retiring.get(&key).copied();
+            if let Some(pool) = snap.pools.get_mut(&key) {
+                if pool.retiring_epoch != want {
+                    pool.retiring_epoch = want;
+                }
+            }
+        }
+        tracing::info!(
+            retiring = retiring.len(),
+            "pool retirements populated from db-sync"
         );
     }
 
@@ -409,6 +497,8 @@ impl State {
             stakes.len()
         );
 
+        let total_staked = Self::sum_delegated_stake(&pool_delegations, &stakes, &rewards);
+
         self.history.clear();
         self.history.push(BlockSnapshot {
             slot,
@@ -418,6 +508,7 @@ impl State {
             pools,
             pool_delegations,
             pool_delegators,
+            total_staked,
             drep_delegations,
             drep_delegators,
             address_balances,
@@ -459,6 +550,7 @@ impl State {
             pool_delegation_changes,
             drep_delegation_changes,
             pool_updates,
+            pool_retirements,
             stake_changes,
             withdrawal_changes,
             reward_deltas,
@@ -503,10 +595,12 @@ impl State {
             drep_delegation_changes,
         );
 
-        let pools = if pool_updates.is_empty() {
+        let pools = if pool_updates.is_empty() && pool_retirements.is_empty() {
             prev.pools.clone()
         } else {
             let mut pools = prev.pools.clone();
+            // Registrations first: `from_registration` resets `retiring_epoch` to None,
+            // so a (re-)registration cancels any pending retirement.
             for (operator, pledge, cost, margin_num, margin_den) in pool_updates {
                 let key = hex::encode(operator);
                 let ticker = pools.get(&key).and_then(|p| p.ticker.clone());
@@ -519,6 +613,13 @@ impl State {
                 );
                 pool.ticker = ticker;
                 pools.insert(key, pool);
+            }
+            // Then retirements: record the retiring epoch (the pool stays active until
+            // that epoch arrives).
+            for (operator, retiring_epoch) in pool_retirements {
+                if let Some(pool) = pools.get_mut(&hex::encode(operator)) {
+                    pool.retiring_epoch = Some(*retiring_epoch as i64);
+                }
             }
             pools
         };
@@ -540,6 +641,17 @@ impl State {
                 *entry += delta;
             }
         }
+
+        // Maintain total_staked: adjust only when a credential enters or leaves the
+        // pool-delegated set (the per-block balance drift of stable delegators is
+        // intentionally not re-summed — re-synced on reset).
+        let total_staked = prev.total_staked
+            + Self::delegation_stake_delta(
+                &prev.pool_delegations,
+                pool_delegation_changes,
+                &stakes,
+                &rewards,
+            );
 
         let dreps = prev.dreps.clone();
         let decimals = prev.decimals.clone();
@@ -566,12 +678,41 @@ impl State {
             handle_by_address,
             address_by_handle,
             gov_action_titles,
+            total_staked,
         });
 
         const MAX_HISTORY: usize = 2160;
         if self.history.len() > MAX_HISTORY {
             self.history.drain(..self.history.len() - MAX_HISTORY);
         }
+    }
+
+    /// Net change to `total_staked` from this block's pool delegation changes: a
+    /// credential entering the delegated set adds its `stakes+rewards`, one leaving
+    /// (deregistration) subtracts it, and re-delegation pool→pool is a no-op. Valued
+    /// at the post-block `stakes`/`rewards`. Pure — unit-tested.
+    fn delegation_stake_delta(
+        prev_pool_delegations: &HashMap<Vec<u8>, Vec<u8>>,
+        pool_delegation_changes: &[(Vec<u8>, Option<Vec<u8>>)],
+        stakes: &HashMap<Vec<u8>, i64>,
+        rewards: &HashMap<Vec<u8>, i64>,
+    ) -> i64 {
+        let mut delta = 0;
+        for (cred, maybe_target) in pool_delegation_changes {
+            let was = prev_pool_delegations.contains_key(cred);
+            let now = maybe_target.is_some();
+            if was == now {
+                continue;
+            }
+            let val =
+                stakes.get(cred).copied().unwrap_or(0) + rewards.get(cred).copied().unwrap_or(0);
+            if now {
+                delta += val;
+            } else {
+                delta -= val;
+            }
+        }
+        delta
     }
 
     fn apply_delegation_changes(
@@ -773,5 +914,51 @@ mod tests {
         assert_eq!(State::epoch_for_slot(4492800, &genesis), 208);
         // Known block at slot 181914346 is epoch 618
         assert_eq!(State::epoch_for_slot(181914346, &genesis), 618);
+    }
+
+    #[test]
+    fn total_staked_delegation_delta() {
+        let cred_a = vec![0xaa; 28];
+        let cred_b = vec![0xbb; 28];
+        let pool = vec![0x01; 28];
+        let pool2 = vec![0x02; 28];
+
+        let mut stakes = HashMap::new();
+        stakes.insert(cred_a.clone(), 100i64);
+        stakes.insert(cred_b.clone(), 30i64);
+        let mut rewards = HashMap::new();
+        rewards.insert(cred_a.clone(), 5i64);
+
+        // A already delegates to `pool`; B does not yet.
+        let mut prev_delegations = HashMap::new();
+        prev_delegations.insert(cred_a.clone(), pool.clone());
+
+        // New delegation: B enters the set → +(stake + rewards) = +30.
+        let changes = vec![(cred_b.clone(), Some(pool.clone()))];
+        assert_eq!(
+            State::delegation_stake_delta(&prev_delegations, &changes, &stakes, &rewards),
+            30
+        );
+
+        // Deregistration: A leaves the set → −(100 + 5) = −105.
+        let changes = vec![(cred_a.clone(), None)];
+        assert_eq!(
+            State::delegation_stake_delta(&prev_delegations, &changes, &stakes, &rewards),
+            -105
+        );
+
+        // Re-delegation pool→pool2: A stays delegated → no change.
+        let changes = vec![(cred_a.clone(), Some(pool2))];
+        assert_eq!(
+            State::delegation_stake_delta(&prev_delegations, &changes, &stakes, &rewards),
+            0
+        );
+
+        // Dereg of a never-delegated credential → no change.
+        let changes = vec![(cred_b.clone(), None)];
+        assert_eq!(
+            State::delegation_stake_delta(&prev_delegations, &changes, &stakes, &rewards),
+            0
+        );
     }
 }

@@ -411,7 +411,14 @@ impl DbSync {
             Pool,
             r#"SELECT DISTINCT ON (hash_raw)
             hash_raw, pledge, margin, fixed_cost,
-            (SELECT ticker_name FROM off_chain_pool_data WHERE pool_id = pool_hash.id ORDER BY id DESC LIMIT 1) as ticker
+            (SELECT ticker_name FROM off_chain_pool_data WHERE pool_id = pool_hash.id ORDER BY id DESC LIMIT 1) as ticker,
+            -- Pending retirement: latest retire announced *after* this (latest)
+            -- registration — a re-registration cancels it — else NULL (active).
+            (SELECT pr.retiring_epoch::bigint FROM pool_retire pr
+             WHERE pr.hash_id = pool_hash.id
+               AND pr.announced_tx_id > pool_update.registered_tx_id
+               AND pr.announced_tx_id <= $1
+             ORDER BY pr.announced_tx_id DESC LIMIT 1) as retiring_epoch
             FROM pool_update
             JOIN pool_hash ON pool_hash.id=hash_id
             WHERE registered_tx_id <= $1
@@ -424,6 +431,75 @@ impl DbSync {
         .into_iter()
         .map(|pool| (hex::encode(&pool.hash_raw), pool))
         .collect())
+    }
+
+    /// Pools with a pending (un-cancelled) retirement as of `last_tx_id`, as
+    /// `(hash_raw, retiring_epoch)` — the latest retirement announced *after* the pool's
+    /// latest registration (a re-registration cancels it). Used to backfill
+    /// `Pool::retiring_epoch` when resuming from a snapshot saved before the field
+    /// existed; thereafter `apply_block` maintains it.
+    pub async fn pending_pool_retirements(
+        &self,
+        last_tx_id: i64,
+    ) -> Result<Vec<(Vec<u8>, i64)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT DISTINCT ON (ph.hash_raw)
+                      ph.hash_raw AS "hash_raw!", pr.retiring_epoch::bigint AS "retiring_epoch!"
+               FROM pool_retire pr
+               JOIN pool_hash ph ON ph.id = pr.hash_id
+               WHERE pr.announced_tx_id <= $1
+                 AND pr.announced_tx_id > (
+                     SELECT COALESCE(MAX(pu.registered_tx_id), 0) FROM pool_update pu
+                     WHERE pu.hash_id = pr.hash_id AND pu.registered_tx_id <= $1
+                 )
+               ORDER BY ph.hash_raw, pr.announced_tx_id DESC"#,
+            last_tx_id
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.hash_raw, r.retiring_epoch))
+            .collect())
+    }
+
+    /// Latest `ada_pots` `(reserves, stakeable)` in lovelace.
+    /// - `reserves`: not-yet-minted ADA; circulating supply = max supply − reserves.
+    /// - `stakeable`: ADA that can be delegated = `utxo + rewards + fees`, i.e. supply
+    ///   minus everything locked in protocol pots (reserves, treasury, deposits). This
+    ///   is the % staked denominator, so the ratio → 100% when all of it is delegated.
+    ///
+    /// Both settle at epoch boundaries, so the caller caches them. Returns `(0, 0)` if
+    /// `ada_pots` is empty (pre-Shelley).
+    pub async fn reserves_and_stakeable(&self) -> Result<(i64, i64), sqlx::Error> {
+        let row = sqlx::query!(
+            r#"SELECT reserves::bigint AS "reserves!",
+                      (utxo + rewards + fees)::bigint AS "stakeable!"
+               FROM ada_pots ORDER BY id DESC LIMIT 1"#
+        )
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(row.map(|r| (r.reserves, r.stakeable)).unwrap_or((0, 0)))
+    }
+
+    /// Count of currently-active (not expired) DReps. db-sync's `drep_distr` carries
+    /// `active_until` — the epoch through which each DRep stays active, with the
+    /// `drepActivity` + dormancy math already applied — so a DRep is active when
+    /// `active_until >= current_epoch`. The predefined Always-Abstain / No-Confidence
+    /// have a NULL `active_until` (never expire), and are excluded as not real DReps.
+    /// Reads the latest distribution epoch present.
+    pub async fn active_drep_count(&self, current_epoch: i64) -> Result<i64, sqlx::Error> {
+        let row = sqlx::query!(
+            r#"SELECT COUNT(*)::bigint AS "count!"
+               FROM drep_distr dd
+               WHERE dd.epoch_no = (SELECT MAX(epoch_no) FROM drep_distr)
+                 AND dd.active_until IS NOT NULL
+                 AND dd.active_until >= $1"#,
+            current_epoch as i32
+        )
+        .fetch_one(&self.db)
+        .await?;
+        Ok(row.count)
     }
 
     pub async fn pool_delegations(

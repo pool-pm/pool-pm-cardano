@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { sections, config, pool, drep, stake, address, blockCount } from '../stores';
+  import { sections, config, pool, drep, stake, address, cardano, blockCount } from '../stores';
   import type { GenesisConfig, Section } from '../types';
   import { TX_WIDTH, FLIP_DURATION, poolColor, formatTicker, layoutGrid } from '../layout';
   import { loadOlder } from '../sse';
@@ -525,6 +525,25 @@
             >
           </div>
         {/if}
+      </div>
+    </div>
+  {:else if $cardano}
+    <div class="subject-card" style:--subject-color={'white'}>
+      <span class="pool-name" style:color="white">CARDANO</span>
+      <span class="pool-stake">{formatAda($cardano.circulation)}</span>
+      <div class="pool-params pool-stats">
+        <div class="pool-param">
+          <span class="pool-param-label">pools</span>
+          <span class="pool-param-value">{$cardano.pool_count.toLocaleString()}</span>
+        </div>
+        <div class="pool-param">
+          <span class="pool-param-label">staked</span>
+          <span class="pool-param-value">{$cardano.staked_percent}%</span>
+        </div>
+        <div class="pool-param">
+          <span class="pool-param-label">dreps</span>
+          <span class="pool-param-value">{$cardano.drep_count.toLocaleString()}</span>
+        </div>
       </div>
     </div>
   {/if}

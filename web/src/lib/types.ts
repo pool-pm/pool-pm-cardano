@@ -158,6 +158,16 @@ export interface ReplayCursorEvent {
 
 export type Event = MempoolTxEvent | BlockEvent | RollbackEvent | MempoolPruneEvent | ReplayCursorEvent;
 
+/** Homepage network stats (the global feed's "subject"). */
+export interface CardanoInfo {
+  /** Circulating supply in lovelace (string — exceeds Number.MAX_SAFE_INTEGER). */
+  circulation: string;
+  pool_count: number;
+  drep_count: number;
+  /** % of circulating ADA delegated to pools, one decimal. */
+  staked_percent: number;
+}
+
 export interface DRepInfo {
   drep_id: string;
   given_name: string | null;
