@@ -420,12 +420,10 @@
     {@const color = poolColor($pool.pool_id)}
     <div class="subject-card" style:--subject-color={color}>
       <span class="pool-name" style:color>{formatTicker($pool.ticker ?? $pool.pool_id.slice(5, 10))}</span>
-      {#if $pool.live_stake}
-        <span class="pool-stake">{formatAda($pool.live_stake)}</span>
-      {/if}
-      {#if $pool.delegators != null}
-        <span class="pool-delegators">{$pool.delegators.toLocaleString()} delegators</span>
-      {/if}
+      <span class="pool-stake">{formatAda($pool.live_stake)}</span>
+      <span class="pool-delegators">
+        {$pool.delegators.toLocaleString()} delegators · {$pool.blocks.toLocaleString()} blocks
+      </span>
       <div class="pool-params pool-stats">
         <div class="pool-param">
           <span class="pool-param-label">margin</span>
@@ -445,12 +443,8 @@
     {@const color = poolColor($drep.drep_id)}
     <div class="subject-card" style:--subject-color={color}>
       <span class="drep-name" style:color>{$drep.given_name ?? $drep.drep_id.slice(5, 13)}</span>
-      {#if $drep.live_stake}
-        <span class="pool-stake">{formatAda($drep.live_stake)}</span>
-      {/if}
-      {#if $drep.delegators != null}
-        <span class="pool-delegators">{$drep.delegators.toLocaleString()} delegators</span>
-      {/if}
+      <span class="pool-stake">{formatAda($drep.live_stake)}</span>
+      <span class="pool-delegators">{$drep.delegators.toLocaleString()} delegators</span>
     </div>
   {:else if $stake}
     {@const color = poolColor($stake.stake_address)}

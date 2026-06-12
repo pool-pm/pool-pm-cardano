@@ -166,6 +166,7 @@ pub fn run(args: Args) -> Result<(), Error> {
                 rt.block_on(state.populate_gov_titles());
                 rt.block_on(state.populate_address_balances());
                 rt.block_on(state.populate_pool_retirements());
+                rt.block_on(state.populate_block_counts());
                 state.populate_total_staked();
             }
 

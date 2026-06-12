@@ -100,23 +100,24 @@ fn config_event(
 }
 
 fn pool_sse_event(pool: &Pool, snap: Option<&BlockSnapshot>) -> Result<SseEvent, Infallible> {
+    // A pool with no delegators has live stake 0 / 0 delegators — send 0, not absent.
     let live_stake = snap
         .and_then(|s| State::pool_live_stake(s, &pool.hash_raw))
-        .map(|v| format!(r#","live_stake":"{}""#, v))
-        .unwrap_or_default();
+        .unwrap_or(0);
     let delegators = snap
         .and_then(|s| s.pool_delegators.get(&pool.hash_raw))
-        .map(|d| format!(r#","delegators":{}"#, d.len()))
-        .unwrap_or_default();
+        .map(|d| d.len())
+        .unwrap_or(0);
     Ok(SseEvent::default().data(format!(
-        r#"{{"type":"Pool","pool_id":"{}","ticker":{},"pledge":"{}","margin":{},"fixed_cost":"{}"{}{}}}"#,
+        r#"{{"type":"Pool","pool_id":"{}","ticker":{},"pledge":"{}","margin":{},"fixed_cost":"{}","live_stake":"{}","delegators":{},"blocks":{}}}"#,
         pool_bech32_id(&pool.hash_raw),
         serde_json::to_string(&pool.ticker).unwrap(),
         pool.pledge,
         pool.margin,
         pool.fixed_cost,
         live_stake,
-        delegators
+        delegators,
+        pool.blocks
     )))
 }
 
@@ -129,16 +130,16 @@ fn drep_sse_event(drep_bytes: &[u8], snap: Option<&BlockSnapshot>) -> Result<Sse
             .and_then(|s| s.dreps.get(drep_bytes))
             .and_then(|d| d.given_name.clone()),
     };
+    // A DRep with no delegators has live stake 0 / 0 delegators — send 0, not absent.
     let live_stake = snap
         .and_then(|s| State::drep_live_stake(s, drep_bytes))
-        .map(|v| format!(r#","live_stake":"{}""#, v))
-        .unwrap_or_default();
+        .unwrap_or(0);
     let delegators = snap
         .and_then(|s| s.drep_delegators.get(drep_bytes))
-        .map(|d| format!(r#","delegators":{}"#, d.len()))
-        .unwrap_or_default();
+        .map(|d| d.len())
+        .unwrap_or(0);
     Ok(SseEvent::default().data(format!(
-        r#"{{"type":"DRep","drep_id":"{}","given_name":{}{}{}}}"#,
+        r#"{{"type":"DRep","drep_id":"{}","given_name":{},"live_stake":"{}","delegators":{}}}"#,
         drep_id,
         serde_json::to_string(&given_name).unwrap(),
         live_stake,
@@ -1397,6 +1398,8 @@ fn build_live_stream(
                                 let event = pool.as_ref().map(|p| pool_sse_event(p, snap));
                                 (pool, live_stake, event)
                             };
+                            // `current_pool != live.pool` also catches a block count bump
+                            // (Pool::blocks is part of the struct), re-emitting on a mint.
                             if current_pool != live.pool || current_balance != live.balance {
                                 if let Some(event) = pool_event {
                                     buf.push_back(event);

@@ -14,6 +14,11 @@ pub struct Pool {
     /// the future. Maintained per block in `apply_block`.
     #[serde(default)]
     pub retiring_epoch: Option<i64>,
+    /// Lifetime blocks minted by the pool. Seeded from db-sync, incremented per block in
+    /// `apply_block`; carried across param updates (unlike `retiring_epoch`, which a
+    /// re-registration resets). Rollbacks revert via snapshot history truncation.
+    #[serde(default)]
+    pub blocks: i64,
 }
 
 impl Pool {
@@ -32,6 +37,8 @@ impl Pool {
             ticker: None,
             // A (re-)registration cancels any pending retirement.
             retiring_epoch: None,
+            // Lifetime count; the caller carries the prior value across param updates.
+            blocks: 0,
         }
     }
 }

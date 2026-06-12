@@ -465,6 +465,7 @@ impl Worker {
                 drep_delegation_changes: &drep_deleg,
                 pool_updates: &pool_updates,
                 pool_retirements: &pool_retirements,
+                issuer_pool_hash: issuer_pool_hash.as_deref(),
                 stake_changes: &stake_changes,
                 withdrawal_changes: &withdrawal_changes,
                 reward_deltas: reward_deltas.as_ref(),

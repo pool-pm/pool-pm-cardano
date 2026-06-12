@@ -91,6 +91,9 @@ pub struct BlockUpdate<'a> {
     pub pool_updates: &'a [PoolUpdate],
     /// Pool retirement certs `(operator, retiring_epoch)`.
     pub pool_retirements: &'a [(Vec<u8>, u64)],
+    /// Pool that minted this block (the slot leader), if known — increments its
+    /// lifetime block count.
+    pub issuer_pool_hash: Option<&'a [u8]>,
     pub stake_changes: &'a [(Vec<u8>, i64)],
     pub withdrawal_changes: &'a [(Vec<u8>, i64)],
     pub reward_deltas: Option<&'a HashMap<Vec<u8>, i64>>,
@@ -240,6 +243,51 @@ impl State {
         tracing::info!(
             retiring = retiring.len(),
             "pool retirements populated from db-sync"
+        );
+    }
+
+    /// Backfill `Pool::blocks` for the current snapshot from db-sync. Needed when
+    /// resuming from a snapshot saved before the field existed (where it defaults to 0).
+    /// Gated on all-zero — a populated snapshot (from `reset` or a prior run) is left
+    /// untouched. Thereafter `apply_block` maintains it per block.
+    pub async fn populate_block_counts(&mut self) {
+        let needs = self
+            .history
+            .last()
+            .map(|s| !s.pools.is_empty() && s.pools.values().all(|p| p.blocks == 0))
+            .unwrap_or(false);
+        if !needs {
+            return;
+        }
+        let Some(snap_slot) = self.history.last().map(|s| s.slot) else {
+            return;
+        };
+        let Some(db) = self.db().await else { return };
+        let counts = match db.pool_block_counts(snap_slot as i64).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to fetch pool block counts: {e}");
+                return;
+            }
+        };
+        let counts: HashMap<String, i64> = counts
+            .into_iter()
+            .map(|(h, c)| (hex::encode(h), c))
+            .collect();
+        let Some(snap) = self.history.last_mut() else {
+            return;
+        };
+        let keys: Vec<String> = snap.pools.keys().cloned().collect();
+        for key in keys {
+            if let Some(&c) = counts.get(&key) {
+                if let Some(pool) = snap.pools.get_mut(&key) {
+                    pool.blocks = c;
+                }
+            }
+        }
+        tracing::info!(
+            pools = counts.len(),
+            "pool block counts backfilled from db-sync"
         );
     }
 
@@ -400,7 +448,7 @@ impl State {
         let (last_tx_id, block_hash) = db.slot_info(slot).await?;
 
         tracing::info!("Fetching pools...");
-        let pools = db.pools(last_tx_id).await?;
+        let pools = db.pools(last_tx_id, slot as i64).await?;
         tracing::info!("{} pools retrieved", pools.len());
 
         tracing::info!("Fetching pool delegations...");
@@ -551,6 +599,7 @@ impl State {
             drep_delegation_changes,
             pool_updates,
             pool_retirements,
+            issuer_pool_hash,
             stake_changes,
             withdrawal_changes,
             reward_deltas,
@@ -595,34 +644,36 @@ impl State {
             drep_delegation_changes,
         );
 
-        let pools = if pool_updates.is_empty() && pool_retirements.is_empty() {
-            prev.pools.clone()
-        } else {
-            let mut pools = prev.pools.clone();
-            // Registrations first: `from_registration` resets `retiring_epoch` to None,
-            // so a (re-)registration cancels any pending retirement.
-            for (operator, pledge, cost, margin_num, margin_den) in pool_updates {
-                let key = hex::encode(operator);
-                let ticker = pools.get(&key).and_then(|p| p.ticker.clone());
-                let mut pool = Pool::from_registration(
-                    operator.clone(),
-                    *pledge,
-                    *cost,
-                    *margin_num,
-                    *margin_den,
-                );
-                pool.ticker = ticker;
-                pools.insert(key, pool);
+        // Cloned every block (cheap, O(1) structural share) since the issuer's lifetime
+        // block count is incremented below.
+        let mut pools = prev.pools.clone();
+        // Registrations first: `from_registration` resets `retiring_epoch` to None, so a
+        // (re-)registration cancels a pending retirement — but the lifetime block count
+        // must survive a param update, so carry it across like `ticker`.
+        for (operator, pledge, cost, margin_num, margin_den) in pool_updates {
+            let key = hex::encode(operator);
+            let (ticker, blocks) = pools
+                .get(&key)
+                .map(|p| (p.ticker.clone(), p.blocks))
+                .unwrap_or((None, 0));
+            let mut pool =
+                Pool::from_registration(operator.clone(), *pledge, *cost, *margin_num, *margin_den);
+            pool.ticker = ticker;
+            pool.blocks = blocks;
+            pools.insert(key, pool);
+        }
+        // Then retirements: record the retiring epoch (the pool stays active until it).
+        for (operator, retiring_epoch) in pool_retirements {
+            if let Some(pool) = pools.get_mut(&hex::encode(operator)) {
+                pool.retiring_epoch = Some(*retiring_epoch as i64);
             }
-            // Then retirements: record the retiring epoch (the pool stays active until
-            // that epoch arrives).
-            for (operator, retiring_epoch) in pool_retirements {
-                if let Some(pool) = pools.get_mut(&hex::encode(operator)) {
-                    pool.retiring_epoch = Some(*retiring_epoch as i64);
-                }
+        }
+        // This block's minting pool: +1 lifetime block.
+        if let Some(hash) = issuer_pool_hash {
+            if let Some(pool) = pools.get_mut(&hex::encode(hash)) {
+                pool.blocks += 1;
             }
-            pools
-        };
+        }
 
         let mut stakes = prev.stakes.clone();
         for (cred, delta) in stake_changes {

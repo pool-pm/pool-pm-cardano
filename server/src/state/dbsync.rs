@@ -406,7 +406,11 @@ impl DbSync {
         Ok(result)
     }
 
-    pub async fn pools(&self, last_tx_id: i64) -> Result<HashMap<String, Pool>, sqlx::Error> {
+    pub async fn pools(
+        &self,
+        last_tx_id: i64,
+        slot: i64,
+    ) -> Result<HashMap<String, Pool>, sqlx::Error> {
         Ok(sqlx::query_as!(
             Pool,
             r#"SELECT DISTINCT ON (hash_raw)
@@ -418,19 +422,47 @@ impl DbSync {
              WHERE pr.hash_id = pool_hash.id
                AND pr.announced_tx_id > pool_update.registered_tx_id
                AND pr.announced_tx_id <= $1
-             ORDER BY pr.announced_tx_id DESC LIMIT 1) as retiring_epoch
+             ORDER BY pr.announced_tx_id DESC LIMIT 1) as retiring_epoch,
+            -- Lifetime blocks minted as of the reset slot (one grouped pass).
+            COALESCE(bc.cnt, 0)::bigint AS "blocks!"
             FROM pool_update
             JOIN pool_hash ON pool_hash.id=hash_id
+            LEFT JOIN (
+                SELECT sl.pool_hash_id, COUNT(*) AS cnt
+                FROM block b JOIN slot_leader sl ON sl.id = b.slot_leader_id
+                WHERE b.slot_no <= $2 AND sl.pool_hash_id IS NOT NULL
+                GROUP BY sl.pool_hash_id
+            ) bc ON bc.pool_hash_id = pool_hash.id
             WHERE registered_tx_id <= $1
-            GROUP BY hash_raw, pool_update.id, pool_hash.id
+            GROUP BY hash_raw, pool_update.id, pool_hash.id, bc.cnt
             ORDER BY hash_raw, pool_update.id DESC"#,
-            last_tx_id
+            last_tx_id,
+            slot
         )
         .fetch_all(&self.db)
         .await?
         .into_iter()
         .map(|pool| (hex::encode(&pool.hash_raw), pool))
         .collect())
+    }
+
+    /// Lifetime blocks minted per pool as of `slot`, `hash_raw -> count`. Used by
+    /// `populate_block_counts` to backfill `Pool::blocks` when resuming from a pre-field
+    /// snapshot (`reset` gets the count inline via the `pools` query). Bounded by `slot`
+    /// so it matches the snapshot point and blocks applied afterwards aren't double-counted.
+    pub async fn pool_block_counts(&self, slot: i64) -> Result<HashMap<Vec<u8>, i64>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT ph.hash_raw AS "hash_raw!", COUNT(*) AS "count!"
+               FROM block b
+               JOIN slot_leader sl ON sl.id = b.slot_leader_id
+               JOIN pool_hash ph ON ph.id = sl.pool_hash_id
+               WHERE b.slot_no <= $1
+               GROUP BY ph.hash_raw"#,
+            slot
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows.into_iter().map(|r| (r.hash_raw, r.count)).collect())
     }
 
     /// Pools with a pending (un-cancelled) retirement as of `last_tx_id`, as

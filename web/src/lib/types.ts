@@ -171,8 +171,8 @@ export interface CardanoInfo {
 export interface DRepInfo {
   drep_id: string;
   given_name: string | null;
-  live_stake?: string;
-  delegators?: number;
+  live_stake: string;
+  delegators: number;
 }
 
 export interface PoolInfo {
@@ -181,8 +181,10 @@ export interface PoolInfo {
   pledge: string;
   margin: number;
   fixed_cost: string;
-  live_stake?: string;
-  delegators?: number;
+  live_stake: string;
+  delegators: number;
+  /** Lifetime blocks minted, updated live as the pool mints. */
+  blocks: number;
 }
 
 export interface StakeInfo {
