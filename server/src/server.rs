@@ -85,6 +85,13 @@ const STAKE_REPLAY_BLOCKS: i64 = 30;
 /// Cardano max supply in lovelace (45 G ADA). Circulating supply = this − reserves.
 const MAX_LOVELACE_SUPPLY: i64 = 45_000_000_000_000_000;
 
+/// Max pool/DRep results returned by `/api/search`.
+const SEARCH_LIMIT: usize = 12;
+/// Shortest query that triggers a pool/DRep search.
+const SEARCH_MIN_QUERY_LEN: usize = 2;
+/// Jaro-Winkler similarity below which a non-substring candidate is dropped.
+const SEARCH_FUZZY_THRESHOLD: f32 = 0.7;
+
 // --- SSE event builders ---
 
 fn config_event(
@@ -225,6 +232,109 @@ async fn cardano_stats_json(state: &AppState) -> Option<String> {
         r#"{{"type":"Cardano","circulation":"{}","pool_count":{},"drep_count":{},"staked_percent":{:.1}}}"#,
         circulation, pool_count, cached.drep_count, staked_percent
     ))
+}
+
+// --- Pool ticker / DRep name search (`/api/search`) ---
+
+#[derive(serde::Deserialize)]
+struct SearchQuery {
+    q: String,
+}
+
+#[derive(serde::Serialize)]
+struct SearchResult {
+    /// bech32 pool/drep id; the frontend colors and links by this.
+    id: String,
+    /// Raw ticker / given name.
+    label: String,
+    kind: &'static str,
+}
+
+/// Score a candidate (ticker / name) against the query, case-insensitively. Higher is
+/// better; `None` drops it. Tiers don't overlap: exact (4) > prefix (3–4) > substring
+/// (2–3) > fuzzy Jaro-Winkler (≥ threshold). Within prefix/substring, a closer length
+/// ratio wins. Pure — unit-tested.
+fn search_score(query: &str, candidate: &str) -> Option<f32> {
+    let q = query.trim().to_lowercase();
+    let c = candidate.trim().to_lowercase();
+    if q.is_empty() || c.is_empty() {
+        return None;
+    }
+    if c == q {
+        Some(4.0)
+    } else if c.starts_with(&q) {
+        Some(3.0 + q.len() as f32 / c.len() as f32)
+    } else if c.contains(&q) {
+        Some(2.0 + q.len() as f32 / c.len() as f32)
+    } else {
+        let sim = strsim::jaro_winkler(&q, &c) as f32;
+        (sim >= SEARCH_FUZZY_THRESHOLD).then_some(sim)
+    }
+}
+
+/// Search active pools by ticker and active DReps by name, ranked by string distance.
+/// Retired pools (`retiring_epoch <= epoch`) and expired/deregistered DReps
+/// (`active_until` absent or `< epoch`) are hidden.
+async fn search(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<SearchQuery>,
+) -> axum::Json<Vec<SearchResult>> {
+    let q = query.q.trim().to_string();
+    if q.len() < SEARCH_MIN_QUERY_LEN {
+        return axum::Json(vec![]);
+    }
+    // O(1)-clone the maps under a brief read lock, then score off-lock.
+    let (pools, dreps, epoch) = {
+        let guard = state.chain_state.read().await;
+        let Some(snap) = guard.current() else {
+            return axum::Json(vec![]);
+        };
+        (
+            snap.pools.clone(),
+            snap.dreps.clone(),
+            snap.last_epoch.unwrap_or(0) as i64,
+        )
+    };
+
+    let mut scored: Vec<(f32, SearchResult)> = Vec::new();
+    for pool in pools.values() {
+        if pool.retiring_epoch.is_some_and(|e| e <= epoch) {
+            continue; // retired
+        }
+        let Some(ticker) = &pool.ticker else { continue };
+        if let Some(score) = search_score(&q, ticker) {
+            scored.push((
+                score,
+                SearchResult {
+                    id: pool_bech32_id(&pool.hash_raw),
+                    label: ticker.clone(),
+                    kind: "pool",
+                },
+            ));
+        }
+    }
+    for drep in dreps.values() {
+        if drep.active_until.is_none_or(|e| e < epoch) {
+            continue; // expired / deregistered
+        }
+        let Some(name) = &drep.given_name else {
+            continue;
+        };
+        if let Some(score) = search_score(&q, name) {
+            scored.push((
+                score,
+                SearchResult {
+                    id: drep_bech32_id(&drep.hash_bytes),
+                    label: name.clone(),
+                    kind: "drep",
+                },
+            ));
+        }
+    }
+    // Best score first; truncate to the limit.
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    scored.truncate(SEARCH_LIMIT);
+    axum::Json(scored.into_iter().map(|(_, r)| r).collect())
 }
 
 #[derive(serde::Serialize)]
@@ -2630,6 +2740,7 @@ pub async fn serve(config: ServeConfig) {
         .route("/api/policy/{policy_id}", get(policy_assets))
         .route("/api/assets/{feed_id}", get(owned_assets))
         .route("/api/feed/{feed_id}/older", get(older_blocks))
+        .route("/api/search", get(search))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -2703,5 +2814,28 @@ mod tests {
             last_epoch: 0,
         };
         assert_eq!(p2.pre_block_stake(638, 800, -40), 880);
+    }
+
+    #[test]
+    fn search_score_tiers_and_case() {
+        // Case-insensitive: lowercase query matches an uppercase ticker.
+        assert!(search_score("ccv", "CCVAULT").is_some());
+        // Exact > prefix > substring > fuzzy.
+        let exact = search_score("ccv", "CCV").unwrap();
+        let prefix = search_score("ccv", "CCVAULT").unwrap();
+        let substring = search_score("vault", "CCVAULT").unwrap();
+        assert!(exact > prefix && prefix > substring);
+        // "card" ranks "Cardano" (prefix) above "Discard" (substring).
+        assert!(
+            search_score("card", "Cardano").unwrap() > search_score("card", "Discard").unwrap()
+        );
+        // Shorter prefix match beats a longer one for the same query.
+        assert!(
+            search_score("ada", "ADAPOOL").unwrap() > search_score("ada", "ADAPOOLXXXXXX").unwrap()
+        );
+        // Unrelated → dropped.
+        assert!(search_score("zzzz", "Cardano").is_none());
+        // A close typo still matches via Jaro-Winkler.
+        assert!(search_score("cardona", "Cardano").is_some());
     }
 }

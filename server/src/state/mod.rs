@@ -97,6 +97,9 @@ pub struct BlockUpdate<'a> {
     pub stake_changes: &'a [(Vec<u8>, i64)],
     pub withdrawal_changes: &'a [(Vec<u8>, i64)],
     pub reward_deltas: Option<&'a HashMap<Vec<u8>, i64>>,
+    /// At an epoch boundary: each DRep's refreshed `active_until` (tagged key → epoch);
+    /// `None` between boundaries. DReps absent from the map become expired.
+    pub drep_active_until: Option<&'a HashMap<Vec<u8>, i64>>,
 }
 
 pub struct State {
@@ -288,6 +291,36 @@ impl State {
         tracing::info!(
             pools = counts.len(),
             "pool block counts backfilled from db-sync"
+        );
+    }
+
+    /// Backfill `DRep::active_until` from db-sync when missing (resume from a pre-field
+    /// snapshot — all `None`). Thereafter `apply_block` refreshes it each epoch boundary.
+    pub async fn populate_drep_active(&mut self) {
+        let needs = self
+            .history
+            .last()
+            .map(|s| !s.dreps.is_empty() && s.dreps.values().all(|d| d.active_until.is_none()))
+            .unwrap_or(false);
+        if !needs {
+            return;
+        }
+        let Some(active) = self.drep_active_until().await else {
+            return;
+        };
+        let Some(snap) = self.history.last_mut() else {
+            return;
+        };
+        let keys: Vec<Vec<u8>> = snap.dreps.keys().cloned().collect();
+        for key in keys {
+            let au = active.get(&key).copied();
+            if let Some(drep) = snap.dreps.get_mut(&key) {
+                drep.active_until = au;
+            }
+        }
+        tracing::info!(
+            active = active.len(),
+            "drep active_until backfilled from db-sync"
         );
     }
 
@@ -603,6 +636,7 @@ impl State {
             stake_changes,
             withdrawal_changes,
             reward_deltas,
+            drep_active_until,
         } = update;
 
         let prev = self.history.last().expect("state not initialized");
@@ -704,7 +738,21 @@ impl State {
                 &rewards,
             );
 
-        let dreps = prev.dreps.clone();
+        // At an epoch boundary, refresh each DRep's `active_until` from db-sync's
+        // `drep_distr`; DReps absent from the map have expired/deregistered (→ None).
+        let dreps = if let Some(active) = drep_active_until {
+            let mut dreps = prev.dreps.clone();
+            let keys: Vec<Vec<u8>> = dreps.keys().cloned().collect();
+            for key in keys {
+                let au = active.get(&key).copied();
+                if let Some(drep) = dreps.get_mut(&key) {
+                    drep.active_until = au;
+                }
+            }
+            dreps
+        } else {
+            prev.dreps.clone()
+        };
         let decimals = prev.decimals.clone();
         let handle_by_address = prev.handle_by_address.clone();
         let address_by_handle = prev.address_by_handle.clone();
@@ -851,6 +899,20 @@ impl State {
     pub async fn epoch_reward_delta(&self, epoch: u64) -> Option<HashMap<Vec<u8>, i64>> {
         let db = self.db().await?;
         db.epoch_reward_delta(epoch).await.ok()
+    }
+
+    /// Latest `drep_distr.active_until` per DRep, keyed by the tagged hash bytes used in
+    /// the `dreps` map (`[has_script ? 0x01 : 0x00] ++ raw`). Refreshes
+    /// `DRep::active_until` at epoch boundaries; DReps absent here are expired/deregistered.
+    pub async fn drep_active_until(&self) -> Option<HashMap<Vec<u8>, i64>> {
+        let db = self.db().await?;
+        let rows = db.drep_active_until().await.ok()?;
+        let mut map = HashMap::new();
+        for (raw, has_script, active_until) in rows {
+            let tag = if has_script { 0x01u8 } else { 0x00 };
+            map.insert([&[tag][..], &raw[..]].concat(), active_until);
+        }
+        Some(map)
     }
 
     /// Rollback to the given slot: drop all snapshots after it.

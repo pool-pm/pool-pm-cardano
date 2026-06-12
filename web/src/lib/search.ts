@@ -1,4 +1,5 @@
 import { bech32Hrp } from './bech32';
+import type { SearchResult } from './types';
 
 // bech32 prefixes that map to a feed/page (testnet variants carry an underscore).
 const FEED_HRPS = new Set(['pool', 'drep', 'drep_script', 'stake', 'stake_test', 'addr', 'addr_test', 'asset']);
@@ -17,4 +18,18 @@ export function searchTarget(raw: string): string | null {
   if (/^[0-9a-f]{56}$/.test(v)) return `/policy/${v}`;
   const hrp = bech32Hrp(v);
   return hrp && FEED_HRPS.has(hrp) ? `/${v}` : null;
+}
+
+// Fuzzy suggestions for a partial pool ticker / DRep name, ranked server-side by
+// string distance. Returns [] for short queries or on error.
+export async function searchSuggestions(raw: string): Promise<SearchResult[]> {
+  const q = raw.trim();
+  if (q.length < 2) return [];
+  try {
+    const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+    if (!res.ok) return [];
+    return (await res.json()) as SearchResult[];
+  } catch {
+    return [];
+  }
 }

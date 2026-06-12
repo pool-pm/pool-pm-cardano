@@ -3567,6 +3567,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "strsim",
  "tar",
  "tokio",
  "tokio-stream",

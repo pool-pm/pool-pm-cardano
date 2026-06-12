@@ -534,6 +534,29 @@ impl DbSync {
         Ok(row.count)
     }
 
+    /// Each DRep's `active_until` from the latest `drep_distr`, as
+    /// `(drep_hash.raw, has_script, active_until)`. Refreshes `DRep::active_until` at
+    /// epoch boundaries (and the resume backfill); the caller rebuilds the tagged key
+    /// (`[has_script ? 0x01 : 0x00] ++ raw`) to match the `dreps` map. Only rows with a
+    /// non-NULL `active_until` (real DReps) are returned.
+    pub async fn drep_active_until(&self) -> Result<Vec<(Vec<u8>, bool, i64)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT dh.raw AS "raw!", dh.has_script AS "has_script!",
+                      dd.active_until::bigint AS "active_until!"
+               FROM drep_distr dd
+               JOIN drep_hash dh ON dh.id = dd.hash_id
+               WHERE dd.epoch_no = (SELECT MAX(epoch_no) FROM drep_distr)
+                 AND dd.active_until IS NOT NULL
+                 AND dh.raw IS NOT NULL"#
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.raw, r.has_script, r.active_until))
+            .collect())
+    }
+
     pub async fn pool_delegations(
         &self,
         last_tx_id: i64,
@@ -990,7 +1013,11 @@ impl DbSync {
         let mut rows = sqlx::query!(
             r#"SELECT dh.raw AS drep_raw,
                       dh.has_script AS drep_has_script,
-                      dd.given_name
+                      dd.given_name,
+                      (SELECT ddist.active_until::bigint FROM drep_distr ddist
+                       WHERE ddist.hash_id = dh.id
+                         AND ddist.epoch_no = (SELECT MAX(epoch_no) FROM drep_distr)
+                      ) AS active_until
             FROM drep_registration dr
             JOIN drep_hash dh ON dh.id = dr.drep_hash_id
             JOIN off_chain_vote_data ovd ON ovd.voting_anchor_id = dr.voting_anchor_id
@@ -1020,6 +1047,7 @@ impl DbSync {
                 DRep {
                     hash_bytes,
                     given_name: Some(row.given_name),
+                    active_until: row.active_until,
                 },
             );
         }

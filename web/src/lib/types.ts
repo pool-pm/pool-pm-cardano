@@ -168,6 +168,14 @@ export interface CardanoInfo {
   staked_percent: number;
 }
 
+/** One `/api/search` hit — a pool ticker or DRep name match. */
+export interface SearchResult {
+  /** bech32 pool/drep id; used for color and navigation (`/{id}`). */
+  id: string;
+  label: string;
+  kind: 'pool' | 'drep';
+}
+
 export interface DRepInfo {
   drep_id: string;
   given_name: string | null;

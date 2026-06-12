@@ -51,6 +51,13 @@ pub fn pool_bech32_id(hash_raw: &[u8]) -> String {
 pub struct DRep {
     pub hash_bytes: Vec<u8>,
     pub given_name: Option<String>,
+    /// Epoch through which the DRep stays active (db-sync `drep_distr.active_until`,
+    /// with `drepActivity` + dormancy applied). The DRep is active while this is
+    /// `Some(e)` with `e >= current_epoch`; `None` = expired/deregistered. Seeded at
+    /// reset, refreshed each epoch boundary in `apply_block` (a per-epoch ledger value,
+    /// not cert-driven). Analogous to `Pool::retiring_epoch`.
+    #[serde(default)]
+    pub active_until: Option<i64>,
 }
 
 /// Convert DRep bytes (tag + hash) to a human-readable identifier.

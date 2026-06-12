@@ -404,15 +404,21 @@ impl Worker {
         let timestamp = crate::mempool::slot_to_timestamp(slot, &stage.genesis);
         let epoch = State::epoch_for_slot(slot, &stage.genesis);
 
-        // Check for epoch boundary and fetch reward deltas from db-sync
-        let reward_deltas = {
+        // Check for epoch boundary and fetch reward deltas + DRep activity from db-sync
+        let (reward_deltas, drep_active_until) = {
             let state = stage.state.read().await;
             let last_epoch = state.current().and_then(|s| s.last_epoch);
             if last_epoch.is_some() && last_epoch != Some(epoch) {
-                info!(epoch, "epoch boundary detected, fetching reward deltas");
-                state.epoch_reward_delta(epoch).await
+                info!(
+                    epoch,
+                    "epoch boundary detected, fetching reward deltas + drep activity"
+                );
+                (
+                    state.epoch_reward_delta(epoch).await,
+                    state.drep_active_until().await,
+                )
             } else {
-                None
+                (None, None)
             }
         };
 
@@ -469,6 +475,7 @@ impl Worker {
                 stake_changes: &stake_changes,
                 withdrawal_changes: &withdrawal_changes,
                 reward_deltas: reward_deltas.as_ref(),
+                drep_active_until: drep_active_until.as_ref(),
             });
 
             // ADA Handle: update handle cache in the latest snapshot
