@@ -1,5 +1,6 @@
 use futures::TryStreamExt;
 use imbl::{hashmap::HashMap, hashset::HashSet};
+use pallas::ledger::addresses::Address;
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
     ConnectOptions,
@@ -8,6 +9,15 @@ use tokio::time::Duration;
 use url::Url;
 
 use crate::model::{asset_fingerprint, parse_handle_name, DRep, Pool, CIP67_LABEL_222};
+
+/// Raw on-chain bytes of a bech32 payment address — db-sync's `address.raw`
+/// (same serialization pallas produces). `None` for Byron / non-bech32 input
+/// (those never appear in feeds). With `use_address_table`, `tx_out` no longer
+/// carries the address; we resolve it to an `address.id` via the `idx_address_raw`
+/// hash index and filter `tx_out.address_id` instead.
+fn address_raw(address: &str) -> Option<Vec<u8>> {
+    Address::from_bech32(address).ok().map(|a| a.to_vec())
+}
 
 /// A resolved UTXO: `(address, lovelace, assets, unspent)`, keyed by
 /// `(tx_hash, output_index)`. Returned by `resolve_utxos_batch`.
@@ -163,14 +173,19 @@ impl DbSync {
         before_slot: i64,
         limit: i64,
     ) -> Result<Vec<(u64, String, u64, u64)>, sqlx::Error> {
+        let Some(raw) = address_raw(address) else {
+            return Ok(Vec::new());
+        };
         let rows = sqlx::query!(
             r#"SELECT b.slot_no AS "slot_no!", b.hash, b.block_no AS "block_no!",
                       b.epoch_no AS "epoch_no!"
             FROM (
-                SELECT tx_id FROM tx_out WHERE address = $1
+                SELECT tx_id FROM tx_out
+                  WHERE address_id IN (SELECT id FROM address WHERE raw = $1)
                 UNION
                 SELECT consumed_by_tx_id AS tx_id FROM tx_out
-                  WHERE address = $1 AND consumed_by_tx_id IS NOT NULL
+                  WHERE address_id IN (SELECT id FROM address WHERE raw = $1)
+                    AND consumed_by_tx_id IS NOT NULL
             ) t
             JOIN tx ON tx.id = t.tx_id
             JOIN block b ON b.id = tx.block_id
@@ -178,7 +193,7 @@ impl DbSync {
             GROUP BY b.id, b.slot_no, b.hash, b.block_no, b.epoch_no
             ORDER BY b.slot_no DESC
             LIMIT $3"#,
-            address,
+            raw,
             before_slot,
             limit
         )
@@ -203,9 +218,10 @@ impl DbSync {
         index: i16,
     ) -> Result<Option<(String, sqlx::types::Decimal, Vec<(String, u64)>)>, sqlx::Error> {
         let row = sqlx::query!(
-            r#"SELECT tx_out.id, tx_out.address, tx_out.value
+            r#"SELECT tx_out.id, a.address, tx_out.value
             FROM tx_out
             JOIN tx ON tx.id = tx_out.tx_id
+            JOIN address a ON a.id = tx_out.address_id
             WHERE tx.hash = $1 AND tx_out.index = $2"#,
             tx_hash,
             index
@@ -341,9 +357,10 @@ impl DbSync {
         let indices: Vec<i16> = inputs.iter().map(|(_, i)| *i).collect();
         let rows = sqlx::query!(
             r#"SELECT tx.hash, tx_out.index AS "index!: i16", tx_out.id,
-                    tx_out.address, tx_out.value, tx_out.consumed_by_tx_id
+                    a.address, tx_out.value, tx_out.consumed_by_tx_id
             FROM tx_out
             JOIN tx ON tx.id = tx_out.tx_id
+            JOIN address a ON a.id = tx_out.address_id
             WHERE (tx.hash, tx_out.index) IN (SELECT * FROM UNNEST($1::bytea[], $2::smallint[]))"#,
             &hashes,
             &indices
@@ -615,11 +632,15 @@ impl DbSync {
         last_tx_id: i64,
     ) -> Result<Vec<(String, i64)>, sqlx::Error> {
         let rows = sqlx::query!(
-            r#"SELECT address AS "address!", SUM(value)::bigint AS "balance!"
-            FROM tx_out
-            WHERE tx_id <= $1
-              AND (consumed_by_tx_id IS NULL OR consumed_by_tx_id > $1)
-            GROUP BY address"#,
+            r#"SELECT a.address AS "address!", b.balance AS "balance!"
+            FROM (
+                SELECT address_id, SUM(value)::bigint AS balance
+                FROM tx_out
+                WHERE tx_id <= $1
+                  AND (consumed_by_tx_id IS NULL OR consumed_by_tx_id > $1)
+                GROUP BY address_id
+            ) b
+            JOIN address a ON a.id = b.address_id"#,
             last_tx_id
         )
         .fetch_all(&self.db)
@@ -647,7 +668,7 @@ impl DbSync {
     //
     // Every per-address/stake holdings query runs in two steps:
     //   1. fetch the current (unconsumed) `tx_out.id`s via the partial index
-    //      (`idx_tx_out_address_unspent` / `idx_tx_out_stake_unspent`), bounded
+    //      (`idx_tx_out_address_id_unspent` / `idx_tx_out_stake_unspent`), bounded
     //      by the address's *current* UTXO count;
     //   2. resolve assets from `ma_tx_out` keyed on that explicit id array.
     // Splitting it this way is what makes the queries bullet-proof: step 2's
@@ -658,11 +679,16 @@ impl DbSync {
     // join-flip threshold (drained whales, expression-indexed keys, etc.).
 
     /// Current (unconsumed) `tx_out.id`s for a payment address, via the partial
-    /// `idx_tx_out_address_unspent`. Cost ∝ the address's *current* holdings.
+    /// `idx_tx_out_address_id_unspent`. Cost ∝ the address's *current* holdings.
     async fn address_unspent_ids(&self, address: &str) -> Result<Vec<i64>, sqlx::Error> {
+        let Some(raw) = address_raw(address) else {
+            return Ok(Vec::new());
+        };
         sqlx::query_scalar!(
-            r#"SELECT id FROM tx_out WHERE address = $1 AND consumed_by_tx_id IS NULL"#,
-            address
+            r#"SELECT id FROM tx_out
+               WHERE address_id IN (SELECT id FROM address WHERE raw = $1)
+                 AND consumed_by_tx_id IS NULL"#,
+            raw
         )
         .fetch_all(&self.db)
         .await
@@ -1137,11 +1163,12 @@ impl DbSync {
         let mut skipped = 0usize;
         for policy in policies {
             let rows = sqlx::query!(
-                r#"SELECT ma.name AS "name!", tx_out.address AS "address!",
+                r#"SELECT ma.name AS "name!", a.address AS "address!",
                     d.bytes AS "datum?"
                 FROM tx_out
                 JOIN ma_tx_out ON ma_tx_out.tx_out_id = tx_out.id
                 JOIN multi_asset ma ON ma.id = ma_tx_out.ident
+                JOIN address a ON a.id = tx_out.address_id
                 LEFT JOIN datum d ON d.id = tx_out.inline_datum_id
                 WHERE ma.policy = $1
                 AND tx_out.consumed_by_tx_id IS NULL
