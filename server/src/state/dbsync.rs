@@ -144,9 +144,12 @@ impl DbSync {
         let rows = sqlx::query!(
             // `bnd` = tx_id boundary for "blocks strictly older than before_slot" (the first
             // tx of the first block at/after it; i64::MAX on the first page). Each UNION arm
-            // is an index-only top-K backward scan on its composite — (subject, tx_id) for
-            // receives, (subject, consumed_by_tx_id) for sends — so only ~2K touches are
-            // grouped to blocks, not the subject's whole history.
+            // is an early-LIMIT top-K backward scan by tx_id — receives/sends on the tx_out
+            // composites, withdrawals via db-sync's idx_withdrawal_tx_id / idx_withdrawal_addr_id
+            // — so only ~3K touches are grouped to blocks, not the subject's whole history.
+            // No amount filter on withdrawals: zero-amount script-validation withdrawals are
+            // legitimate and shown (and filtering them would defeat the top-K on a dense
+            // all-zero reward account).
             r#"WITH bnd AS MATERIALIZED (
                 SELECT COALESCE(MIN(t.id), 9223372036854775807) AS max_tx_id
                 FROM tx t
@@ -164,6 +167,10 @@ impl DbSync {
                    WHERE stake_address_id = $1 AND consumed_by_tx_id IS NOT NULL
                      AND consumed_by_tx_id < (SELECT max_tx_id FROM bnd)
                    ORDER BY consumed_by_tx_id DESC LIMIT $3)
+                UNION
+                (SELECT tx_id FROM withdrawal
+                   WHERE addr_id = $1 AND tx_id < (SELECT max_tx_id FROM bnd)
+                   ORDER BY tx_id DESC LIMIT $3)
             ) t
             JOIN tx ON tx.id = t.tx_id
             JOIN block b ON b.id = tx.block_id

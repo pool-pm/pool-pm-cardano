@@ -283,6 +283,15 @@ impl Worker {
                 for (reward_addr, amount) in tx.withdrawals_sorted_set() {
                     if reward_addr.len() >= 29 {
                         let cred = reward_addr[1..29].to_vec();
+                        // Feed index: a withdrawal is part of the credential's activity, so
+                        // flag its pool/drep — surfaces withdrawal-only blocks in pool/drep
+                        // feeds (zero-amount script-validation withdrawals included).
+                        if let Some(pool) = snap.and_then(|s| s.pool_delegations.get(&cred)) {
+                            stake_change_pools.insert(pool.clone());
+                        }
+                        if let Some(drep) = snap.and_then(|s| s.drep_delegations.get(&cred)) {
+                            stake_change_dreps.insert(drep.clone());
+                        }
                         withdrawal_changes.push((cred, amount as i64));
                     }
                 }

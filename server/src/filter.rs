@@ -116,6 +116,14 @@ pub fn extract_stake_credentials(tx: &BlockTx) -> Vec<Vec<u8>> {
             creds.push(cred);
         }
     }
+    // A withdrawal is a tx input from the reward account: count its stake credential so the
+    // tx matches the stake's own feed and the feeds of any pool/drep it delegates to
+    // (`stake_credential` can't resolve a reward `stake1…` address, so the synthetic
+    // withdrawal input added in `extract_tx` wouldn't otherwise contribute one). Zero-amount
+    // withdrawals are kept too — they're a legitimate script-validation pattern.
+    for (cred, _amount) in &tx.withdrawals {
+        creds.push(cred.clone());
+    }
     creds
 }
 
