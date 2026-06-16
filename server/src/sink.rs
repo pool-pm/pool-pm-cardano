@@ -39,7 +39,12 @@ impl Worker {
         {
             let mut state = stage.state.write().await;
             if state.rollback(slot) {
-                // Snapshot covered this slot, just truncate history
+                // Snapshot covered this slot, just truncate history. The off-chain
+                // ticker/name cache isn't block-derived, so a truncated refresh would be
+                // lost while its in-memory cursor stayed advanced; reset the cursors so
+                // the next block re-reads from 0 and re-applies current values.
+                state.pool_meta_cursor = 0;
+                state.drep_meta_cursor = 0;
             } else {
                 state
                     .reset(slot, &stage.genesis, stage.mainnet)
@@ -561,6 +566,55 @@ impl Worker {
             ) {
                 Ok(saved_slot) => info!(saved_slot, "snapshot saved"),
                 Err(e) => warn!("failed to save snapshot: {}", e),
+            }
+        }
+
+        // Idle off-chain metadata refresh (pool tickers / DRep names) during normal
+        // operation: a sub-ms MAX(id) gate, then read only rows newer than the cursor and
+        // apply to the latest snapshot. Off-chain data db-sync fetches asynchronously isn't
+        // in any block, so unlike decimals/handles it can't be derived per block — we poll.
+        // Runs off the chain_state lock (db queries between a brief read and write guard).
+        if catchup == 0 {
+            let (pc, dc, db) = {
+                let g = stage.state.read().await;
+                (g.pool_meta_cursor, g.drep_meta_cursor, g.db_handle())
+            };
+            if let Some(db) = db {
+                let pool = match db.max_pool_meta_id().await {
+                    Ok(max) if max > pc => db.pool_ticker_updates(pc).await.ok().map(|r| (r, max)),
+                    _ => None,
+                };
+                let drep = match db.max_drep_meta_id().await {
+                    Ok(max) if max > dc => {
+                        db.drep_metadata(i64::MAX, dc).await.ok().map(|d| (d, max))
+                    }
+                    _ => None,
+                };
+                if pool.is_some() || drep.is_some() {
+                    let mut g = stage.state.write().await;
+                    if let Some((rows, max)) = pool {
+                        if let Some(snap) = g.current_mut() {
+                            for (hash_raw, ticker, _) in rows {
+                                if let Some(p) = snap.pools.get_mut(&hex::encode(&hash_raw)) {
+                                    p.ticker = Some(ticker);
+                                }
+                            }
+                        }
+                        g.pool_meta_cursor = max;
+                    }
+                    if let Some((dreps, max)) = drep {
+                        if let Some(snap) = g.current_mut() {
+                            for (key, entry) in dreps {
+                                if let Some(name) = entry.given_name {
+                                    if let Some(target) = snap.dreps.get_mut(&key) {
+                                        target.given_name = Some(name);
+                                    }
+                                }
+                            }
+                        }
+                        g.drep_meta_cursor = max;
+                    }
+                }
             }
         }
 

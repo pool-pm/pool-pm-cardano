@@ -107,6 +107,12 @@ pub struct State {
     db_url: Url,
     db: tokio::sync::OnceCell<DbSync>,
     pub feed_index: FeedIndex,
+    // In-memory cursors for the live off-chain metadata refresh (pool tickers / DRep
+    // names). Not in BlockSnapshot, so the persisted snapshot stays independent of
+    // db-sync ids. Seeded to the current max at `reset`; left at 0 on warm resume so
+    // the first post-catch-up block backfills (and a rollback resets them to 0).
+    pub pool_meta_cursor: i64,
+    pub drep_meta_cursor: i64,
 }
 
 impl State {
@@ -116,6 +122,8 @@ impl State {
             db_url,
             db: tokio::sync::OnceCell::new(),
             feed_index: FeedIndex::new(),
+            pool_meta_cursor: 0,
+            drep_meta_cursor: 0,
         }
     }
 
@@ -510,8 +518,13 @@ impl State {
         tracing::info!("{} stake addresses with rewards", rewards.len());
 
         tracing::info!("Fetching DRep metadata...");
-        let dreps = db.drep_metadata(last_tx_id).await?;
+        let dreps = db.drep_metadata(last_tx_id, 0).await?;
         tracing::info!("{} DReps with metadata", dreps.len());
+
+        // Seed the live-refresh cursors to the current max: this reset just loaded the
+        // current tickers/names, so the per-block refresh only needs newer rows.
+        let pool_meta_cursor = db.max_pool_meta_id().await?;
+        let drep_meta_cursor = db.max_drep_meta_id().await?;
 
         tracing::info!("Fetching CIP-68 reference token decimals...");
         let cip68_rows = db.cip68_decimals(last_tx_id).await?;
@@ -603,6 +616,8 @@ impl State {
             gov_action_titles,
         });
         self.feed_index = FeedIndex::new();
+        self.pool_meta_cursor = pool_meta_cursor;
+        self.drep_meta_cursor = drep_meta_cursor;
 
         Ok(())
     }

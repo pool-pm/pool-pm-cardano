@@ -1035,6 +1035,7 @@ impl DbSync {
     pub async fn drep_metadata(
         &self,
         last_tx_id: i64,
+        since_id: i64,
     ) -> Result<HashMap<Vec<u8>, DRep>, sqlx::Error> {
         let mut rows = sqlx::query!(
             r#"SELECT dh.raw AS drep_raw,
@@ -1050,6 +1051,9 @@ impl DbSync {
             JOIN off_chain_vote_drep_data dd ON dd.off_chain_vote_data_id = ovd.id
             WHERE dr.tx_id <= $1
               AND dh.raw IS NOT NULL
+              -- Incremental cursor: only DReps whose off-chain metadata row is newer than
+              -- `since_id` (0 = all, at reset). Rollbacks never reuse ids, so > is safe.
+              AND dd.id > $2
               -- Latest registration that carried an anchor: a deregistration (and the
               -- initial register cert) has voting_anchor_id NULL, so picking the plain
               -- MAX(id) would drop the name of a deregistered/updated DRep whose
@@ -1059,7 +1063,8 @@ impl DbSync {
                   WHERE dr2.drep_hash_id = dr.drep_hash_id AND dr2.tx_id <= $1
                     AND dr2.voting_anchor_id IS NOT NULL
               )"#,
-            last_tx_id
+            last_tx_id,
+            since_id
         )
         .fetch(&self.db);
 
@@ -1079,6 +1084,46 @@ impl DbSync {
         }
 
         Ok(dreps)
+    }
+
+    /// Highest `off_chain_pool_data.id` — the cheap (PK max) gate for the live
+    /// ticker refresh: only query the rows themselves when this exceeds the cursor.
+    pub async fn max_pool_meta_id(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar!(r#"SELECT COALESCE(MAX(id), 0) AS "max!" FROM off_chain_pool_data"#)
+            .fetch_one(&self.db)
+            .await
+    }
+
+    /// Highest `off_chain_vote_drep_data.id` — gate for the live DRep-name refresh.
+    pub async fn max_drep_meta_id(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar!(
+            r#"SELECT COALESCE(MAX(id), 0) AS "max!" FROM off_chain_vote_drep_data"#
+        )
+        .fetch_one(&self.db)
+        .await
+    }
+
+    /// Off-chain pool tickers fetched since `since_id` (0 = all). Returns
+    /// `(pool hash_raw, ticker, off_chain_pool_data.id)` ordered by id, so applying
+    /// in order leaves the latest ticker per pool. db-sync appends a row per fetch and
+    /// never reuses ids, so `id > since_id` is rollback-safe.
+    pub async fn pool_ticker_updates(
+        &self,
+        since_id: i64,
+    ) -> Result<Vec<(Vec<u8>, String, i64)>, sqlx::Error> {
+        Ok(sqlx::query!(
+            r#"SELECT ph.hash_raw, ocpd.ticker_name AS "ticker_name!", ocpd.id
+            FROM off_chain_pool_data ocpd
+            JOIN pool_hash ph ON ph.id = ocpd.pool_id
+            WHERE ocpd.id > $1
+            ORDER BY ocpd.id"#,
+            since_id
+        )
+        .fetch_all(&self.db)
+        .await?
+        .into_iter()
+        .map(|r| (r.hash_raw, r.ticker_name, r.id))
+        .collect())
     }
 
     /// Fetch CIP-68 decimals, keyed by the **user token** that actually carries
