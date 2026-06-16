@@ -30,6 +30,14 @@ type ResolvedUtxos =
 /// init (as they did at the previous 15s threshold).
 const SLOW_QUERY_THRESHOLD: Duration = Duration::from_secs(1);
 
+/// `*_recent_blocks` fetches at most `limit * TOUCH_FACTOR` of a subject's most-recent
+/// `tx_out` touches per side (produced/consumed) before grouping to blocks. It must be
+/// large enough to span `limit` distinct blocks so the caller's `has_more = (returned ==
+/// limit)` pagination stays correct; 256 covers up to ~256 touches/block while keeping
+/// each side an index-only top-K (a few ms). A subject sustaining more than that over
+/// `limit` blocks would just paginate in smaller chunks — no correctness loss.
+const TOUCH_FACTOR: i64 = 256;
+
 /// Cheap to clone — `sqlx::Pool` is internally `Arc`-shared, so a `DbSync`
 /// clone reuses the same underlying connection pool. Cloning hands a db
 /// handle to a caller that wants to run queries without holding a lock on the
@@ -126,25 +134,45 @@ impl DbSync {
         before_slot: i64,
         limit: i64,
     ) -> Result<Vec<(u64, String, u64, u64)>, sqlx::Error> {
+        let Some(stake_id) =
+            sqlx::query_scalar!("SELECT id FROM stake_address WHERE hash_raw = $1", hash_raw)
+                .fetch_optional(&self.db)
+                .await?
+        else {
+            return Ok(Vec::new());
+        };
         let rows = sqlx::query!(
-            r#"SELECT b.slot_no AS "slot_no!", b.hash, b.block_no AS "block_no!",
-                      b.epoch_no AS "epoch_no!"
+            // `bnd` = tx_id boundary for "blocks strictly older than before_slot" (the first
+            // tx of the first block at/after it; i64::MAX on the first page). Each UNION arm
+            // is an index-only top-K backward scan on its composite — (subject, tx_id) for
+            // receives, (subject, consumed_by_tx_id) for sends — so only ~2K touches are
+            // grouped to blocks, not the subject's whole history.
+            r#"WITH bnd AS MATERIALIZED (
+                SELECT COALESCE(MIN(t.id), 9223372036854775807) AS max_tx_id
+                FROM tx t
+                WHERE t.block_id =
+                    (SELECT id FROM block WHERE slot_no >= $2 ORDER BY slot_no ASC LIMIT 1)
+            )
+            SELECT b.slot_no AS "slot_no!", b.hash, b.block_no AS "block_no!",
+                   b.epoch_no AS "epoch_no!"
             FROM (
-                SELECT tx_id FROM tx_out
-                  WHERE stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+                (SELECT tx_id FROM tx_out
+                   WHERE stake_address_id = $1 AND tx_id < (SELECT max_tx_id FROM bnd)
+                   ORDER BY tx_id DESC LIMIT $3)
                 UNION
-                SELECT consumed_by_tx_id AS tx_id FROM tx_out
-                  WHERE stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
-                    AND consumed_by_tx_id IS NOT NULL
+                (SELECT consumed_by_tx_id AS tx_id FROM tx_out
+                   WHERE stake_address_id = $1 AND consumed_by_tx_id IS NOT NULL
+                     AND consumed_by_tx_id < (SELECT max_tx_id FROM bnd)
+                   ORDER BY consumed_by_tx_id DESC LIMIT $3)
             ) t
             JOIN tx ON tx.id = t.tx_id
             JOIN block b ON b.id = tx.block_id
-            WHERE b.slot_no < $2
             GROUP BY b.id, b.slot_no, b.hash, b.block_no, b.epoch_no
             ORDER BY b.slot_no DESC
-            LIMIT $3"#,
-            hash_raw,
+            LIMIT $4"#,
+            stake_id,
             before_slot,
+            limit.saturating_mul(TOUCH_FACTOR),
             limit
         )
         .fetch_all(&self.db)
@@ -176,25 +204,40 @@ impl DbSync {
         let Some(raw) = address_raw(address) else {
             return Ok(Vec::new());
         };
+        let Some(addr_id) = sqlx::query_scalar!("SELECT id FROM address WHERE raw = $1", raw)
+            .fetch_optional(&self.db)
+            .await?
+        else {
+            return Ok(Vec::new());
+        };
+        // Same shape as `stake_recent_blocks`; see its comment for the bnd/early-LIMIT logic.
         let rows = sqlx::query!(
-            r#"SELECT b.slot_no AS "slot_no!", b.hash, b.block_no AS "block_no!",
-                      b.epoch_no AS "epoch_no!"
+            r#"WITH bnd AS MATERIALIZED (
+                SELECT COALESCE(MIN(t.id), 9223372036854775807) AS max_tx_id
+                FROM tx t
+                WHERE t.block_id =
+                    (SELECT id FROM block WHERE slot_no >= $2 ORDER BY slot_no ASC LIMIT 1)
+            )
+            SELECT b.slot_no AS "slot_no!", b.hash, b.block_no AS "block_no!",
+                   b.epoch_no AS "epoch_no!"
             FROM (
-                SELECT tx_id FROM tx_out
-                  WHERE address_id IN (SELECT id FROM address WHERE raw = $1)
+                (SELECT tx_id FROM tx_out
+                   WHERE address_id = $1 AND tx_id < (SELECT max_tx_id FROM bnd)
+                   ORDER BY tx_id DESC LIMIT $3)
                 UNION
-                SELECT consumed_by_tx_id AS tx_id FROM tx_out
-                  WHERE address_id IN (SELECT id FROM address WHERE raw = $1)
-                    AND consumed_by_tx_id IS NOT NULL
+                (SELECT consumed_by_tx_id AS tx_id FROM tx_out
+                   WHERE address_id = $1 AND consumed_by_tx_id IS NOT NULL
+                     AND consumed_by_tx_id < (SELECT max_tx_id FROM bnd)
+                   ORDER BY consumed_by_tx_id DESC LIMIT $3)
             ) t
             JOIN tx ON tx.id = t.tx_id
             JOIN block b ON b.id = tx.block_id
-            WHERE b.slot_no < $2
             GROUP BY b.id, b.slot_no, b.hash, b.block_no, b.epoch_no
             ORDER BY b.slot_no DESC
-            LIMIT $3"#,
-            raw,
+            LIMIT $4"#,
+            addr_id,
             before_slot,
+            limit.saturating_mul(TOUCH_FACTOR),
             limit
         )
         .fetch_all(&self.db)
