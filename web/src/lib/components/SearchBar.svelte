@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import { searchTarget, searchSuggestions } from '../search';
-  import { poolColor, formatTicker } from '../layout';
+  import { poolColor, formatTicker, formatCount, formatAdaCompact } from '../layout';
   import type { SearchResult } from '../types';
 
   // `visible` is the shared idle-fade state (from App). The closed icon follows
@@ -100,8 +100,13 @@
   {#if open && results.length > 0}
     <div class="results">
       {#each results as r (r.id)}
-        <a class="result" href={`/${r.id}`} style:color={poolColor(r.id)}>
-          {r.kind === 'pool' ? formatTicker(r.label) : r.label}
+        <a class="result" href={`/${r.id}`}>
+          <span class="kind">{r.kind === 'pool' ? 'POOL' : 'DREP'}</span>
+          <span class="name" style:color={poolColor(r.id)}>
+            {r.kind === 'pool' ? formatTicker(r.label) : r.label}
+          </span>
+          <span class="col deleg">{formatCount(r.delegators)}&nbsp;deleg</span>
+          <span class="col stake">{formatAdaCompact(r.live_stake)}</span>
         </a>
       {/each}
     </div>
@@ -155,16 +160,50 @@
     flex-direction: column;
   }
   .result {
-    padding: 10px 16px;
-    font-size: 15px;
-    font-weight: 600;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 10px 14px;
     text-decoration: none;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   .result:hover {
     background: rgb(255 255 255 / 0.08);
+  }
+  /* Kind label first; fixed width so names line up. */
+  .kind {
+    flex-shrink: 0;
+    align-self: center;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #bbb;
+    background: rgb(255 255 255 / 0.1);
+    padding: 2px 5px;
+    border-radius: 4px;
+  }
+  /* Ticker/name takes the slack and truncates so the row never overflows on mobile. */
+  .name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  /* Fixed-width, right-aligned columns so delegators and stake line up across rows. */
+  .col {
+    flex-shrink: 0;
+    font-size: 12px;
+    color: #999;
+    white-space: nowrap;
+    text-align: right;
+  }
+  .deleg {
+    width: 70px;
+  }
+  .stake {
+    width: 64px;
   }
 
   .search-input {

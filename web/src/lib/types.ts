@@ -174,6 +174,9 @@ export interface SearchResult {
   id: string;
   label: string;
   kind: 'pool' | 'drep';
+  delegators: number;
+  /** Live stake in lovelace (string — exceeds Number.MAX_SAFE_INTEGER). */
+  live_stake: string;
 }
 
 export interface DRepInfo {

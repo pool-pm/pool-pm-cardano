@@ -9,6 +9,21 @@ export function formatTicker(ticker: string): string {
     .slice(0, 5);
 }
 
+/** Compact count for tight rows (e.g. search results): 1234 → "1.2k", 12345 → "12k". */
+export function formatCount(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10_000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+  if (n < 1_000_000) return Math.round(n / 1000) + 'k';
+  if (n < 10_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n < 1_000_000_000) return Math.round(n / 1_000_000) + 'M';
+  return (n / 1_000_000_000).toFixed(1).replace(/\.0$/, '') + 'B';
+}
+
+/** Compact ADA from a lovelace string for tight rows: "12345678000000" → "12.3M ₳". */
+export function formatAdaCompact(lovelace: string): string {
+  return formatCount(Number(BigInt(lovelace) / 1_000_000n)) + ' ₳';
+}
+
 // Largest sRGB-displayable OKLCH chroma for a given lightness & hue, found by
 // binary-searching the oklab→linear-sRGB gamut boundary (Ottosson's matrices).
 // Lets us vary chroma without straying past the gamut, where higher values just

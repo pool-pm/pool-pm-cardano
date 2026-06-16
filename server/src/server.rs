@@ -23,7 +23,7 @@ use tracing::{info, warn};
 use crate::event::{format_quantity, AssetInfo, BlockTx, DelegationInfo, TxInput, TxOutputInfo};
 use crate::event_bus::EventBus;
 use crate::filter;
-use crate::model::{asset_fingerprint, drep_bech32_id, pool_bech32_id, Pool, TxOutput};
+use crate::model::{asset_fingerprint, drep_bech32_id, pool_bech32_id, DRep, Pool, TxOutput};
 use crate::nftcdn::{rung_for_dpr, NftcdnConfig, SIZE_LADDER};
 use crate::state::feed_index::BlockRef;
 use crate::state::{BlockSnapshot, State};
@@ -248,6 +248,10 @@ struct SearchResult {
     /// Raw ticker / given name.
     label: String,
     kind: &'static str,
+    /// Delegator count (both kinds).
+    delegators: usize,
+    /// Live stake in lovelace, serialized as a string (can exceed 2^53).
+    live_stake: String,
 }
 
 /// Score a candidate (ticker / name) against the query, case-insensitively. Higher is
@@ -283,37 +287,32 @@ async fn search(
     if q.len() < SEARCH_MIN_QUERY_LEN {
         return axum::Json(vec![]);
     }
-    // O(1)-clone the maps under a brief read lock, then score off-lock.
-    let (pools, dreps, epoch) = {
+    // O(1)-clone the whole snapshot under a brief read lock, then score off-lock.
+    let (snap, epoch) = {
         let guard = state.chain_state.read().await;
         let Some(snap) = guard.current() else {
             return axum::Json(vec![]);
         };
-        (
-            snap.pools.clone(),
-            snap.dreps.clone(),
-            snap.last_epoch.unwrap_or(0) as i64,
-        )
+        (snap.clone(), snap.last_epoch.unwrap_or(0) as i64)
     };
 
-    let mut scored: Vec<(f32, SearchResult)> = Vec::new();
-    for pool in pools.values() {
+    // Score each active pool/drep, carrying a reference. `live_stake` is O(delegators), so
+    // it's resolved only for the truncated top results below, not every match.
+    enum Hit<'a> {
+        Pool(&'a Pool),
+        DRep(&'a DRep),
+    }
+    let mut scored: Vec<(f32, Hit)> = Vec::new();
+    for pool in snap.pools.values() {
         if pool.retiring_epoch.is_some_and(|e| e <= epoch) {
             continue; // retired
         }
         let Some(ticker) = &pool.ticker else { continue };
         if let Some(score) = search_score(&q, ticker) {
-            scored.push((
-                score,
-                SearchResult {
-                    id: pool_bech32_id(&pool.hash_raw),
-                    label: ticker.clone(),
-                    kind: "pool",
-                },
-            ));
+            scored.push((score, Hit::Pool(pool)));
         }
     }
-    for drep in dreps.values() {
+    for drep in snap.dreps.values() {
         if drep.active_until.is_none_or(|e| e < epoch) {
             continue; // expired / deregistered
         }
@@ -321,20 +320,44 @@ async fn search(
             continue;
         };
         if let Some(score) = search_score(&q, name) {
-            scored.push((
-                score,
-                SearchResult {
-                    id: drep_bech32_id(&drep.hash_bytes),
-                    label: name.clone(),
-                    kind: "drep",
-                },
-            ));
+            scored.push((score, Hit::DRep(drep)));
         }
     }
-    // Best score first; truncate to the limit.
+    // Best score first; truncate, then resolve delegators + live stake for the survivors.
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
     scored.truncate(SEARCH_LIMIT);
-    axum::Json(scored.into_iter().map(|(_, r)| r).collect())
+    let results: Vec<SearchResult> = scored
+        .into_iter()
+        .map(|(_, hit)| match hit {
+            Hit::Pool(pool) => SearchResult {
+                id: pool_bech32_id(&pool.hash_raw),
+                label: pool.ticker.clone().unwrap_or_default(),
+                kind: "pool",
+                delegators: snap
+                    .pool_delegators
+                    .get(&pool.hash_raw)
+                    .map(|d| d.len())
+                    .unwrap_or(0),
+                live_stake: State::pool_live_stake(&snap, &pool.hash_raw)
+                    .unwrap_or(0)
+                    .to_string(),
+            },
+            Hit::DRep(drep) => SearchResult {
+                id: drep_bech32_id(&drep.hash_bytes),
+                label: drep.given_name.clone().unwrap_or_default(),
+                kind: "drep",
+                delegators: snap
+                    .drep_delegators
+                    .get(&drep.hash_bytes)
+                    .map(|d| d.len())
+                    .unwrap_or(0),
+                live_stake: State::drep_live_stake(&snap, &drep.hash_bytes)
+                    .unwrap_or(0)
+                    .to_string(),
+            },
+        })
+        .collect();
+    axum::Json(results)
 }
 
 #[derive(serde::Serialize)]
