@@ -1064,13 +1064,24 @@ impl DbSync {
         hash_raw: &[u8],
         min_slot: i64,
     ) -> Result<Vec<(i64, i64)>, sqlx::Error> {
+        // Bound on `w.tx_id` (not `b.slot_no` post-join): tx ids increase monotonically
+        // with chain order, so `tx_id >= first-tx-of-first-block-at-slot-≥-min_slot` is
+        // exactly `slot_no >= min_slot`. This lets the (addr_id, tx_id) composite seek
+        // straight to the account's recent withdrawals instead of `idx_withdrawal_addr_id`
+        // fetching *all* of them (≈1.5M for a script stake) only to drop the old ones.
         let rows = sqlx::query!(
-            r#"SELECT b.slot_no AS "slot!", w.amount::bigint AS "amount!"
+            r#"WITH bnd AS MATERIALIZED (
+                SELECT COALESCE(MIN(t.id), 9223372036854775807) AS min_tx_id
+                FROM tx t
+                WHERE t.block_id =
+                    (SELECT id FROM block WHERE slot_no >= $2 ORDER BY slot_no ASC LIMIT 1)
+            )
+            SELECT b.slot_no AS "slot!", w.amount::bigint AS "amount!"
             FROM withdrawal w
             JOIN tx ON tx.id = w.tx_id
             JOIN block b ON b.id = tx.block_id
             WHERE w.addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
-              AND b.slot_no >= $2"#,
+              AND w.tx_id >= (SELECT min_tx_id FROM bnd)"#,
             hash_raw,
             min_slot,
         )
