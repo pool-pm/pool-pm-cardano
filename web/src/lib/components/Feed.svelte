@@ -479,12 +479,16 @@
             >
           </div>
         {/if}
-        {#if $stake.assets_count !== undefined && $stake.assets_count > 0}
+        {#if $stake.assets_count !== undefined}
           <div class="pool-param">
             <span class="pool-param-label">assets</span>
-            <a class="pool-param-value stake-link" style:color href="/{$stake.stake_address}/assets"
-              >{$stake.assets_count}</a
-            >
+            {#if $stake.assets_count > 0}
+              <a class="pool-param-value stake-link" style:color href="/{$stake.stake_address}/assets"
+                >{$stake.assets_count}</a
+              >
+            {:else}
+              <span class="pool-param-value">{$stake.assets_count}</span>
+            {/if}
           </div>
         {/if}
       </div>
