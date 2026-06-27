@@ -100,6 +100,9 @@ const SEARCH_LIMIT: usize = 12;
 const SEARCH_MIN_QUERY_LEN: usize = 2;
 /// Jaro-Winkler similarity below which a non-substring candidate is dropped.
 const SEARCH_FUZZY_THRESHOLD: f32 = 0.7;
+/// Hex length of a 28-byte blake2b-224 hash — the format shared by a raw pool hash
+/// and a minting policy id (so a bare hex of this length is ambiguous between them).
+const POOL_HASH_HEX_LEN: usize = 56;
 
 // --- SSE event builders ---
 
@@ -338,6 +341,38 @@ async fn search(
                 live_stake: None,
             })
             .collect();
+        return axum::Json(results);
+    }
+
+    // A bare 56-hex query is an ambiguous 28-byte hash — a raw pool hash and a
+    // minting policy id are indistinguishable by format. Resolve it against the live
+    // pool registry (`pools` is keyed by hex hash): if it's a registered pool, return
+    // it so the frontend opens the pool feed; otherwise return nothing and the
+    // frontend falls back to treating the hex as a policy id (`/policy/{hex}`).
+    if q.len() == POOL_HASH_HEX_LEN && q.bytes().all(|b| b.is_ascii_hexdigit()) {
+        let hex = q.to_ascii_lowercase();
+        let results = snap
+            .pools
+            .get(&hex)
+            .map(|pool| {
+                vec![SearchResult {
+                    id: pool_bech32_id(&pool.hash_raw),
+                    label: pool.ticker.clone().unwrap_or_default(),
+                    kind: "pool",
+                    delegators: Some(
+                        snap.pool_delegators
+                            .get(&pool.hash_raw)
+                            .map(|d| d.len())
+                            .unwrap_or(0),
+                    ),
+                    live_stake: Some(
+                        State::pool_live_stake(&snap, &pool.hash_raw)
+                            .unwrap_or(0)
+                            .to_string(),
+                    ),
+                }]
+            })
+            .unwrap_or_default();
         return axum::Json(results);
     }
 

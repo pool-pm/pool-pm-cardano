@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import { searchTarget, searchSuggestions } from '../search';
+  import { searchTarget, isHash, resolveHexTarget, searchSuggestions } from '../search';
   import { poolColor, formatTicker, formatCount, formatAdaCompact } from '../layout';
   import type { SearchResult } from '../types';
 
@@ -47,6 +47,15 @@
     const target = searchTarget(query);
     if (target) {
       location.href = target;
+      return;
+    }
+    // A complete 56-hex hash is a pool hash or a policy id; resolve server-side
+    // (pool feed if registered, else the policy page) and navigate.
+    if (isHash(query)) {
+      const gen = ++searchGen;
+      resolveHexTarget(query).then((url) => {
+        if (gen === searchGen) location.href = url;
+      });
       return;
     }
     clearTimeout(debounceTimer);

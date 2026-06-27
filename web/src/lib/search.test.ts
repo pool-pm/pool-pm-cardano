@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { sanitizeQuery, searchTarget } from './search';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { sanitizeQuery, searchTarget, isHash, resolveHexTarget } from './search';
 
 // Real mainnet addresses + valid testnet/script addresses constructed from them
 // (same credential, flipped network nibble / script HRP, recomputed checksum).
@@ -13,6 +13,9 @@ const ADDR_TEST =
   'addr_test1qr00ecxug9zluh2jn8xmeu5n6u70fs29y08wzekc2g92uz5rxdepg3qvntr62h5p0cyhlrlyk6vfwywkkxjg7n8jd9gstzqjvs';
 const ASSET = 'asset1wd3llgkhsw6etxf2yca6cgk9ssrpva3wf0pq9a';
 const POLICY = 'a5bb0e5bb275a573d744a021f9b3bff73595468e002755b447e01559'; // 56 hex
+// A real pool hash (28 bytes) and its bech32 — same hex format as POLICY.
+const POOL_HASH = 'abacadaba9f12a8b5382fc370e4e7e69421fb59831bb4ecca3a11d9b';
+const POOL_BECH = 'pool14wk2m2af7y4gk5uzlsmsunn7d9ppldvcxxa5an9r5ywek8330fg';
 
 describe('sanitizeQuery', () => {
   it('lowercases and keeps only [a-z0-9_]', () => {
@@ -38,22 +41,67 @@ describe('searchTarget', () => {
     expect(searchTarget(DREP_SCRIPT)).toBe(`/${DREP_SCRIPT}`);
   });
 
-  it('routes a 56-hex policy id to /policy', () => {
-    expect(searchTarget(POLICY)).toBe(`/policy/${POLICY}`);
+  it('does NOT route a bare 56-hex hash (ambiguous pool-hash vs policy-id)', () => {
+    // Resolved by resolveHexTarget instead; searchTarget only knows bech32.
+    expect(searchTarget(POLICY)).toBeNull();
+    expect(searchTarget(POOL_HASH)).toBeNull();
   });
 
   it('sanitizes before matching (case + stray characters)', () => {
     expect(searchTarget(` ${POOL.toUpperCase()} `)).toBe(`/${POOL}`);
-    expect(searchTarget(POLICY.toUpperCase())).toBe(`/policy/${POLICY}`);
   });
 
   it('returns null while incomplete or invalid', () => {
     expect(searchTarget('')).toBeNull();
     expect(searchTarget('pool1')).toBeNull(); // partial
     expect(searchTarget(POOL.slice(0, -1) + 'q')).toBeNull(); // tampered checksum
-    expect(searchTarget(POLICY.slice(0, 54))).toBeNull(); // 54 hex
-    expect(searchTarget(POLICY + '00')).toBeNull(); // 58 hex
     expect(searchTarget('notanaddress')).toBeNull();
     expect(searchTarget('asset1notavalidchecksum')).toBeNull();
+  });
+});
+
+describe('isHash', () => {
+  it('true for a complete 56-hex hash (case- and space-insensitive)', () => {
+    expect(isHash(POLICY)).toBe(true);
+    expect(isHash(POOL_HASH.toUpperCase())).toBe(true);
+    expect(isHash(`  ${POOL_HASH}  `)).toBe(true);
+  });
+
+  it('false for partial, over-length, or non-hex', () => {
+    expect(isHash(POLICY.slice(0, 54))).toBe(false); // 54 hex
+    expect(isHash(POLICY + '00')).toBe(false); // 58 hex
+    expect(isHash(POOL)).toBe(false); // bech32, not bare hex
+    expect(isHash('')).toBe(false);
+  });
+});
+
+describe('resolveHexTarget', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function mockSearch(hits: unknown) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, json: async () => hits })),
+    );
+  }
+
+  it('routes a registered pool hash to its pool feed', async () => {
+    mockSearch([{ id: POOL_BECH, label: 'SMAUG', kind: 'pool' }]);
+    expect(await resolveHexTarget(POOL_HASH)).toBe(`/${POOL_BECH}`);
+  });
+
+  it('falls back to /policy when the hex is not a known pool', async () => {
+    mockSearch([]);
+    expect(await resolveHexTarget(POLICY)).toBe(`/policy/${POLICY}`);
+  });
+
+  it('falls back to /policy on a fetch error', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('network');
+      }),
+    );
+    expect(await resolveHexTarget(POLICY)).toBe(`/policy/${POLICY}`);
   });
 });
