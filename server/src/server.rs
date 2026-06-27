@@ -252,15 +252,19 @@ struct SearchQuery {
 
 #[derive(serde::Serialize)]
 struct SearchResult {
-    /// bech32 pool/drep id; the frontend colors and links by this.
+    /// What the frontend colors and links by: a bech32 pool/drep id, or — for a
+    /// handle hit — the holder's payment address (so the row links to its feed).
     id: String,
-    /// Raw ticker / given name.
+    /// Raw ticker / given name, or the handle name (without the leading `$`).
     label: String,
     kind: &'static str,
-    /// Delegator count (both kinds).
-    delegators: usize,
+    /// Delegator count (pool/drep only; absent for handles).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delegators: Option<usize>,
     /// Live stake in lovelace, serialized as a string (can exceed 2^53).
-    live_stake: String,
+    /// Pool/drep only; absent for handles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    live_stake: Option<String>,
 }
 
 /// Score a candidate (ticker / name) against the query, case-insensitively. Higher is
@@ -305,6 +309,38 @@ async fn search(
         (snap.clone(), snap.last_epoch.unwrap_or(0) as i64)
     };
 
+    // A `$`-prefixed query searches ADA Handles by string distance instead of
+    // pools/DReps. `address_by_handle` (handle name → resolved holder address, kept
+    // live by the sink) is scanned off-lock with the same scorer; each hit links to
+    // the holder's address feed (`id` = address).
+    if let Some(hq) = q.strip_prefix('$') {
+        let mut scored: Vec<(f32, &String, &String)> = Vec::new();
+        for (handle, address) in snap.address_by_handle.iter() {
+            if let Some(score) = search_score(hq, handle) {
+                scored.push((score, handle, address));
+            }
+        }
+        // Best score first; break ties toward the shorter (then alphabetically lower)
+        // handle so results are stable and the closest match leads.
+        scored.sort_by(|a, b| {
+            b.0.total_cmp(&a.0)
+                .then_with(|| a.1.len().cmp(&b.1.len()))
+                .then_with(|| a.1.cmp(b.1))
+        });
+        scored.truncate(SEARCH_LIMIT);
+        let results: Vec<SearchResult> = scored
+            .into_iter()
+            .map(|(_, handle, address)| SearchResult {
+                id: address.clone(),
+                label: handle.clone(),
+                kind: "handle",
+                delegators: None,
+                live_stake: None,
+            })
+            .collect();
+        return axum::Json(results);
+    }
+
     // Score each active pool/drep, carrying a reference. `live_stake` is O(delegators), so
     // it's resolved only for the truncated top results below, not every match.
     enum Hit<'a> {
@@ -342,27 +378,33 @@ async fn search(
                 id: pool_bech32_id(&pool.hash_raw),
                 label: pool.ticker.clone().unwrap_or_default(),
                 kind: "pool",
-                delegators: snap
-                    .pool_delegators
-                    .get(&pool.hash_raw)
-                    .map(|d| d.len())
-                    .unwrap_or(0),
-                live_stake: State::pool_live_stake(&snap, &pool.hash_raw)
-                    .unwrap_or(0)
-                    .to_string(),
+                delegators: Some(
+                    snap.pool_delegators
+                        .get(&pool.hash_raw)
+                        .map(|d| d.len())
+                        .unwrap_or(0),
+                ),
+                live_stake: Some(
+                    State::pool_live_stake(&snap, &pool.hash_raw)
+                        .unwrap_or(0)
+                        .to_string(),
+                ),
             },
             Hit::DRep(drep) => SearchResult {
                 id: drep_bech32_id(&drep.hash_bytes),
                 label: drep.given_name.clone().unwrap_or_default(),
                 kind: "drep",
-                delegators: snap
-                    .drep_delegators
-                    .get(&drep.hash_bytes)
-                    .map(|d| d.len())
-                    .unwrap_or(0),
-                live_stake: State::drep_live_stake(&snap, &drep.hash_bytes)
-                    .unwrap_or(0)
-                    .to_string(),
+                delegators: Some(
+                    snap.drep_delegators
+                        .get(&drep.hash_bytes)
+                        .map(|d| d.len())
+                        .unwrap_or(0),
+                ),
+                live_stake: Some(
+                    State::drep_live_stake(&snap, &drep.hash_bytes)
+                        .unwrap_or(0)
+                        .to_string(),
+                ),
             },
         })
         .collect();

@@ -185,15 +185,18 @@ export interface CardanoInfo {
   staked_percent: number;
 }
 
-/** One `/api/search` hit — a pool ticker or DRep name match. */
+/** One `/api/search` hit — a pool ticker, DRep name, or ADA Handle match. */
 export interface SearchResult {
-  /** bech32 pool/drep id; used for color and navigation (`/{id}`). */
+  /** For pool/drep: the bech32 id. For a handle: the holder's payment address.
+   * Used for color and navigation (`/{id}`). */
   id: string;
+  /** Ticker / DRep name, or the handle (without the leading `$`). */
   label: string;
-  kind: 'pool' | 'drep';
-  delegators: number;
-  /** Live stake in lovelace (string — exceeds Number.MAX_SAFE_INTEGER). */
-  live_stake: string;
+  kind: 'pool' | 'drep' | 'handle';
+  /** Pool/drep only. */
+  delegators?: number;
+  /** Live stake in lovelace (string — exceeds Number.MAX_SAFE_INTEGER). Pool/drep only. */
+  live_stake?: string;
 }
 
 export interface DRepInfo {

@@ -19,6 +19,11 @@
     location.href = `/${id}`;
   }
 
+  // Compact a long bech32 address for the handle-result row (e.g. addr1q8e533…u6aldq).
+  function shortAddr(a: string): string {
+    return a.length > 22 ? `${a.slice(0, 12)}…${a.slice(-6)}` : a;
+  }
+
   async function onIconClick(e: MouseEvent) {
     // Don't let the button keep focus after its action — otherwise an orientation
     // reflow can re-show its focus ring.
@@ -99,14 +104,18 @@
   </div>
   {#if open && results.length > 0}
     <div class="results">
-      {#each results as r (r.id)}
+      {#each results as r (`${r.kind}:${r.id}:${r.label}`)}
         <a class="result" href={`/${r.id}`}>
-          <span class="kind">{r.kind === 'pool' ? 'POOL' : 'DREP'}</span>
+          <span class="kind">{r.kind.toUpperCase()}</span>
           <span class="name" style:color={poolColor(r.id)}>
-            {r.kind === 'pool' ? formatTicker(r.label) : r.label}
+            {r.kind === 'pool' ? formatTicker(r.label) : r.kind === 'handle' ? `$${r.label}` : r.label}
           </span>
-          <span class="col deleg">{formatCount(r.delegators)}&nbsp;deleg</span>
-          <span class="col stake">{formatAdaCompact(r.live_stake)}</span>
+          {#if r.kind === 'handle'}
+            <span class="col addr">{shortAddr(r.id)}</span>
+          {:else}
+            <span class="col deleg">{formatCount(r.delegators ?? 0)}&nbsp;deleg</span>
+            <span class="col stake">{formatAdaCompact(r.live_stake ?? '0')}</span>
+          {/if}
         </a>
       {/each}
     </div>
@@ -204,6 +213,12 @@
   }
   .stake {
     width: 64px;
+  }
+  /* Handle row: show the destination address (where the row links) in monospace. */
+  .addr {
+    width: 134px;
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
 
   .search-input {
