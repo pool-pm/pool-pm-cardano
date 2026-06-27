@@ -156,7 +156,24 @@ export interface ReplayCursorEvent {
   stake?: string;
 }
 
-export type Event = MempoolTxEvent | BlockEvent | RollbackEvent | MempoolPruneEvent | ReplayCursorEvent;
+/** One row of a per-epoch REWARDS capsule: the reward `type` as `label`, the
+ * amount (lovelace string), and the source pool for pool rewards (member/leader). */
+export interface RewardRow {
+  label: string;
+  amount: string;
+  pool_id?: string;
+  pool_ticker?: string;
+}
+
+export interface RewardEvent {
+  type: 'Reward';
+  epoch: number;
+  slot: number;
+  timestamp: number;
+  rows: RewardRow[];
+}
+
+export type Event = MempoolTxEvent | BlockEvent | RollbackEvent | MempoolPruneEvent | ReplayCursorEvent | RewardEvent;
 
 /** Homepage network stats (the global feed's "subject"). */
 export interface CardanoInfo {
@@ -234,6 +251,14 @@ export interface Section {
     timestamp: number;
     pool_id?: string;
     pool_ticker?: string;
+  };
+  /** A per-epoch REWARDS capsule (positioned at the epoch-change `slot`/`timestamp`).
+   * Mutually exclusive with `block`; has no `txs`. */
+  reward?: {
+    epoch: number;
+    slot: number;
+    timestamp: number;
+    rows: RewardRow[];
   };
   receivedAt: number;
 }

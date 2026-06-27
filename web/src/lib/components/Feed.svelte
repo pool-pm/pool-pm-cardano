@@ -116,8 +116,9 @@
       const section = sects[i];
       let spacing = 0;
       if (i > 0) {
-        const prev = sects[i - 1].block?.timestamp ?? now / 1000;
-        const timeDelta = section.block ? Math.max(0, prev - section.block.timestamp) : 0;
+        const prev = sects[i - 1].block?.timestamp ?? sects[i - 1].reward?.timestamp ?? now / 1000;
+        const curTime = section.block?.timestamp ?? section.reward?.timestamp;
+        const timeDelta = curTime != null ? Math.max(0, prev - curTime) : 0;
         const maxSpacing = Math.round((landscape ? feedWidth : feedHeight) / 2);
         spacing = Math.min(
           maxSpacing,
@@ -324,6 +325,8 @@
   });
 
   function sectionColors(section: Section): { bg: string; border: string; accent: string } {
+    // Reward capsule: neutral (not pool-colored) with a visible gray border.
+    if (section.reward) return { bg: '#1c1c1c', border: '#555', accent: 'rgb(255 255 255 / 0.4)' };
     if (!section.block) return { bg: '#222', border: '#222', accent: 'rgb(255 255 255 / 0.4)' };
     const c = poolColor(section.block.pool_id);
     return { bg: c, border: c, accent: c };
@@ -547,13 +550,14 @@
   {/if}
   <div class="canvas" style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}>
     {#each $sections as section, i (section.id)}
-      {@const isMempool = !section.block}
+      {@const isMempool = !section.block && !section.reward}
       {@const colors = sectionColors(section)}
       {@const layout = sectionPositions.get(section.id)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="section"
         class:mempool={isMempool}
+        class:reward-capsule={!!section.reward}
         class:animated
         class:measured={canvasSize > 0}
         class:has-line={i > 0 && (layout?.spacing ?? 0) > 0}
@@ -573,44 +577,69 @@
         use:introScale
         out:slide|local={{ duration: isMempool ? 0 : FLIP_DURATION, axis: landscape ? 'x' : 'y' }}
       >
-        <div class="block-header">
-          {#if isMempool && $config?.genesis}
-            {@const ei = epochInfo($config.genesis)}
-            <span class="block-meta">Epoch {ei.epoch}</span>
-            <span class="block-meta">{formatTimeLeft(ei.epochEnd)}</span>
-          {:else if section.block}
-            <span class="block-meta">{formatDate(section.block.timestamp)}</span>
+        {#if section.reward}
+          <div class="block-header">
+            <span class="block-meta">{formatDate(section.reward.timestamp)}</span>
             <span class="block-meta">
-              {#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
+              {#if i === 1}{timeAgo(section.reward.timestamp)}{:else}{formatTime(section.reward.timestamp)}{/if}
             </span>
-          {/if}
-        </div>
-        {#if section.block}
-          <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
-            >{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</a
-          >
-        {:else}
-          <span class="block-ticker">MEMPOOL</span>
-        {/if}
-
-        {#if section.txs.length > 0}
-          <div
-            class="tx-grid"
-            use:layoutGrid={{ landscape, availableWidth: feedWidth - BLOCK_INSET, availableHeight: txAreaHeight }}
-          >
-            {#each section.txs as tx (tx.hash)}
-              <div class="tx-grid-item">
-                <Transaction {tx} compact={landscape && feedHeight < 500} />
+          </div>
+          <span class="block-ticker">REWARDS</span>
+          <div class="reward-rows">
+            {#each section.reward.rows as row, ri (row.label + (row.pool_id ?? '') + ri)}
+              <div class="reward-row">
+                <div class="reward-source">
+                  {#if row.pool_id}
+                    <a class="reward-pool" style:color={poolColor(row.pool_id)} href="/{row.pool_id}"
+                      >{formatTicker(row.pool_ticker ?? row.pool_id.slice(5, 10))}</a
+                    >
+                  {/if}
+                  <span class="reward-label">{row.label}</span>
+                </div>
+                <span class="reward-amount">+{formatAda(row.amount)}</span>
               </div>
             {/each}
           </div>
-        {/if}
-
-        {#if section.block}
-          <div class="block-footer">
-            <span class="block-meta block-hash mono">{section.block.hash}</span>
-            <span class="block-meta mono">#{section.block.number}</span>
+        {:else}
+          <div class="block-header">
+            {#if isMempool && $config?.genesis}
+              {@const ei = epochInfo($config.genesis)}
+              <span class="block-meta">Epoch {ei.epoch}</span>
+              <span class="block-meta">{formatTimeLeft(ei.epochEnd)}</span>
+            {:else if section.block}
+              <span class="block-meta">{formatDate(section.block.timestamp)}</span>
+              <span class="block-meta">
+                {#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
+              </span>
+            {/if}
           </div>
+          {#if section.block}
+            <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
+              >{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</a
+            >
+          {:else}
+            <span class="block-ticker">MEMPOOL</span>
+          {/if}
+
+          {#if section.txs.length > 0}
+            <div
+              class="tx-grid"
+              use:layoutGrid={{ landscape, availableWidth: feedWidth - BLOCK_INSET, availableHeight: txAreaHeight }}
+            >
+              {#each section.txs as tx (tx.hash)}
+                <div class="tx-grid-item">
+                  <Transaction {tx} compact={landscape && feedHeight < 500} />
+                </div>
+              {/each}
+            </div>
+          {/if}
+
+          {#if section.block}
+            <div class="block-footer">
+              <span class="block-meta block-hash mono">{section.block.hash}</span>
+              <span class="block-meta mono">#{section.block.number}</span>
+            </div>
+          {/if}
         {/if}
       </div>
     {/each}
@@ -895,5 +924,55 @@
     width: 108px;
     transition: transform var(--flip-duration) ease;
     will-change: transform;
+  }
+
+  /* Per-epoch REWARDS capsule: neutral, rounded, dashed border to set it apart from blocks. */
+  .reward-capsule {
+    border-radius: 16px;
+    border-style: dashed;
+  }
+
+  .reward-rows {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .reward-row {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 4px 0;
+    text-align: center;
+  }
+
+  .reward-row + .reward-row {
+    border-top: 1px solid rgb(255 255 255 / 0.12);
+  }
+
+  .reward-source {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .reward-label {
+    font-size: 10px;
+    color: rgb(255 255 255 / 0.5);
+  }
+
+  .reward-pool {
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1;
+    text-decoration: none;
+  }
+
+  /* Same green as a positive stake change (Transaction.svelte). */
+  .reward-amount {
+    font-size: 12px;
+    color: oklch(0.7 0.25 145);
+    font-variant-numeric: tabular-nums;
   }
 </style>

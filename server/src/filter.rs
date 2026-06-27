@@ -199,9 +199,10 @@ impl FeedFilter {
             }
             // ReplayCursor is replay-only (sent directly, never broadcast through here),
             // but pass non-tx events through unchanged.
-            Event::Rollback { .. } | Event::MempoolPrune { .. } | Event::ReplayCursor { .. } => {
-                Some(event.clone())
-            }
+            Event::Rollback { .. }
+            | Event::MempoolPrune { .. }
+            | Event::ReplayCursor { .. }
+            | Event::Reward { .. } => Some(event.clone()),
         }
     }
 }

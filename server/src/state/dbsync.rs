@@ -1023,28 +1023,37 @@ impl DbSync {
             .collect())
     }
 
-    /// Reward additions per `spendable_epoch` (`reward ∪ reward_rest`) for one stake
-    /// credential, for epochs in `(min_epoch, max_epoch]`. These are the deltas the
-    /// sink applies to `rewards` at each epoch boundary (mirrors `epoch_reward_delta`),
-    /// used to undo the reward balance backward. `addr_id`-indexed.
-    pub async fn stake_reward_deltas(
+    /// Per-source reward rows for one stake credential, spendable in `(min_epoch, max_epoch]`,
+    /// as `(epoch, type, pool_hash, amount)`. Pool rewards (`member`/`leader`) carry the source
+    /// pool's `hash_raw`; `reward_rest` rows (reserves/treasury/…) have `None`. Drives the
+    /// per-epoch REWARDS capsule; summing all rows per epoch reproduces `stake_reward_deltas`.
+    /// `addr_id`-indexed.
+    pub async fn stake_epoch_rewards(
         &self,
         hash_raw: &[u8],
         min_epoch: i64,
         max_epoch: i64,
-    ) -> Result<Vec<(i64, i64)>, sqlx::Error> {
+    ) -> Result<Vec<(i64, String, Option<Vec<u8>>, i64)>, sqlx::Error> {
         let rows = sqlx::query!(
-            r#"SELECT spendable_epoch AS "epoch!", SUM(amount)::bigint AS "delta!"
+            r#"SELECT epoch AS "epoch!", label AS "label!",
+                      pool_hash, amount AS "amount!"
             FROM (
-                SELECT spendable_epoch, amount FROM reward
-                WHERE addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
-                  AND spendable_epoch > $2 AND spendable_epoch <= $3
+                SELECT r.spendable_epoch AS epoch, r.type::text AS label,
+                       ph.hash_raw AS pool_hash, SUM(r.amount)::bigint AS amount
+                FROM reward r
+                JOIN pool_hash ph ON ph.id = r.pool_id
+                WHERE r.addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+                  AND r.spendable_epoch > $2 AND r.spendable_epoch <= $3
+                GROUP BY r.spendable_epoch, r.type, ph.hash_raw
                 UNION ALL
-                SELECT spendable_epoch, amount FROM reward_rest
-                WHERE addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
-                  AND spendable_epoch > $2 AND spendable_epoch <= $3
+                SELECT rr.spendable_epoch, rr.type::text,
+                       NULL::bytea, SUM(rr.amount)::bigint
+                FROM reward_rest rr
+                WHERE rr.addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
+                  AND rr.spendable_epoch > $2 AND rr.spendable_epoch <= $3
+                GROUP BY rr.spendable_epoch, rr.type
             ) t
-            GROUP BY spendable_epoch"#,
+            ORDER BY epoch"#,
             hash_raw,
             min_epoch,
             max_epoch,
@@ -1052,7 +1061,10 @@ impl DbSync {
         .fetch_all(&self.db)
         .await?;
 
-        Ok(rows.into_iter().map(|r| (r.epoch, r.delta)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.epoch, r.label, r.pool_hash, r.amount))
+            .collect())
     }
 
     /// Reward withdrawals for one stake credential at `slot_no >= min_slot`, as

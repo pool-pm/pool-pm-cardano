@@ -9,9 +9,16 @@ import type {
   Event,
   MempoolTxEvent,
   PoolInfo,
+  RewardEvent,
   Section,
   StakeInfo,
 } from './types';
+
+/** A section's position on the slot-ordered timeline: a block's slot or a reward
+ * capsule's epoch-change slot. */
+function sectionSlot(sec: Section): number {
+  return sec.block?.slot ?? sec.reward?.slot ?? 0;
+}
 
 let source: EventSource | null = null;
 let pendingPrune = new Set<string>();
@@ -50,7 +57,26 @@ function insertOlderBlock(s: Section[], event: BlockEvent, now: number): Section
   };
   section.txs = event.txs.map((tx) => ({ ...tx, receivedAt: now }));
   let idx = 1;
-  while (idx < s.length && (s[idx].block?.slot ?? 0) > event.slot) idx++;
+  while (idx < s.length && sectionSlot(s[idx]) > event.slot) idx++;
+  const result = [...s];
+  result.splice(idx, 0, section);
+  return result;
+}
+
+/// Insert a per-epoch REWARDS capsule as a section, ordered by its epoch-change slot
+/// (same newest→oldest scheme as blocks). Deduplicates by epoch.
+function insertReward(s: Section[], event: RewardEvent): Section[] {
+  if (s.some((sec, i) => i > 0 && sec.reward?.epoch === event.epoch)) return s;
+  const section = newSection();
+  section.id = `r-${event.epoch}`;
+  section.reward = {
+    epoch: event.epoch,
+    slot: event.slot,
+    timestamp: event.timestamp,
+    rows: event.rows,
+  };
+  let idx = 1;
+  while (idx < s.length && sectionSlot(s[idx]) > event.slot) idx++;
   const result = [...s];
   result.splice(idx, 0, section);
   return result;
@@ -70,12 +96,15 @@ export async function loadOlder(): Promise<void> {
     if (cur.epoch != null) params.set('epoch', String(cur.epoch));
     const res = await fetch(`${olderBase}/api/feed/${feedId}/older?${params}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = (await res.json()) as { blocks: BlockEvent[]; cursor?: FeedCursor };
+    // `blocks` may carry both Block and Reward items (rewards have no block/tx).
+    const data = (await res.json()) as { blocks: (BlockEvent | RewardEvent)[]; cursor?: FeedCursor };
     if (gen !== feedGen) return; // feed switched mid-fetch — drop this response
     const now = Date.now();
     sections.update((s) => {
       let next = s;
-      for (const block of data.blocks) next = insertOlderBlock(next, block, now);
+      for (const item of data.blocks) {
+        next = item.type === 'Reward' ? insertReward(next, item) : insertOlderBlock(next, item, now);
+      }
       return next;
     });
     feedCursor = data.cursor ?? null;
@@ -199,10 +228,13 @@ function handleEvent(event: Event): void {
       break;
     }
 
+    case 'Reward':
+      sections.update((s) => insertReward(s, event));
+      break;
+
     case 'Rollback':
-      sections.update((s) => {
-        return s.filter((section, i) => i === 0 || !section.block || section.block.slot <= event.slot);
-      });
+      // Keep the mempool (i === 0) and any block/reward section at/under the rollback slot.
+      sections.update((s) => s.filter((section, i) => i === 0 || sectionSlot(section) <= event.slot));
       break;
   }
 }

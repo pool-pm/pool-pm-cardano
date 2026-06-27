@@ -62,8 +62,8 @@ impl EventBus {
                     _ => true,
                 });
             }
-            // Per-connection replay marker — never broadcast through the bus.
-            Event::ReplayCursor { .. } => {}
+            // Per-connection replay-only events — never broadcast through the bus.
+            Event::ReplayCursor { .. } | Event::Reward { .. } => {}
         }
 
         let _ = inner.tx.send(event);

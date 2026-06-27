@@ -70,6 +70,15 @@ fn slot_to_timestamp(slot: u64, genesis: &GenesisConfig) -> u64 {
         + slot.saturating_sub(genesis.shelley_known_slot) * genesis.shelley_slot_length as u64
 }
 
+/// First slot of a (Shelley) epoch — the epoch-change boundary. Inverse of
+/// `State::epoch_for_slot`; used to position per-epoch reward items on the feed.
+fn slot_for_epoch(epoch: u64, genesis: &GenesisConfig) -> u64 {
+    let shelley_start_epoch = genesis.shelley_known_slot * genesis.byron_slot_length as u64
+        / genesis.byron_epoch_length as u64;
+    genesis.shelley_known_slot
+        + epoch.saturating_sub(shelley_start_epoch) * genesis.shelley_epoch_length as u64
+}
+
 /// Maximum number of blocks to replay on feed connection. Must match
 /// `MAX_BLOCKS` in `web/src/lib/components/Feed.svelte`.
 const MAX_REPLAY_BLOCKS: usize = 30;
@@ -578,7 +587,8 @@ fn resolve_event_assets(event: &mut crate::event::Event, size: u16) {
         crate::event::Event::Block { txs, .. } => txs.as_mut_slice(),
         crate::event::Event::Rollback { .. }
         | crate::event::Event::MempoolPrune { .. }
-        | crate::event::Event::ReplayCursor { .. } => return,
+        | crate::event::Event::ReplayCursor { .. }
+        | crate::event::Event::Reward { .. } => return,
     };
     for tx in txs {
         for inp in &mut tx.inputs {
@@ -923,6 +933,9 @@ struct SubjectReplay {
     /// empty/failed boundary block can't corrupt the next page's anchor.
     last_slot: u64,
     last_epoch: u64,
+    /// Per-epoch reward rows for display (`(epoch, rows)`), pool tickers resolved.
+    /// Emitted as `Event::Reward` capsules; independent of the backward walk.
+    reward_capsules: Vec<(u64, Vec<crate::event::RewardRow>)>,
 }
 
 impl SubjectReplay {
@@ -1104,7 +1117,7 @@ async fn build_subject_replay(
         .await
         .unwrap_or_default();
     let reward_rows = db
-        .stake_reward_deltas(hash_raw, min_epoch as i64, current_epoch as i64)
+        .stake_epoch_rewards(hash_raw, min_epoch as i64, current_epoch as i64)
         .await
         .unwrap_or_default();
     let wd_rows = db
@@ -1113,7 +1126,7 @@ async fn build_subject_replay(
         .unwrap_or_default();
 
     // Resolve delegation target identities under a second short lock (no await).
-    let deleg_by_tx = {
+    let (deleg_by_tx, reward_capsules) = {
         let guard = chain_state.read().await;
         let snap = guard.current();
         let resolve_pool = |hash: &[u8]| -> (String, Option<String>) {
@@ -1179,15 +1192,49 @@ async fn build_subject_replay(
                 info.to_drep_name = n;
             }
         }
-        merged
+
+        // Per-epoch reward capsules for display: resolve pool tickers under this lock.
+        let mut caps: std::collections::BTreeMap<u64, Vec<crate::event::RewardRow>> =
+            std::collections::BTreeMap::new();
+        for (epoch, label, pool_hash, amount) in &reward_rows {
+            let (pool_id, pool_ticker) = match pool_hash {
+                Some(h) => {
+                    let (id, t) = resolve_pool(h);
+                    (Some(id), t)
+                }
+                None => (None, None),
+            };
+            caps.entry(*epoch as u64)
+                .or_default()
+                .push(crate::event::RewardRow {
+                    label: label.clone(),
+                    amount: (*amount).max(0) as u64,
+                    pool_id,
+                    pool_ticker,
+                });
+        }
+        // Rows within a capsule: pool rewards first, then by amount descending.
+        for rows in caps.values_mut() {
+            rows.sort_by(|a, b| {
+                b.pool_id
+                    .is_some()
+                    .cmp(&a.pool_id.is_some())
+                    .then(b.amount.cmp(&a.amount))
+            });
+        }
+        let reward_capsules: Vec<(u64, Vec<crate::event::RewardRow>)> = caps.into_iter().collect();
+
+        (merged, reward_capsules)
     };
 
     // Reward deltas newest-epoch first; off-window withdrawals newest-slot first
     // (those in the replayed set are accounted for via each block's net stake change).
-    let mut reward_deltas: Vec<(u64, i64)> = reward_rows
-        .into_iter()
-        .map(|(e, d)| (e as u64, d))
-        .collect();
+    // Sum every reward source per epoch — identical to the old `stake_reward_deltas`.
+    let mut delta_by_epoch: HashMap<u64, i64> = HashMap::new();
+    for (epoch, _label, _pool, amount) in &reward_rows {
+        *delta_by_epoch.entry(*epoch as u64).or_insert(0) += *amount;
+    }
+    let mut reward_deltas: Vec<(u64, i64)> = delta_by_epoch.into_iter().collect();
     reward_deltas.sort_by(|a, b| b.0.cmp(&a.0));
     let mut withdrawals: Vec<(u64, i64)> = wd_rows
         .into_iter()
@@ -1206,6 +1253,7 @@ async fn build_subject_replay(
         wd_cursor: 0,
         last_slot: 0,
         last_epoch: 0,
+        reward_capsules,
     }
 }
 
@@ -2070,6 +2118,22 @@ async fn filtered_events(
             )
             .await;
 
+            // Per-epoch reward capsules at their epoch-change slot/timestamp.
+            if let Some(sr) = &subject {
+                for (epoch, rows) in &sr.reward_capsules {
+                    let slot = slot_for_epoch(*epoch, &replay_state.genesis);
+                    let ev = crate::event::Event::Reward {
+                        epoch: *epoch,
+                        slot,
+                        timestamp: slot_to_timestamp(slot, &replay_state.genesis),
+                        rows: rows.clone(),
+                    };
+                    if let Some(e) = serialize_event(ev, sse.size) {
+                        let _ = sse.sender.send(e).await;
+                    }
+                }
+            }
+
             // Seed the client's pagination cursor (only if the page was full — else
             // there's nothing older). Stake feeds carry the walk anchor.
             if full_page {
@@ -2683,6 +2747,19 @@ async fn older_blocks(
     }
     let _ = client.abort().await;
 
+    // Per-epoch reward capsules for this page, at their epoch-change slot/timestamp.
+    if let Some(sr) = &subject {
+        for (epoch, rows) in &sr.reward_capsules {
+            let slot = slot_for_epoch(*epoch, &state.genesis);
+            events.push(crate::event::Event::Reward {
+                epoch: *epoch,
+                slot,
+                timestamp: slot_to_timestamp(slot, &state.genesis),
+                rows: rows.clone(),
+            });
+        }
+    }
+
     let cursor = if !has_more {
         None
     } else if let Some(sr) = &subject {
@@ -2790,6 +2867,7 @@ mod tests {
             wd_cursor: 0,
             last_slot: 0,
             last_epoch: 0,
+            reward_capsules: Vec::new(),
         };
 
         // B0 in epoch 640 at slot 1000, net stake change +100. Nothing accrued after
@@ -2818,6 +2896,7 @@ mod tests {
             wd_cursor: 0,
             last_slot: 0,
             last_epoch: 0,
+            reward_capsules: Vec::new(),
         };
         assert_eq!(p1.pre_block_stake(640, 1000, 100), 900);
         let (cur_slot, cur_epoch, cur_stake) = p1.cursor();
@@ -2835,6 +2914,7 @@ mod tests {
             wd_cursor: 0,
             last_slot: 0,
             last_epoch: 0,
+            reward_capsules: Vec::new(),
         };
         assert_eq!(p2.pre_block_stake(638, 800, -40), 880);
     }

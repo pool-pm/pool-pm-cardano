@@ -140,6 +140,20 @@ pub struct VoteInfo {
     pub action_title: Option<String>,
 }
 
+/// One row in a per-epoch REWARDS capsule. `label` is the db-sync reward `type`
+/// (`member`/`leader`/`reserves`/`treasury`/…); pool rewards (`member`/`leader`)
+/// also carry the source pool so the client can color the ticker.
+#[derive(Clone, Serialize)]
+pub struct RewardRow {
+    pub label: String,
+    #[serde(with = "string")]
+    pub amount: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool_ticker: Option<String>,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum Event {
@@ -160,6 +174,15 @@ pub enum Event {
     },
     MempoolPrune {
         removed: Vec<String>,
+    },
+    /// Per-epoch staking rewards on a stake feed, positioned at the epoch-change
+    /// (spendable-epoch boundary) `slot`/`timestamp`. One event per epoch; `rows`
+    /// holds every reward source for that epoch (pool + treasury/reserves).
+    Reward {
+        epoch: u64,
+        slot: u64,
+        timestamp: u64,
+        rows: Vec<RewardRow>,
     },
     /// Emitted once at the end of a stake/address replay so the client can paginate
     /// older history: `slot` = oldest replayed block; `stake`/`epoch` = the pre-block
