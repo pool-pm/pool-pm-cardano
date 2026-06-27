@@ -560,6 +560,24 @@ async fn send_address_info(
         .await;
 }
 
+/// Connect-time `assets_count` for a Stake/Address feed (0 for pool/drep or when no
+/// db is available). The db handle is cloned under a short read guard and the count
+/// query runs *off* the lock (the two-step index path), so it can't queue other
+/// readers behind the sink's pending writer. Shared by `filtered_events` (regular
+/// feed) and `asset_feed_events` (assets page) so the count is queried exactly once.
+async fn subject_assets_count(filter: &filter::FeedFilter, chain_state: &RwLock<State>) -> u32 {
+    let db = chain_state.read().await.db_handle();
+    match (filter, db) {
+        (filter::FeedFilter::Stake(payload), Some(db)) => {
+            db.stake_assets_count(payload).await.unwrap_or(0) as u32
+        }
+        (filter::FeedFilter::Address(addr), Some(db)) => {
+            db.address_assets_count(addr).await.unwrap_or(0) as u32
+        }
+        _ => 0,
+    }
+}
+
 /// Query string for SSE endpoints. `dpr` is the client's
 /// `window.devicePixelRatio`, used to negotiate the thumbnail image size.
 #[derive(serde::Deserialize)]
@@ -1756,6 +1774,12 @@ async fn filtered_events(
         (delegators, pool_id, pool_ticker, pool_hash)
     };
 
+    // Connect-time assets_count (Stake/Address feeds only; 0 otherwise), queried once
+    // off the chain_state lock and shared by both the replay header send below and the
+    // live-stream seed (`initial_live`) — the live stream re-emits the header on every
+    // balance change but always passes this connect-time count through unchanged.
+    let assets_count = subject_assets_count(&filter, &state.chain_state).await;
+
     // Spawn replay task: config → pool info → feed index replay → snapshot
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<SseEvent, Infallible>>(32);
     let replay_filter = filter.clone();
@@ -2052,11 +2076,7 @@ async fn filtered_events(
                 );
                 (guard.db_handle(), info)
             };
-            // Connect-time count, served off the lock via the two-step index path.
-            let assets_count = match &db {
-                Some(db) => db.stake_assets_count(&payload).await.unwrap_or(0) as u32,
-                None => 0,
-            };
+            // assets_count was queried once before the spawn and captured here.
             send_stake_info(
                 &sender,
                 &replay_state.chain_state,
@@ -2168,11 +2188,7 @@ async fn filtered_events(
                 };
                 (guard.db_handle(), info)
             };
-            // Connect-time count, served off the lock via the two-step index path.
-            let assets_count = match &db {
-                Some(db) => db.address_assets_count(&addr).await.unwrap_or(0) as u32,
-                None => 0,
-            };
+            // assets_count was queried once before the spawn and captured here.
             send_address_info(
                 &sender,
                 &replay_state.chain_state,
@@ -2292,28 +2308,16 @@ async fn filtered_events(
         }
     };
 
-    // For stake/address feeds, query the static assets_count once and seed
-    // the live state with it. The live stream re-emits the info event on
-    // balance changes; it always passes this count through unchanged. The db
-    // handle is taken under the chain_state read lock and the lock is
-    // released *before* the query, so a slow count() can't queue every other
-    // reader behind the sink's pending writer.
+    // For stake/address feeds, seed the live state with the connect-time
+    // assets_count queried once above (shared with the replay header send). The live
+    // stream re-emits the info event on balance changes, always passing this count
+    // through unchanged.
     let initial_live = if matches!(
         filter,
         filter::FeedFilter::Stake(_) | filter::FeedFilter::Address(_)
     ) {
-        let db = state.chain_state.read().await.db_handle();
-        let count = match (&filter, db) {
-            (filter::FeedFilter::Stake(payload), Some(db)) => {
-                db.stake_assets_count(payload).await.unwrap_or(0) as u32
-            }
-            (filter::FeedFilter::Address(addr), Some(db)) => {
-                db.address_assets_count(addr).await.unwrap_or(0) as u32
-            }
-            _ => 0,
-        };
         LiveState {
-            assets_count: Some(count),
+            assets_count: Some(assets_count),
             ..initial_live
         }
     } else {
@@ -2322,6 +2326,107 @@ async fn filtered_events(
 
     let replay = tokio_stream::wrappers::ReceiverStream::new(receiver);
     let live = build_live_stream(rx, filter, chain_state, initial_live, size, state.mainnet);
+    let stream = replay.chain(live);
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// SSE feed backing the owned-assets page (`/<bech32>/assets`). A lean variant of
+/// `filtered_events`: it sends only `Config` + the Stake/Address header (with
+/// `assets_count`) and then keeps the connection open via the shared live stream,
+/// which re-emits the header on every balance change (and is where future live asset
+/// add/remove deltas will arrive). It deliberately skips the tx replay history and
+/// snapshot — the assets grid loads its tiles over HTTP (`/api/assets`). Only Stake
+/// and Address feeds have an assets page; pool/drep ids return 400.
+async fn asset_feed_events(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(feed_id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<SseQuery>,
+) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, StatusCode> {
+    info!("/events/{feed_id}/assets");
+    let size = rung_for_dpr(query.dpr.unwrap_or(1.0));
+    let filter = filter::FeedFilter::from_path(&feed_id).ok_or(StatusCode::BAD_REQUEST)?;
+    if !matches!(
+        filter,
+        filter::FeedFilter::Stake(_) | filter::FeedFilter::Address(_)
+    ) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    // Subscribe for live events; the snapshot (tx history) is intentionally dropped.
+    let (_snapshot, rx) = state.bus.subscribe().await;
+
+    // Connect-time count, queried once and shared by the header send and the live seed.
+    let assets_count = subject_assets_count(&filter, &state.chain_state).await;
+
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<SseEvent, Infallible>>(32);
+    let replay_filter = filter.clone();
+    let replay_state = state.clone();
+    tokio::spawn(async move {
+        let _ = sender
+            .send(config_event(
+                replay_state.nftcdn.subdomain,
+                &replay_state.genesis,
+                replay_state.magic,
+            ))
+            .await;
+        match &replay_filter {
+            filter::FeedFilter::Stake(payload) => {
+                let cred = payload[1..].to_vec();
+                let stake_address = replay_filter.feed_id();
+                send_stake_info(
+                    &sender,
+                    &replay_state.chain_state,
+                    &stake_address,
+                    &cred,
+                    assets_count,
+                )
+                .await;
+            }
+            filter::FeedFilter::Address(addr) => {
+                let addr_bytes = address_bytes(addr).unwrap_or_default();
+                send_address_info(
+                    &sender,
+                    &replay_state.chain_state,
+                    addr,
+                    &addr_bytes,
+                    replay_state.mainnet,
+                    assets_count,
+                )
+                .await;
+            }
+            _ => {}
+        }
+    });
+
+    // Seed the live stream so the header re-emits on balance/asset changes.
+    let initial_live = {
+        let guard = state.chain_state.read().await;
+        let snap = guard.current();
+        let balance = match &filter {
+            filter::FeedFilter::Stake(payload) => {
+                snap.and_then(|s| s.stakes.get(&payload[1..]).copied())
+            }
+            filter::FeedFilter::Address(addr) => {
+                let addr_b = address_bytes(addr).unwrap_or_default();
+                snap.and_then(|s| s.address_balances.get(&addr_b).copied())
+            }
+            _ => None,
+        };
+        LiveState {
+            pool: None,
+            balance,
+            assets_count: Some(assets_count),
+        }
+    };
+
+    let replay = tokio_stream::wrappers::ReceiverStream::new(receiver);
+    let live = build_live_stream(
+        rx,
+        filter,
+        state.chain_state.clone(),
+        initial_live,
+        size,
+        state.mainnet,
+    );
     let stream = replay.chain(live);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
@@ -2835,6 +2940,7 @@ pub async fn serve(config: ServeConfig) {
     };
     let app = Router::new()
         .route("/events", get(events))
+        .route("/events/{feed_id}/assets", get(asset_feed_events))
         .route("/events/{feed_id}", get(filtered_events))
         .route("/api/asset/{fingerprint}", get(asset_media))
         .route("/api/policy/{policy_id}", get(policy_assets))

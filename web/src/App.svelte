@@ -26,8 +26,12 @@
   }
 
   $effect(() => {
-    // The asset, policy and owned-assets pages are stateless HTTP views — no SSE connection.
-    if (assetFingerprint || policyId || ownedAssetsSubject) return;
+    // The standalone asset and policy pages are stateless HTTP views — no SSE.
+    // The owned-assets page *does* connect (to `/events/<bech32>/assets`): its SSE
+    // feed sends the address/stake header and keeps the connection open for future
+    // live asset updates. `sseUrl()` already targets `/events/<bech32>/assets` since
+    // `path` is `<bech32>/assets`.
+    if (assetFingerprint || policyId) return;
 
     const url = sseUrl();
     connectSSE(url);

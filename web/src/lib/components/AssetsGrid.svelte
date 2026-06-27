@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import type { PolicyAsset, AssetsResponse } from '../types';
+  import { stake, address } from '../stores';
+  import SubjectCard from './SubjectCard.svelte';
 
   // `endpoint` is the paginated API URL (cursor is appended as `?cursor=`); `title`
   // sets document.title. `mode` controls cell rendering: 'hide-broken' (policy
@@ -126,53 +128,77 @@
   }
 </script>
 
-<div class="scroll" bind:clientWidth={containerW} bind:clientHeight={viewportH} onscroll={onScroll}>
-  {#if error && assets.length === 0}
-    <div class="status">Could not load: {error}</div>
-  {:else if !loading && assets.length === 0}
-    <div class="status">No assets.</div>
-  {:else}
-    <div class="spacer" style="height:{spacerHeight}px">
-      <div class="window" style="transform:translateY({offsetY}px); width:{rowWidth}px">
-        {#each slice as a (a.fingerprint)}
-          {@const label = a.name ?? a.fingerprint}
-          <a class="cell" href={'/' + a.fingerprint} aria-label={label} title={label}>
-            <!-- text-fallback mode: the label sits at z=0 and the image covers
+<div class="page">
+  <!-- Populated only on the owned-assets page (address/stake), where App connects
+       the SSE feed; on policy pages both stores stay null so nothing renders. -->
+  <SubjectCard stake={$stake} address={$address} />
+  <div class="scroll" bind:clientHeight={viewportH} onscroll={onScroll}>
+    {#if error && assets.length === 0}
+      <div class="status">Could not load: {error}</div>
+    {:else if !loading && assets.length === 0}
+      <div class="status">No assets.</div>
+    {:else}
+      <!-- clientWidth is bound here (not on .scroll): .scroll carries the horizontal
+           padding, so the spacer's content-box width is what the column math needs. -->
+      <div class="spacer" bind:clientWidth={containerW} style="height:{spacerHeight}px">
+        <div class="window" style="transform:translateY({offsetY}px); width:{rowWidth}px">
+          {#each slice as a (a.fingerprint)}
+            {@const label = a.name ?? a.fingerprint}
+            <a class="cell" href={'/' + a.fingerprint} aria-label={label} title={label}>
+              <!-- text-fallback mode: the label sits at z=0 and the image covers
                  it when (and only when) it loads. For broken/404 images we
                  keep the cell in the grid (in 'hide-broken' mode the cell
                  would have dropped out of `visible` already). -->
-            {#if mode === 'text-fallback'}
-              <span class="cell-text">{label}</span>
-            {/if}
-            <!-- No loading="lazy": windowing already keeps only near-viewport
+              {#if mode === 'text-fallback'}
+                <span class="cell-text">{label}</span>
+              {/if}
+              <!-- No loading="lazy": windowing already keeps only near-viewport
                  rows mounted, so lazy just delays cached images from repainting
                  when a row is scrolled back into view. New rows are deferred while
                  flinging (suppressImages); rows already loaded keep showing so the
                  grid never blanks out what was on screen. alt="" keeps Firefox from
                  painting the name over a still-loading tile (the link is labelled
                  via aria-label instead). -->
-            {#if (!suppressImages || loaded.has(a.fingerprint)) && !broken.has(a.fingerprint)}
-              <img
-                class="thumb"
-                src={a.src}
-                srcset={a.srcset}
-                decoding="async"
-                alt=""
-                onload={() => loaded.add(a.fingerprint)}
-                onerror={() => broken.add(a.fingerprint)}
-              />
-            {/if}
-          </a>
-        {/each}
+              {#if (!suppressImages || loaded.has(a.fingerprint)) && !broken.has(a.fingerprint)}
+                <img
+                  class="thumb"
+                  src={a.src}
+                  srcset={a.srcset}
+                  decoding="async"
+                  alt=""
+                  onload={() => loaded.add(a.fingerprint)}
+                  onerror={() => broken.add(a.fingerprint)}
+                />
+              {/if}
+            </a>
+          {/each}
+        </div>
       </div>
-    </div>
-  {/if}
+    {/if}
+  </div>
 </div>
 
 <style>
-  .scroll {
+  .page {
+    display: flex;
+    flex-direction: column;
     height: 100dvh;
+    /* Top breathing room for the header card, matching the feed's 16px top padding.
+       The card centers itself (margin-inline auto) and clears the corner chrome. */
+    padding-top: 16px;
+    box-sizing: border-box;
+    background: var(--bg);
+  }
+
+  .scroll {
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
+    /* Horizontal breathing room so the grid doesn't run to the window edge, matching
+       the feed's 16px 20px. clientWidth is measured on the inner .spacer instead, so
+       this padding shrinks the usable width the column math sees. */
+    padding-inline: 20px;
+    box-sizing: border-box;
     background: var(--bg);
   }
 
@@ -239,7 +265,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 100dvh;
+    height: 100%;
     color: var(--text-muted);
     font-family: system-ui, sans-serif;
   }

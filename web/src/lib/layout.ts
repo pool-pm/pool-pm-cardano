@@ -24,6 +24,23 @@ export function formatAdaCompact(lovelace: string): string {
   return formatCount(Number(BigInt(lovelace) / 1_000_000n)) + ' ₳';
 }
 
+/** Full ADA from a lovelace string (string slicing, no float arithmetic): inserts the
+ * decimal point and groups the whole part for large values. Uses a thin space before
+ * the ₳ symbol. */
+export function formatAda(lovelace: string): string {
+  const padded = lovelace.padStart(7, '0');
+  const whole = padded.slice(0, -6) || '0';
+  const frac = padded.slice(-6);
+  const wholeNum = Number(whole);
+  if (wholeNum >= 1000) return wholeNum.toLocaleString() + ' ₳';
+  if (wholeNum >= 1) {
+    const trimmed = frac.slice(0, 2).replace(/0+$/, '');
+    return trimmed ? whole + '.' + trimmed + ' ₳' : whole + ' ₳';
+  }
+  const trimmed = frac.replace(/0+$/, '');
+  return trimmed ? '0.' + trimmed + ' ₳' : '0' + ' ₳';
+}
+
 // Largest sRGB-displayable OKLCH chroma for a given lightness & hue, found by
 // binary-searching the oklab→linear-sRGB gamut boundary (Ottosson's matrices).
 // Lets us vary chroma without straying past the gamut, where higher values just

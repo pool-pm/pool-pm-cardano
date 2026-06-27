@@ -3,9 +3,10 @@
   import { slide } from 'svelte/transition';
   import { sections, config, pool, drep, stake, address, cardano, blockCount } from '../stores';
   import type { GenesisConfig, Section } from '../types';
-  import { TX_WIDTH, FLIP_DURATION, poolColor, formatTicker, layoutGrid } from '../layout';
+  import { TX_WIDTH, FLIP_DURATION, poolColor, formatTicker, formatAda, layoutGrid } from '../layout';
   import { loadOlder } from '../sse';
   import Transaction from './Transaction.svelte';
+  import SubjectCard from './SubjectCard.svelte';
 
   const MAX_BLOCKS = 30;
   /** Prune blocks older than 1h whose net stake change is below this fraction of live stake. */
@@ -354,24 +355,6 @@
     return `${Math.floor(sec / 86400)}d ago`;
   }
 
-  function formatAda(lovelace: string): string {
-    const padded = lovelace.padStart(7, '0');
-    const whole = padded.slice(0, -6) || '0';
-    const frac = padded.slice(-6);
-    const wholeNum = Number(whole);
-    if (wholeNum >= 1000) return wholeNum.toLocaleString() + '\u2009₳';
-    if (wholeNum >= 1) {
-      const trimmed = frac.slice(0, 2).replace(/0+$/, '');
-      return trimmed ? whole + '.' + trimmed + '\u2009₳' : whole + '\u2009₳';
-    }
-    const trimmed = frac.replace(/0+$/, '');
-    return trimmed ? '0.' + trimmed + '\u2009₳' : '0' + '\u2009₳';
-  }
-
-  function formatMargin(m: number): string {
-    return (m * 100).toFixed(2).replace(/\.?0+$/, '') + '%';
-  }
-
   function formatDate(timestamp: number): string {
     const date = new Date(timestamp * 1000);
     const today = new Date(now);
@@ -419,135 +402,7 @@
   style:--block-border="{BLOCK_BORDER}px"
   style:--flip-duration="{FLIP_DURATION}ms"
 >
-  {#if $pool}
-    {@const color = poolColor($pool.pool_id)}
-    <div class="subject-card" style:--subject-color={color}>
-      <span class="pool-name" style:color>{formatTicker($pool.ticker ?? $pool.pool_id.slice(5, 10))}</span>
-      <span class="pool-stake">{formatAda($pool.live_stake)}</span>
-      <span class="pool-delegators">
-        {$pool.delegators.toLocaleString()} delegators · {$pool.blocks.toLocaleString()} blocks
-      </span>
-      <div class="pool-params pool-stats">
-        <div class="pool-param">
-          <span class="pool-param-label">margin</span>
-          <span class="pool-param-value">{formatMargin($pool.margin)}</span>
-        </div>
-        <div class="pool-param">
-          <span class="pool-param-label">pledge</span>
-          <span class="pool-param-value">{formatAda($pool.pledge)}</span>
-        </div>
-        <div class="pool-param">
-          <span class="pool-param-label">cost</span>
-          <span class="pool-param-value">{formatAda($pool.fixed_cost)}</span>
-        </div>
-      </div>
-    </div>
-  {:else if $drep}
-    {@const color = poolColor($drep.drep_id)}
-    <div class="subject-card" style:--subject-color={color}>
-      <span class="drep-name" style:color>{$drep.given_name ?? $drep.drep_id.slice(5, 13)}</span>
-      <span class="pool-stake">{formatAda($drep.live_stake)}</span>
-      <span class="pool-delegators">{$drep.delegators.toLocaleString()} delegators</span>
-    </div>
-  {:else if $stake}
-    {@const color = poolColor($stake.stake_address)}
-    {@const total = (BigInt($stake.balance ?? '0') + BigInt($stake.rewards ?? '0')).toString()}
-    <div class="subject-card" style:--subject-color={color}>
-      <span class="pool-stake">{formatAda(total)}</span>
-      {#if $stake.rewards && $stake.rewards !== '0'}
-        <span class="pool-delegators">incl. {formatAda($stake.rewards)} rewards</span>
-      {/if}
-      <span class="stake-address" style:color title={$stake.stake_address}>{$stake.stake_address}</span>
-      <div class="pool-params">
-        {#if $stake.pool_id}
-          <div class="pool-param">
-            <span class="pool-param-label">pool</span>
-            <a
-              class="pool-param-value stake-link"
-              style:color={poolColor($stake.pool_id)}
-              href="/{$stake.pool_id}"
-              title={$stake.pool_ticker ?? $stake.pool_id}
-              >{$stake.pool_ticker ? formatTicker($stake.pool_ticker) : $stake.pool_id}</a
-            >
-          </div>
-        {/if}
-        {#if $stake.drep_id}
-          <div class="pool-param">
-            <span class="pool-param-label">drep</span>
-            <a
-              class="pool-param-value stake-link"
-              style:color={poolColor($stake.drep_id)}
-              href="/{$stake.drep_id}"
-              title={$stake.drep_name ?? $stake.drep_id}>{$stake.drep_name ?? $stake.drep_id}</a
-            >
-          </div>
-        {/if}
-        {#if $stake.assets_count !== undefined}
-          <div class="pool-param">
-            <span class="pool-param-label">assets</span>
-            {#if $stake.assets_count > 0}
-              <a class="pool-param-value stake-link" style:color href="/{$stake.stake_address}/assets"
-                >{$stake.assets_count}</a
-              >
-            {:else}
-              <span class="pool-param-value">{$stake.assets_count}</span>
-            {/if}
-          </div>
-        {/if}
-      </div>
-    </div>
-  {:else if $address}
-    {@const color = poolColor($address.address)}
-    <div class="subject-card" style:--subject-color={color}>
-      {#if $address.balance}
-        <span class="pool-stake">{formatAda($address.balance)}</span>
-      {/if}
-      {#if $address.handle}
-        <span class="stake-address" style:color>${$address.handle}</span>
-      {/if}
-      <span class="stake-address" style:color title={$address.address}>{$address.address}</span>
-      <div class="pool-params">
-        {#if $address.stake_address}
-          <div class="pool-param">
-            <span class="pool-param-label">stake</span>
-            <a
-              class="pool-param-value stake-link"
-              style:color
-              href="/{$address.stake_address}"
-              title={$address.stake_address}>{$address.stake_address}</a
-            >
-          </div>
-        {/if}
-        {#if $address.assets_count !== undefined && $address.assets_count > 0}
-          <div class="pool-param">
-            <span class="pool-param-label">assets</span>
-            <a class="pool-param-value stake-link" style:color href="/{$address.address}/assets"
-              >{$address.assets_count}</a
-            >
-          </div>
-        {/if}
-      </div>
-    </div>
-  {:else if $cardano}
-    <div class="subject-card" style:--subject-color={'white'}>
-      <span class="pool-name" style:color="white">CARDANO</span>
-      <span class="pool-stake">{formatAda($cardano.circulation)}</span>
-      <div class="pool-params pool-stats">
-        <div class="pool-param">
-          <span class="pool-param-label">pools</span>
-          <span class="pool-param-value">{$cardano.pool_count.toLocaleString()}</span>
-        </div>
-        <div class="pool-param">
-          <span class="pool-param-label">staked</span>
-          <span class="pool-param-value">{$cardano.staked_percent}%</span>
-        </div>
-        <div class="pool-param">
-          <span class="pool-param-label">dreps</span>
-          <span class="pool-param-value">{$cardano.drep_count.toLocaleString()}</span>
-        </div>
-      </div>
-    </div>
-  {/if}
+  <SubjectCard pool={$pool} drep={$drep} stake={$stake} address={$address} cardano={$cardano} {landscape} />
   <div class="canvas" style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}>
     {#each $sections as section, i (section.id)}
       {@const isMempool = !section.block && !section.reward}
@@ -660,138 +515,6 @@
     align-items: center;
     overflow-y: hidden;
     overflow-x: auto;
-  }
-
-  /* Subject header: compact glass card with a subject-color ridge on top and a
-     soft radial glow behind. Centered at the top in portrait (narrow enough to
-     clear the corner logo/search buttons); a center-right column in landscape. */
-  .subject-card {
-    width: 290px;
-    max-width: calc(100vw - 32px);
-    border-radius: 14px;
-    background: rgb(0 0 0 / 0.6);
-    border: 1px solid rgb(255 255 255 / 0.12);
-    border-top: 3px solid var(--subject-color);
-    /* Keep the halo tight and faint: on the pure-black page a wide/strong glow
-       lights up the whole area around the card and the page stops reading as black. */
-    box-shadow: 0 0 32px -6px color-mix(in srgb, var(--subject-color) 22%, transparent);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    text-align: center;
-    padding: 16px 20px 12px;
-    box-sizing: border-box;
-    margin: 0 auto 16px;
-    flex-shrink: 0;
-  }
-
-  .landscape .subject-card {
-    width: 250px;
-    margin: 0 16px;
-    direction: ltr;
-  }
-
-  .pool-name {
-    font-weight: 700;
-    font-size: 24px;
-    line-height: 1;
-  }
-
-  .drep-name {
-    font-weight: 600;
-    font-size: 16px;
-    line-height: 1.2;
-    text-align: center;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
-  }
-
-  /* Full address stays in the DOM (copyable / select-all), clipped to one line. */
-  .stake-address {
-    font-weight: 600;
-    font-size: 16px;
-    line-height: 1.2;
-    max-width: 100%;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    user-select: all;
-  }
-
-  /* Clickable stake address in the payment-address header (accent color set
-     inline; ellipsis from .pool-param-value); no underline. */
-  .stake-link {
-    text-decoration: none;
-  }
-
-  .pool-stake {
-    font-weight: 600;
-    font-size: 24px;
-    color: var(--text);
-    line-height: 1;
-  }
-
-  .pool-delegators {
-    font-size: 13px;
-    color: var(--text-muted);
-  }
-
-  .pool-params {
-    display: flex;
-    gap: 0;
-    width: 100%;
-    border-top: 1px solid rgb(255 255 255 / 0.15);
-    padding-top: 8px;
-    margin-top: 4px;
-  }
-
-  .pool-params .pool-param {
-    flex: 1;
-  }
-
-  .pool-param {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 0 6px;
-    min-width: 0; /* allow the value to shrink + ellipsize in a flex row */
-    max-width: 100%; /* constrain a standalone param so its value ellipsizes */
-  }
-
-  .pool-params .pool-param + .pool-param {
-    border-left: 1px solid rgb(255 255 255 / 0.15);
-  }
-
-  .pool-param-label {
-    font-size: 8px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--text-muted);
-  }
-
-  .pool-param-value {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text);
-    white-space: nowrap;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  /* Pool stats (margin/cost/pledge): keep three even, symmetric columns, but use a
-     smaller value font so a large pledge fits the card without truncation. */
-  .pool-stats .pool-param-value {
-    font-size: 11px;
-    max-width: none;
-    overflow: visible;
-    text-overflow: clip;
   }
 
   .canvas {
