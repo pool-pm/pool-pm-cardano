@@ -2661,6 +2661,18 @@ struct AssetMediaResponse {
     fingerprint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    /// Policy id (hex) — links to the policy page. From db-sync.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy: Option<String>,
+    /// Minted supply (Σ mints; string since it can exceed JS safe-int / i64).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quantity: Option<String>,
+    /// First / last mint times (unix seconds); equal for a single-mint asset, a range
+    /// when minted across several txs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_mint: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_mint: Option<i64>,
     media: Vec<AssetMedia>,
 }
 
@@ -2688,54 +2700,79 @@ async fn asset_media(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let meta_url = state.nftcdn.signed_url(&fingerprint, "metadata", "");
-    let resp = state
-        .http
-        .get(&meta_url)
-        .send()
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
-    if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    if !resp.status().is_success() {
-        return Err(StatusCode::BAD_GATEWAY);
-    }
-    let body = resp.text().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
-    let meta: serde_json::Value =
-        serde_json::from_str(&body).map_err(|_| StatusCode::BAD_GATEWAY)?;
+    // Chain facts (policy, supply, mint dates) run concurrently with the NFTCDN media
+    // fetch; the db handle is cloned off the lock so the query never holds it.
+    let db = state.chain_state.read().await.db_handle();
+    let info_fut = async {
+        match db {
+            Some(db) => db.asset_chain_info(&fingerprint).await.unwrap_or(None),
+            None => None,
+        }
+    };
 
-    let inner = &meta["metadata"];
-    let name = inner["name"]
-        .as_str()
-        .or_else(|| meta["name"].as_str())
-        .map(str::to_string);
+    // NFTCDN /metadata → display name + media file URLs.
+    let media_fut = async {
+        let meta_url = state.nftcdn.signed_url(&fingerprint, "metadata", "");
+        let resp = state
+            .http
+            .get(&meta_url)
+            .send()
+            .await
+            .map_err(|_| StatusCode::BAD_GATEWAY)?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        if !resp.status().is_success() {
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+        let body = resp.text().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+        let meta: serde_json::Value =
+            serde_json::from_str(&body).map_err(|_| StatusCode::BAD_GATEWAY)?;
 
-    let media = match inner["files"].as_array() {
-        Some(files) if !files.is_empty() => files
-            .iter()
-            .enumerate()
-            .map(|(i, f)| AssetMedia {
-                src: state
-                    .nftcdn
-                    .signed_url(&fingerprint, &format!("files/{}/", i), ""),
-                media_type: f["mediaType"].as_str().map(str::to_string),
-                name: f["name"]
-                    .as_str()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| format!("{}-{}", fingerprint, i)),
-            })
-            .collect(),
-        _ => vec![AssetMedia {
-            src: state.nftcdn.signed_url(&fingerprint, "preview", ""),
-            media_type: inner["mediaType"].as_str().map(str::to_string),
-            name: name.clone().unwrap_or_else(|| fingerprint.clone()),
-        }],
+        let inner = &meta["metadata"];
+        let name = inner["name"]
+            .as_str()
+            .or_else(|| meta["name"].as_str())
+            .map(str::to_string);
+
+        let media = match inner["files"].as_array() {
+            Some(files) if !files.is_empty() => files
+                .iter()
+                .enumerate()
+                .map(|(i, f)| AssetMedia {
+                    src: state
+                        .nftcdn
+                        .signed_url(&fingerprint, &format!("files/{}/", i), ""),
+                    media_type: f["mediaType"].as_str().map(str::to_string),
+                    name: f["name"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("{}-{}", fingerprint, i)),
+                })
+                .collect(),
+            _ => vec![AssetMedia {
+                src: state.nftcdn.signed_url(&fingerprint, "preview", ""),
+                media_type: inner["mediaType"].as_str().map(str::to_string),
+                name: name.clone().unwrap_or_else(|| fingerprint.clone()),
+            }],
+        };
+        Ok::<(Option<String>, Vec<AssetMedia>), StatusCode>((name, media))
+    };
+
+    let (media_res, info) = tokio::join!(media_fut, info_fut);
+    let (name, media) = media_res?;
+    let (policy, quantity, first_mint, last_mint) = match info {
+        Some((p, q, f, l)) => (Some(p), q, f, l),
+        None => (None, None, None, None),
     };
 
     Ok(axum::Json(AssetMediaResponse {
         fingerprint,
         name,
+        policy,
+        quantity,
+        first_mint,
+        last_mint,
         media,
     }))
 }

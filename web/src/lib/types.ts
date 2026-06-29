@@ -47,6 +47,13 @@ export interface AssetMedia {
 export interface AssetMediaResponse {
   fingerprint: string;
   name?: string;
+  /** Policy id (hex); links to the policy page. */
+  policy?: string;
+  /** Minted supply (string: can exceed JS safe-int). */
+  quantity?: string;
+  /** First / last mint times (unix seconds); a range when minted across several txs. */
+  first_mint?: number;
+  last_mint?: number;
   media: AssetMedia[];
 }
 

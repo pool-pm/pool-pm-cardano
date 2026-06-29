@@ -330,6 +330,40 @@ impl DbSync {
         Ok(Some((row.address, row.value, assets)))
     }
 
+    /// Chain facts for the standalone asset page, by CIP-14 `fingerprint`: the policy id
+    /// (hex), the minted supply (`Σ ma_tx_mint.quantity` as a string — can exceed i64),
+    /// and the first/last mint timestamps (unix seconds; a token minted across several
+    /// txs spans a range). `None` if the fingerprint isn't a known asset.
+    ///
+    /// `multi_asset` maps the public identity → db-sync's internal `ident`; the supply
+    /// and mint times then come from `ma_tx_mint` keyed on that `ident`. Wants
+    /// `idx_multi_asset_fingerprint` (else a ~270 ms parallel seq scan of ~11M rows) and
+    /// `idx_ma_tx_mint_ident` (else a ~1.5 s seq scan of ~19M rows) — neither exists in a
+    /// default db-sync.
+    pub async fn asset_chain_info(
+        &self,
+        fingerprint: &str,
+    ) -> Result<Option<(String, Option<String>, Option<i64>, Option<i64>)>, sqlx::Error> {
+        let row = sqlx::query!(
+            r#"SELECT ma.policy AS "policy!", agg.supply, agg.first_mint, agg.last_mint
+               FROM multi_asset ma
+               LEFT JOIN LATERAL (
+                   SELECT SUM(m.quantity)::text AS supply,
+                          EXTRACT(EPOCH FROM MIN(b.time))::bigint AS first_mint,
+                          EXTRACT(EPOCH FROM MAX(b.time))::bigint AS last_mint
+                   FROM ma_tx_mint m
+                   JOIN tx t ON t.id = m.tx_id
+                   JOIN block b ON b.id = t.block_id
+                   WHERE m.ident = ma.id
+               ) agg ON true
+               WHERE ma.fingerprint = $1"#,
+            fingerprint
+        )
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(row.map(|r| (hex::encode(r.policy), r.supply, r.first_mint, r.last_mint)))
+    }
+
     /// All assets of a policy, newest-first-minted first, keyset-paginated on
     /// `multi_asset.id` (a bigserial assigned at first sighting, so a higher id
     /// means more recently first minted). `cursor` is the last id of the previous
