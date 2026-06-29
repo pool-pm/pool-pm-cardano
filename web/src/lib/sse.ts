@@ -6,6 +6,7 @@ import type {
   CardanoInfo,
   Config,
   DRepInfo,
+  AssetLiveEvent,
   Event,
   MempoolTxEvent,
   PoolInfo,
@@ -22,6 +23,16 @@ function sectionSlot(sec: Section): number {
 
 let source: EventSource | null = null;
 let pendingPrune = new Set<string>();
+
+// The assets grid registers a single handler here to receive live asset deltas and
+// rollbacks (it loads its initial page over HTTP and isn't a store consumer).
+let assetLiveHandler: ((e: AssetLiveEvent) => void) | null = null;
+export function onAssetLive(fn: (e: AssetLiveEvent) => void): () => void {
+  assetLiveHandler = fn;
+  return () => {
+    if (assetLiveHandler === fn) assetLiveHandler = null;
+  };
+}
 
 // --- Infinite scroll (older history) pagination ---
 type FeedCursor = { slot: number; epoch?: number; stake?: string };
@@ -235,6 +246,8 @@ function handleEvent(event: Event): void {
     case 'Rollback':
       // Keep the mempool (i === 0) and any block/reward section at/under the rollback slot.
       sections.update((s) => s.filter((section, i) => i === 0 || sectionSlot(section) <= event.slot));
+      // Let the assets grid revert live deltas from rolled-back blocks.
+      assetLiveHandler?.({ kind: 'rollback', slot: event.slot });
       break;
   }
 }
@@ -278,6 +291,13 @@ export function connectSSE(url: string): void {
         cardano.set(data as CardanoInfo);
       } else if (data.type === 'ReplayCursor') {
         feedCursor = { slot: data.slot, epoch: data.epoch, stake: data.stake };
+      } else if (data.type === 'AssetDelta') {
+        assetLiveHandler?.({
+          kind: 'delta',
+          slot: data.slot,
+          added: data.added ?? [],
+          removed: data.removed ?? [],
+        });
       } else if (Array.isArray(data)) {
         handleSnapshot(data as Event[]);
       } else {

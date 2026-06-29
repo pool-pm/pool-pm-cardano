@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import type { PolicyAsset, AssetsResponse } from '../types';
+  import type { PolicyAsset, AssetsResponse, AssetLiveEvent } from '../types';
   import { stake, address } from '../stores';
+  import { onAssetLive } from '../sse';
   import SubjectCard from './SubjectCard.svelte';
 
   // `endpoint` is the paginated API URL (cursor is appended as `?cursor=`); `title`
@@ -32,6 +33,14 @@
   let hasMore = $state(true);
   let loading = $state(false);
   let error = $state<string | null>(null);
+
+  // Live updates (owned-assets pages): `present` mirrors the fingerprints in `assets`
+  // for de-duping live adds against fetched pages; `liveLog` is a slot-tagged undo log
+  // (recent blocks only) so a chain rollback can revert the deltas it introduced.
+  const present = new Set<string>();
+  type LiveLog = { slot: number; added: string[]; removed: PolicyAsset[] };
+  const liveLog: LiveLog[] = [];
+  const LIVE_LOG_MAX = 64; // mainnet rollbacks are <=3 blocks; this is a safe margin
 
   // Measured from the scroll container; drive layout + windowing reactively.
   let containerW = $state(0);
@@ -87,7 +96,10 @@
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: AssetsResponse = await res.json();
-      assets = [...assets, ...data.assets];
+      // Skip anything already shown via a live add, so a page can't duplicate it.
+      const fresh = data.assets.filter((a) => !present.has(a.fingerprint));
+      for (const a of fresh) present.add(a.fingerprint);
+      assets = [...assets, ...fresh];
       cursor = data.cursor;
       hasMore = data.has_more;
     } catch (e) {
@@ -108,9 +120,49 @@
     }
   });
 
+  // Apply a live asset delta (prepend newly-held tiles, drop sent-away ones) or revert
+  // the deltas of rolled-back blocks. Keeps `present` in sync and logs each delta by
+  // slot for rollback. Owned-assets pages only (policy pages never connect SSE).
+  function handleLive(e: AssetLiveEvent) {
+    if (e.kind === 'delta') {
+      const removedTiles: PolicyAsset[] = [];
+      const drop = new Set(e.removed.filter((fp) => present.has(fp)));
+      if (drop.size) {
+        for (const a of assets) if (drop.has(a.fingerprint)) removedTiles.push(a);
+        for (const fp of drop) present.delete(fp);
+        assets = assets.filter((a) => !drop.has(a.fingerprint));
+      }
+      const addTiles = e.added.filter((a) => !present.has(a.fingerprint));
+      for (const a of addTiles) present.add(a.fingerprint);
+      if (addTiles.length) assets = [...addTiles, ...assets];
+
+      if (addTiles.length || removedTiles.length) {
+        liveLog.push({ slot: e.slot, added: addTiles.map((a) => a.fingerprint), removed: removedTiles });
+        if (liveLog.length > LIVE_LOG_MAX) liveLog.splice(0, liveLog.length - LIVE_LOG_MAX);
+      }
+    } else {
+      // Rollback: undo every logged delta from a block newer than the rollback slot.
+      while (liveLog.length && liveLog[liveLog.length - 1].slot > e.slot) {
+        const entry = liveLog.pop()!;
+        if (entry.added.length) {
+          const undo = new Set(entry.added);
+          for (const fp of undo) present.delete(fp);
+          assets = assets.filter((a) => !undo.has(a.fingerprint));
+        }
+        const restore = entry.removed.filter((t) => !present.has(t.fingerprint));
+        for (const t of restore) present.add(t.fingerprint);
+        if (restore.length) assets = [...restore, ...assets];
+      }
+    }
+  }
+
   onMount(() => {
     document.title = title;
-    return () => clearTimeout(settleTimer);
+    const offLive = onAssetLive(handleLive);
+    return () => {
+      offLive();
+      clearTimeout(settleTimer);
+    };
   });
 
   function onScroll(e: Event) {

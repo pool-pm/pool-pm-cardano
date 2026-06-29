@@ -782,12 +782,19 @@ impl DbSync {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
+        // Two-step like `assets_page`: count per `ident` (bigint) over the explicit id
+        // array in a MATERIALIZED CTE — forcing the index-driven path so the planner
+        // can't flip to a seq scan of all ~472M `ma_tx_out` rows — then join
+        // `multi_asset` (PK by id) only for the distinct idents to resolve fingerprints.
+        // (Grouping the join's text `fingerprint` directly was ~3s on big wallets.)
         let rows = sqlx::query!(
-            r#"SELECT ma.fingerprint AS "fingerprint!", COUNT(*)::int AS "count!"
-               FROM ma_tx_out m
-               JOIN multi_asset ma ON ma.id = m.ident
-               WHERE m.tx_out_id = ANY($1)
-               GROUP BY ma.fingerprint"#,
+            r#"WITH held AS MATERIALIZED (
+                SELECT ident, COUNT(*)::int AS c
+                FROM ma_tx_out WHERE tx_out_id = ANY($1)
+                GROUP BY ident
+            )
+            SELECT ma.fingerprint AS "fingerprint!", held.c AS "count!"
+            FROM held JOIN multi_asset ma ON ma.id = held.ident"#,
             ids
         )
         .fetch_all(&self.db)

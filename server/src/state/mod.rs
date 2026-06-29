@@ -220,7 +220,15 @@ pub struct State {
     // the first post-catch-up block backfills (and a rollback resets them to 0).
     pub pool_meta_cursor: i64,
     pub drep_meta_cursor: i64,
+    /// LRU of subjects whose assets are tracked in the snapshot maps, `(is_stake,
+    /// key)`, least-recent first. Connection metadata (not chain state), so it isn't
+    /// in `BlockSnapshot` and isn't rolled back. Bounds the watched-asset maps and
+    /// lets a returning viewer skip the seed query (cache hit).
+    asset_lru: Vec<(bool, Vec<u8>)>,
 }
+
+/// Max subjects tracked in the watched-asset maps; least-recently-viewed are evicted.
+const ASSET_LRU_CAP: usize = 1024;
 
 impl State {
     pub fn new(db_url: Url) -> Self {
@@ -231,6 +239,55 @@ impl State {
             feed_index: FeedIndex::new(),
             pool_meta_cursor: 0,
             drep_meta_cursor: 0,
+            asset_lru: Vec::new(),
+        }
+    }
+
+    /// Is `subject` (`is_stake`, raw `key`) currently tracked in the snapshot maps?
+    pub fn asset_tracked(&self, is_stake: bool, key: &[u8]) -> bool {
+        self.current()
+            .map(|s| {
+                if is_stake {
+                    s.stake_assets.contains_key(key)
+                } else {
+                    s.address_assets.contains_key(key)
+                }
+            })
+            .unwrap_or(false)
+    }
+
+    /// Mark `subject` most-recently-used (LRU touch). On a cache miss, pass the seeded
+    /// `counts` (`fingerprint → unspent-UTXO count`) to insert into the current
+    /// snapshot; on a hit pass `None`. Evicts the least-recently-used subject(s) from
+    /// the snapshot maps when over [`ASSET_LRU_CAP`].
+    pub fn track_asset_subject(
+        &mut self,
+        is_stake: bool,
+        key: Vec<u8>,
+        counts: Option<Vec<(String, u32)>>,
+    ) {
+        self.asset_lru
+            .retain(|(s, k)| !(*s == is_stake && k == &key));
+        if let Some(counts) = counts {
+            if let Some(snap) = self.current_mut() {
+                let inner: HashMap<String, u32> = counts.into_iter().collect();
+                if is_stake {
+                    snap.stake_assets.insert(key.clone(), inner);
+                } else {
+                    snap.address_assets.insert(key.clone(), inner);
+                }
+            }
+        }
+        self.asset_lru.push((is_stake, key));
+        while self.asset_lru.len() > ASSET_LRU_CAP {
+            let (s, k) = self.asset_lru.remove(0);
+            if let Some(snap) = self.current_mut() {
+                if s {
+                    snap.stake_assets.remove(&k);
+                } else {
+                    snap.address_assets.remove(&k);
+                }
+            }
         }
     }
 
@@ -1178,6 +1235,42 @@ impl State {
 mod tests {
     use super::*;
     use oura::framework::GenesisValues;
+
+    #[test]
+    fn asset_count_transitions_emit_on_0_and_1_boundaries() {
+        // A watched address holding nothing yet.
+        let mut map: HashMap<Vec<u8>, HashMap<String, u32>> = HashMap::new();
+        map.insert(b"addr".to_vec(), HashMap::new());
+        let fp = "asset1xyz";
+        let mut d = Vec::new();
+
+        // First UTXO of the asset arrives → Added (0→1).
+        bump_asset_count(&mut map, b"addr", fp, true, false, &mut d);
+        assert_eq!(d.len(), 1);
+        assert!(d[0].added);
+        assert_eq!(map[&b"addr".to_vec()][fp], 1);
+
+        // A second UTXO of the same asset → still held, no event (1→2).
+        bump_asset_count(&mut map, b"addr", fp, true, false, &mut d);
+        assert_eq!(d.len(), 1);
+        assert_eq!(map[&b"addr".to_vec()][fp], 2);
+
+        // One of the two spent → still held, no event (2→1).
+        bump_asset_count(&mut map, b"addr", fp, false, false, &mut d);
+        assert_eq!(d.len(), 1);
+
+        // Last one spent → Removed (1→0), and the fingerprint is dropped.
+        bump_asset_count(&mut map, b"addr", fp, false, false, &mut d);
+        assert_eq!(d.len(), 2);
+        assert!(!d[1].added);
+        assert!(!map[&b"addr".to_vec()].contains_key(fp));
+        // The address entry itself stays (it's a watched subject, just empty now).
+        assert!(map.contains_key(&b"addr".to_vec()));
+
+        // An untracked address is a no-op (no panic, no delta).
+        bump_asset_count(&mut map, b"other", fp, true, false, &mut d);
+        assert_eq!(d.len(), 2);
+    }
 
     #[test]
     fn epoch_for_slot_mainnet() {

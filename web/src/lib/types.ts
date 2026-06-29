@@ -59,6 +59,21 @@ export interface PolicyAsset {
   srcset: string;
 }
 
+/** Live `AssetDelta` SSE message on an assets feed: one block's holdings change for
+ * the watched address/stake. `added` are ready-to-render tiles; `removed` are
+ * fingerprints. `slot` lets the grid revert on rollback. */
+export interface AssetDeltaEvent {
+  type: 'AssetDelta';
+  slot: number;
+  added?: PolicyAsset[];
+  removed?: string[];
+}
+
+/** What `onAssetLive` delivers to the assets grid: a per-block delta or a rollback. */
+export type AssetLiveEvent =
+  | { kind: 'delta'; slot: number; added: PolicyAsset[]; removed: string[] }
+  | { kind: 'rollback'; slot: number };
+
 /** Response for both `/api/policy/{id}` and `/api/assets/{bech32}` — same
  * pagination scheme; the subject (policy id or address) is implicit in the URL. */
 export interface AssetsResponse {

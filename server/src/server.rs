@@ -1622,6 +1622,71 @@ enum SlotAction {
     StakeChange(BlockRef),
 }
 
+/// The `AssetDelta` SSE message: a block's watched-asset changes for this connection's
+/// subject. `added` carries ready-to-render tiles (same shape as the grid's HTTP
+/// page); `removed` carries fingerprints. `slot` lets the client revert on rollback.
+#[derive(serde::Serialize)]
+struct AssetDeltaWire<'a> {
+    #[serde(rename = "type")]
+    kind: &'a str,
+    slot: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    added: Vec<AssetItem>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    removed: Vec<String>,
+}
+
+/// Convert a broadcast `AssetChanges` into this connection's `AssetDelta` SSE message,
+/// keeping only changes for the feed's own subject (payment address or stake
+/// credential) and building thumbnail tiles for added assets. `None` when nothing
+/// matches (so the live stream just continues).
+fn asset_delta_event(
+    filter: &filter::FeedFilter,
+    slot: u64,
+    changes: &[crate::event::AssetChange],
+    nftcdn: &NftcdnConfig,
+) -> Option<Result<SseEvent, Infallible>> {
+    let (want_addr, want_cred): (Option<Vec<u8>>, Option<&[u8]>) = match filter {
+        filter::FeedFilter::Address(addr) => (address_bytes(addr), None),
+        filter::FeedFilter::Stake(payload) => (None, Some(&payload[1..])),
+        _ => return None,
+    };
+    let mut added: Vec<AssetItem> = Vec::new();
+    let mut removed: Vec<String> = Vec::new();
+    for c in changes {
+        let mine = match (&want_addr, want_cred) {
+            (Some(a), _) => c.address.as_deref() == Some(a.as_slice()),
+            (_, Some(cred)) => c.cred.as_deref() == Some(cred),
+            _ => false,
+        };
+        if !mine {
+            continue;
+        }
+        if c.added {
+            let (src, srcset) = build_thumb_urls(nftcdn, &c.fingerprint);
+            added.push(AssetItem {
+                fingerprint: c.fingerprint.clone(),
+                name: c.name.clone(),
+                src,
+                srcset,
+            });
+        } else {
+            removed.push(c.fingerprint.clone());
+        }
+    }
+    if added.is_empty() && removed.is_empty() {
+        return None;
+    }
+    let json = serde_json::to_string(&AssetDeltaWire {
+        kind: "AssetDelta",
+        slot,
+        added,
+        removed,
+    })
+    .ok()?;
+    Some(Ok(SseEvent::default().data(json)))
+}
+
 /// Build the live stream that detects pool parameter/stake changes and filters events.
 /// Per-feed mutable state the live stream compares against between blocks to
 /// decide whether to re-emit the info header. Different filter kinds use
@@ -1640,6 +1705,7 @@ fn build_live_stream(
     chain_state: Arc<RwLock<State>>,
     initial: LiveState,
     size: u16,
+    nftcdn: NftcdnConfig,
     mainnet: bool,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> {
     futures::stream::unfold(
@@ -1650,15 +1716,31 @@ fn build_live_stream(
             initial,
             std::collections::VecDeque::<Result<SseEvent, Infallible>>::new(),
             size,
+            nftcdn,
             mainnet,
         ),
-        |(mut rx, filter, chain_state, mut live, mut buf, size, mainnet)| async move {
+        |(mut rx, filter, chain_state, mut live, mut buf, size, nftcdn, mainnet)| async move {
             loop {
                 if let Some(sse) = buf.pop_front() {
-                    return Some((sse, (rx, filter, chain_state, live, buf, size, mainnet)));
+                    return Some((
+                        sse,
+                        (rx, filter, chain_state, live, buf, size, nftcdn, mainnet),
+                    ));
                 }
 
                 let event = rx.next().await?.ok()?;
+
+                // Live asset-grid deltas (assets feeds): convert to this subject's
+                // AssetDelta SSE and skip the tx-filter path below.
+                if let crate::event::Event::AssetChanges { slot, changes } = &event {
+                    if let Some(sse) = asset_delta_event(&filter, *slot, changes, &nftcdn) {
+                        return Some((
+                            sse,
+                            (rx, filter, chain_state, live, buf, size, nftcdn, mainnet),
+                        ));
+                    }
+                    continue;
+                }
 
                 if matches!(
                     event,
@@ -1700,41 +1782,58 @@ fn build_live_stream(
                         }
                         filter::FeedFilter::Stake(ref payload) => {
                             let cred = &payload[1..];
-                            let current_balance = {
+                            let (current_balance, current_count) = {
                                 let guard = chain_state.read().await;
-                                guard.current().and_then(|s| s.stakes.get(cred).copied())
+                                let snap = guard.current();
+                                let bal = snap.and_then(|s| s.stakes.get(cred).copied());
+                                // Live distinct-asset count when this subject is tracked
+                                // (an assets page is open); else the connect-time value.
+                                let cnt = snap
+                                    .and_then(|s| s.stake_assets.get(cred))
+                                    .map(|m| m.len() as u32)
+                                    .or(live.assets_count);
+                                (bal, cnt)
                             };
-                            if current_balance != live.balance {
+                            if current_balance != live.balance || current_count != live.assets_count
+                            {
                                 let stake_address = filter.feed_id();
                                 let guard = chain_state.read().await;
-                                // assets_count is connect-only; pass the cached value.
                                 buf.push_back(stake_sse_event(
                                     &stake_address,
                                     cred,
                                     guard.current(),
-                                    live.assets_count.unwrap_or(0),
+                                    current_count.unwrap_or(0),
                                 ));
                                 live.balance = current_balance;
+                                live.assets_count = current_count;
                             }
                         }
                         filter::FeedFilter::Address(ref addr) => {
                             if let Some(addr_b) = address_bytes(addr) {
-                                let current_balance = {
+                                let (current_balance, current_count) = {
                                     let guard = chain_state.read().await;
-                                    guard
-                                        .current()
-                                        .and_then(|s| s.address_balances.get(&addr_b).copied())
+                                    let snap = guard.current();
+                                    let bal =
+                                        snap.and_then(|s| s.address_balances.get(&addr_b).copied());
+                                    let cnt = snap
+                                        .and_then(|s| s.address_assets.get(&addr_b))
+                                        .map(|m| m.len() as u32)
+                                        .or(live.assets_count);
+                                    (bal, cnt)
                                 };
-                                if current_balance != live.balance {
+                                if current_balance != live.balance
+                                    || current_count != live.assets_count
+                                {
                                     let guard = chain_state.read().await;
                                     buf.push_back(address_sse_event(
                                         addr,
                                         &addr_b,
                                         guard.current(),
                                         mainnet,
-                                        live.assets_count.unwrap_or(0),
+                                        current_count.unwrap_or(0),
                                     ));
                                     live.balance = current_balance;
+                                    live.assets_count = current_count;
                                 }
                             }
                         }
@@ -1752,7 +1851,10 @@ fn build_live_stream(
                     .filter_event(&event, &delegators)
                     .and_then(|e| serialize_event(e, size))
                 {
-                    return Some((sse, (rx, filter, chain_state, live, buf, size, mainnet)));
+                    return Some((
+                        sse,
+                        (rx, filter, chain_state, live, buf, size, nftcdn, mainnet),
+                    ));
                 }
             }
         },
@@ -2403,7 +2505,15 @@ async fn filtered_events(
     };
 
     let replay = tokio_stream::wrappers::ReceiverStream::new(receiver);
-    let live = build_live_stream(rx, filter, chain_state, initial_live, size, state.mainnet);
+    let live = build_live_stream(
+        rx,
+        filter,
+        chain_state,
+        initial_live,
+        size,
+        state.nftcdn.clone(),
+        state.mainnet,
+    );
     let stream = replay.chain(live);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
@@ -2473,6 +2583,44 @@ async fn asset_feed_events(
             }
             _ => {}
         }
+
+        // Begin tracking this subject's asset holdings so the sink emits per-block
+        // deltas for it. Done here (after the header is already buffered, off the
+        // response path) because the seed query can take seconds for a large wallet —
+        // it must never delay the header. Cache hit (LRU-warm) skips the query; miss
+        // seeds `fingerprint → unspent-UTXO count` off the lock then inserts under a
+        // brief write lock. The few blocks before this completes are a negligible gap
+        // (self-heals on a later re-seed).
+        let (is_stake, key): (bool, Vec<u8>) = match &replay_filter {
+            filter::FeedFilter::Stake(payload) => (true, payload[1..].to_vec()),
+            filter::FeedFilter::Address(addr) => (false, address_bytes(addr).unwrap_or_default()),
+            _ => (false, Vec::new()),
+        };
+        let tracked = replay_state
+            .chain_state
+            .read()
+            .await
+            .asset_tracked(is_stake, &key);
+        let counts = if tracked {
+            None
+        } else {
+            let db = replay_state.chain_state.read().await.db_handle();
+            let rows = match (&replay_filter, db) {
+                (filter::FeedFilter::Stake(payload), Some(db)) => {
+                    db.stake_asset_counts(payload).await.unwrap_or_default()
+                }
+                (filter::FeedFilter::Address(addr), Some(db)) => {
+                    db.address_asset_counts(addr).await.unwrap_or_default()
+                }
+                _ => Vec::new(),
+            };
+            Some(rows)
+        };
+        replay_state
+            .chain_state
+            .write()
+            .await
+            .track_asset_subject(is_stake, key, counts);
     });
 
     // Seed the live stream so the header re-emits on balance/asset changes.
@@ -2503,6 +2651,7 @@ async fn asset_feed_events(
         state.chain_state.clone(),
         initial_live,
         size,
+        state.nftcdn.clone(),
         state.mainnet,
     );
     let stream = replay.chain(live);
