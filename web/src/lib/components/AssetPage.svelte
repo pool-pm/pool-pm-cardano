@@ -197,8 +197,8 @@
   /* Gallery placard: clean text in the bottom-right corner over the piece. */
   .placard {
     position: fixed;
-    right: clamp(16px, 3.5vw, 48px);
-    bottom: clamp(16px, 3.5vw, 48px);
+    right: 12px;
+    bottom: 12px;
     margin: 0;
     z-index: 2;
     display: flex;
@@ -268,8 +268,8 @@
      right placard but left-aligned and scrollable. */
   .meta-panel {
     position: fixed;
-    left: clamp(16px, 3.5vw, 48px);
-    bottom: clamp(16px, 3.5vw, 48px);
+    left: 12px;
+    bottom: 12px;
     z-index: 2;
     max-width: min(46vw, 400px);
     max-height: 62dvh;
