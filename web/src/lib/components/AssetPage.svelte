@@ -4,7 +4,9 @@
   import '@nftcdn/media-player/nftcdn-media-player.js';
   import type { AssetMedia, AssetMediaResponse } from '../types';
 
-  let { fingerprint }: { fingerprint: string } = $props();
+  // `uiVisible` is App's idle signal (false a few seconds after the last interaction);
+  // the (i) button fades with the corner chrome.
+  let { fingerprint, uiVisible = true }: { fingerprint: string; uiVisible?: boolean } = $props();
 
   let media = $state<AssetMedia[]>([]);
   let name = $state<string | null>(null);
@@ -129,6 +131,7 @@
     {:else}
       <button
         class="meta-info"
+        class:idle-hidden={!uiVisible}
         type="button"
         onclick={() => (metaOpen = true)}
         aria-label="Show metadata"
@@ -302,7 +305,11 @@
     font-size: 12px;
     color: rgba(255, 255, 255, 0.62);
     scrollbar-width: thin;
-    background: rgba(0, 0, 0, 0.3);
+    /* Very transparent: a *gray* tint (not pure black, which is 0 over black at any
+       opacity) so it's almost-black-but-not-quite over dark art and almost transparent
+       over light/busy art. A faint border + text-shadow keep it legible. */
+    background: rgba(48, 48, 56, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 6px;
     padding: 10px 12px;
     text-shadow:
@@ -318,12 +325,14 @@
     justify-content: center;
     pointer-events: auto;
     cursor: pointer;
-    background: rgba(0, 0, 0, 0.3);
+    background: rgba(40, 40, 48, 0.72);
     color: rgba(255, 255, 255, 0.7);
     font-family: Inter, sans-serif;
     line-height: 1;
     padding: 0;
-    transition: color 0.15s ease;
+    transition:
+      color 0.15s ease,
+      opacity 0.15s ease;
   }
 
   .meta-close {
@@ -354,6 +363,13 @@
   .meta-info:hover {
     color: #fff;
     border-color: rgba(255, 255, 255, 0.7);
+  }
+
+  /* Fade out with the corner chrome when idle (slow out, quick back on interaction). */
+  .meta-info.idle-hidden {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 1.5s ease;
   }
 
   .kv {

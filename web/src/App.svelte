@@ -107,7 +107,7 @@
 
 <main>
   {#if assetFingerprint}
-    <AssetPage fingerprint={assetFingerprint} />
+    <AssetPage fingerprint={assetFingerprint} {uiVisible} />
   {:else if policyId}
     <AssetsGrid endpoint={`/api/policy/${policyId}`} title={`${policyId.slice(0, 12)}…`} mode="hide-broken" />
   {:else if ownedAssetsSubject}
