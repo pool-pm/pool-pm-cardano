@@ -423,6 +423,7 @@
   .vote-item {
     display: flex;
     align-items: baseline;
+    justify-content: center;
     gap: 6px;
     font-size: 10px;
     flex-wrap: wrap;
@@ -454,6 +455,7 @@
   .vote-action {
     color: rgb(255 255 255 / 0.4);
     overflow-wrap: anywhere;
+    text-align: center;
   }
 
   .deleg-section {
