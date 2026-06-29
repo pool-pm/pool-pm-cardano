@@ -340,8 +340,9 @@
     width: 20px;
     height: 20px;
     border: none;
-    /* The panel already provides the dark backing, so the × itself is bare. */
     background: transparent;
+    /* Dimmer — the muted metadata-label color. */
+    color: rgba(255, 255, 255, 0.4);
     font-size: 13px;
   }
 
