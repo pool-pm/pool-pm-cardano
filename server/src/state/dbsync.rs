@@ -699,22 +699,44 @@ impl DbSync {
         Ok(rows.into_iter().map(|r| (r.address, r.balance)).collect())
     }
 
-    /// Distinct unconsumed multi-assets currently held by a payment address.
-    /// Connect-time query for the feed header's `assets_count` — no live
-    /// update, the user refreshes to re-fetch.
-    pub async fn address_assets_count(&self, address: &str) -> Result<i64, sqlx::Error> {
-        let ids = self.address_unspent_ids(address).await?;
-        self.assets_count(&ids).await
+    /// Stream every address's current (unspent as-of `last_tx_id`) multi-asset
+    /// holdings as `(bech32 address, fingerprint, unspent-UTXO count)`, ordered by
+    /// address so the caller can group per address, invoking `f` once per row. The
+    /// cold-start populate for the global [`BlockSnapshot::asset_holdings`] map (warm
+    /// resume deserializes instead). Heavy — a full join of the unspent `tx_out` set
+    /// with `ma_tx_out` (~15M output rows); streamed (`fetch`, not `fetch_all`) so the
+    /// result never materializes as one giant `Vec`. Counts per `(address_id, ident)`
+    /// in a MATERIALIZED CTE on integer keys, then resolves the text address /
+    /// fingerprint — same shape as `asset_counts` but global.
+    pub async fn asset_holdings_for_each<F: FnMut(String, String, i32)>(
+        &self,
+        last_tx_id: i64,
+        mut f: F,
+    ) -> Result<(), sqlx::Error> {
+        let mut stream = sqlx::query!(
+            r#"WITH held AS MATERIALIZED (
+                SELECT o.address_id, m.ident, COUNT(*)::int AS c
+                FROM tx_out o
+                JOIN ma_tx_out m ON m.tx_out_id = o.id
+                WHERE o.tx_id <= $1
+                  AND (o.consumed_by_tx_id IS NULL OR o.consumed_by_tx_id > $1)
+                GROUP BY o.address_id, m.ident
+            )
+            SELECT a.address AS "address!", ma.fingerprint AS "fingerprint!", held.c AS "count!"
+            FROM held
+            JOIN address a ON a.id = held.address_id
+            JOIN multi_asset ma ON ma.id = held.ident
+            ORDER BY held.address_id"#,
+            last_tx_id
+        )
+        .fetch(&self.db);
+        while let Some(r) = stream.try_next().await? {
+            f(r.address, r.fingerprint, r.count);
+        }
+        Ok(())
     }
 
-    /// Distinct unconsumed multi-assets across every payment address sharing
-    /// the stake credential (29-byte `hash_raw`). Connect-time only.
-    pub async fn stake_assets_count(&self, hash_raw: &[u8]) -> Result<i64, sqlx::Error> {
-        let ids = self.stake_unspent_ids(hash_raw).await?;
-        self.assets_count(&ids).await
-    }
-
-    // --- Two-step current-holdings queries (count + /assets pages) ---
+    // --- Two-step current-holdings queries (/assets pages) ---
     //
     // Every per-address/stake holdings query runs in two steps:
     //   1. fetch the current (unconsumed) `tx_out.id`s via the partial index
@@ -755,72 +777,6 @@ impl DbSync {
         )
         .fetch_all(&self.db)
         .await
-    }
-
-    /// Distinct multi-asset count held across the given `tx_out` ids.
-    async fn assets_count(&self, ids: &[i64]) -> Result<i64, sqlx::Error> {
-        if ids.is_empty() {
-            return Ok(0);
-        }
-        let row = sqlx::query!(
-            r#"SELECT COUNT(DISTINCT ident)::bigint AS "count!"
-               FROM ma_tx_out WHERE tx_out_id = ANY($1)"#,
-            ids
-        )
-        .fetch_one(&self.db)
-        .await?;
-        Ok(row.count)
-    }
-
-    /// `fingerprint → unspent-UTXO count` across the given `tx_out` ids — the seed
-    /// for an assets feed's live tracking (count = number of the subject's current
-    /// UTXOs holding that fingerprint, so the sink's per-block `0↔1` transitions stay
-    /// exact). Same two-step path / `ANY($ids)` cardinality guard as `assets_count`.
-    /// `ma.fingerprint` is db-sync's CIP-14 value — identical to the sink's
-    /// `asset_fingerprint`, so seed and live keys match.
-    async fn asset_counts(&self, ids: &[i64]) -> Result<Vec<(String, u32)>, sqlx::Error> {
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        // Two-step like `assets_page`: count per `ident` (bigint) over the explicit id
-        // array in a MATERIALIZED CTE — forcing the index-driven path so the planner
-        // can't flip to a seq scan of all ~472M `ma_tx_out` rows — then join
-        // `multi_asset` (PK by id) only for the distinct idents to resolve fingerprints.
-        // (Grouping the join's text `fingerprint` directly was ~3s on big wallets.)
-        let rows = sqlx::query!(
-            r#"WITH held AS MATERIALIZED (
-                SELECT ident, COUNT(*)::int AS c
-                FROM ma_tx_out WHERE tx_out_id = ANY($1)
-                GROUP BY ident
-            )
-            SELECT ma.fingerprint AS "fingerprint!", held.c AS "count!"
-            FROM held JOIN multi_asset ma ON ma.id = held.ident"#,
-            ids
-        )
-        .fetch_all(&self.db)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| (r.fingerprint, r.count as u32))
-            .collect())
-    }
-
-    /// Seed `fingerprint → unspent-UTXO count` for a payment address.
-    pub async fn address_asset_counts(
-        &self,
-        address: &str,
-    ) -> Result<Vec<(String, u32)>, sqlx::Error> {
-        let ids = self.address_unspent_ids(address).await?;
-        self.asset_counts(&ids).await
-    }
-
-    /// Seed `fingerprint → unspent-UTXO count` for a stake credential (29-byte hash_raw).
-    pub async fn stake_asset_counts(
-        &self,
-        hash_raw: &[u8],
-    ) -> Result<Vec<(String, u32)>, sqlx::Error> {
-        let ids = self.stake_unspent_ids(hash_raw).await?;
-        self.asset_counts(&ids).await
     }
 
     /// One page of distinct assets held across the given `tx_out` ids, newest-

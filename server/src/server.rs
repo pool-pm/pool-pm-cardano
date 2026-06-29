@@ -637,20 +637,21 @@ async fn send_address_info(
         .await;
 }
 
-/// Connect-time `assets_count` for a Stake/Address feed (0 for pool/drep or when no
-/// db is available). The db handle is cloned under a short read guard and the count
-/// query runs *off* the lock (the two-step index path), so it can't queue other
-/// readers behind the sink's pending writer. Shared by `filtered_events` (regular
-/// feed) and `asset_feed_events` (assets page) so the count is queried exactly once.
+/// Distinct held-asset count for a Stake/Address feed header (0 for pool/drep). Read
+/// straight from the always-current global `asset_holdings` in the snapshot — an O(1)
+/// lookup for an address, a ~ms in-memory prefix-union for a stake — replacing the old
+/// tens-of-seconds `COUNT(DISTINCT)` db query. Shared by `filtered_events` (regular
+/// feed) and `asset_feed_events` (assets page).
 async fn subject_assets_count(filter: &filter::FeedFilter, chain_state: &RwLock<State>) -> u32 {
-    let db = chain_state.read().await.db_handle();
-    match (filter, db) {
-        (filter::FeedFilter::Stake(payload), Some(db)) => {
-            db.stake_assets_count(payload).await.unwrap_or(0) as u32
-        }
-        (filter::FeedFilter::Address(addr), Some(db)) => {
-            db.address_assets_count(addr).await.unwrap_or(0) as u32
-        }
+    let guard = chain_state.read().await;
+    let Some(snap) = guard.current() else {
+        return 0;
+    };
+    match filter {
+        filter::FeedFilter::Stake(payload) => snap.stake_asset_count(&payload[1..]),
+        filter::FeedFilter::Address(addr) => address_bytes(addr)
+            .map(|b| snap.address_asset_count(&b))
+            .unwrap_or(0),
         _ => 0,
     }
 }
@@ -1786,12 +1787,10 @@ fn build_live_stream(
                                 let guard = chain_state.read().await;
                                 let snap = guard.current();
                                 let bal = snap.and_then(|s| s.stakes.get(cred).copied());
-                                // Live distinct-asset count when this subject is tracked
-                                // (an assets page is open); else the connect-time value.
-                                let cnt = snap
-                                    .and_then(|s| s.stake_assets.get(cred))
-                                    .map(|m| m.len() as u32)
-                                    .or(live.assets_count);
+                                // Distinct-asset count straight from the live global
+                                // holdings map (a prefix-union over the credential's
+                                // addresses) — always current, no tracking needed.
+                                let cnt = snap.map(|s| s.stake_asset_count(cred));
                                 (bal, cnt)
                             };
                             if current_balance != live.balance || current_count != live.assets_count
@@ -1815,10 +1814,7 @@ fn build_live_stream(
                                     let snap = guard.current();
                                     let bal =
                                         snap.and_then(|s| s.address_balances.get(&addr_b).copied());
-                                    let cnt = snap
-                                        .and_then(|s| s.address_assets.get(&addr_b))
-                                        .map(|m| m.len() as u32)
-                                        .or(live.assets_count);
+                                    let cnt = snap.map(|s| s.address_asset_count(&addr_b));
                                     (bal, cnt)
                                 };
                                 if current_balance != live.balance
@@ -2584,43 +2580,20 @@ async fn asset_feed_events(
             _ => {}
         }
 
-        // Begin tracking this subject's asset holdings so the sink emits per-block
-        // deltas for it. Done here (after the header is already buffered, off the
-        // response path) because the seed query can take seconds for a large wallet —
-        // it must never delay the header. Cache hit (LRU-warm) skips the query; miss
-        // seeds `fingerprint → unspent-UTXO count` off the lock then inserts under a
-        // brief write lock. The few blocks before this completes are a negligible gap
-        // (self-heals on a later re-seed).
+        // Register this subject as watched so the sink emits live grid deltas
+        // (`AssetCountDelta` → `AssetDelta` SSE) for it. No seed query — the count and
+        // tiles come from the always-current global `asset_holdings` map; this only
+        // toggles per-block delta broadcasting (LRU-bounded).
         let (is_stake, key): (bool, Vec<u8>) = match &replay_filter {
             filter::FeedFilter::Stake(payload) => (true, payload[1..].to_vec()),
             filter::FeedFilter::Address(addr) => (false, address_bytes(addr).unwrap_or_default()),
             _ => (false, Vec::new()),
         };
-        let tracked = replay_state
-            .chain_state
-            .read()
-            .await
-            .asset_tracked(is_stake, &key);
-        let counts = if tracked {
-            None
-        } else {
-            let db = replay_state.chain_state.read().await.db_handle();
-            let rows = match (&replay_filter, db) {
-                (filter::FeedFilter::Stake(payload), Some(db)) => {
-                    db.stake_asset_counts(payload).await.unwrap_or_default()
-                }
-                (filter::FeedFilter::Address(addr), Some(db)) => {
-                    db.address_asset_counts(addr).await.unwrap_or_default()
-                }
-                _ => Vec::new(),
-            };
-            Some(rows)
-        };
         replay_state
             .chain_state
             .write()
             .await
-            .track_asset_subject(is_stake, key, counts);
+            .track_asset_subject(is_stake, key);
     });
 
     // Seed the live stream so the header re-emits on balance/asset changes.
