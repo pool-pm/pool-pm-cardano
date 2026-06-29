@@ -82,12 +82,6 @@
     <div class="placard" transition:fade={{ duration: 400 }}>
       {#if name}<div class="name">{name}</div>{/if}
       <dl class="meta">
-        {#if policyShort}
-          <div class="row">
-            <dt>policy</dt>
-            <dd><a href={`/policy/${policy}`} title={policy}>{policyShort}</a></dd>
-          </div>
-        {/if}
         {#if quantityLabel}
           <div class="row">
             <dt>quantity</dt>
@@ -98,6 +92,12 @@
           <div class="row">
             <dt>minted</dt>
             <dd>{mintLabel}</dd>
+          </div>
+        {/if}
+        {#if policyShort}
+          <div class="row">
+            <dt>policy</dt>
+            <dd><a href={`/policy/${policy}`} title={policy}>{policyShort}</a></dd>
           </div>
         {/if}
       </dl>
