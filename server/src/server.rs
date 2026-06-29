@@ -2714,24 +2714,24 @@ async fn asset_media(
         }
     };
 
-    // NFTCDN /metadata → display name + media file URLs.
+    // NFTCDN /metadata → display name + media file URLs. Non-fatal: an asset NFTCDN
+    // doesn't know (old fungible tokens with no CIP-25 media) yields empty media rather
+    // than failing the whole page — the chain facts below still render.
     let media_fut = async {
+        let empty = (None, None, Vec::new());
         let meta_url = state.nftcdn.signed_url(&fingerprint, "metadata", "");
-        let resp = state
-            .http
-            .get(&meta_url)
-            .send()
-            .await
-            .map_err(|_| StatusCode::BAD_GATEWAY)?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(StatusCode::NOT_FOUND);
-        }
+        let Ok(resp) = state.http.get(&meta_url).send().await else {
+            return empty;
+        };
         if !resp.status().is_success() {
-            return Err(StatusCode::BAD_GATEWAY);
+            return empty;
         }
-        let body = resp.text().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
-        let meta: serde_json::Value =
-            serde_json::from_str(&body).map_err(|_| StatusCode::BAD_GATEWAY)?;
+        let Ok(body) = resp.text().await else {
+            return empty;
+        };
+        let Ok(meta) = serde_json::from_str::<serde_json::Value>(&body) else {
+            return empty;
+        };
 
         let inner = &meta["metadata"];
         let name = inner["name"]
@@ -2761,17 +2761,22 @@ async fn asset_media(
                 name: name.clone().unwrap_or_else(|| fingerprint.clone()),
             }],
         };
-        Ok::<(Option<String>, Option<serde_json::Value>, Vec<AssetMedia>), StatusCode>((
-            name, metadata, media,
-        ))
+        (name, metadata, media)
     };
 
-    let (media_res, info) = tokio::join!(media_fut, info_fut);
-    let (name, metadata, media) = media_res?;
-    let (policy, quantity, first_mint, last_mint) = match info {
-        Some((p, q, f, l)) => (Some(p), q, f, l),
-        None => (None, None, None, None),
+    let ((nftcdn_name, metadata, media), info) = tokio::join!(media_fut, info_fut);
+    let (policy, name_bytes, quantity, first_mint, last_mint) = match info {
+        Some((p, n, q, f, l)) => (Some(p), Some(n), q, f, l),
+        None => (None, None, None, None, None),
     };
+
+    // Nothing on NFTCDN *and* not a known asset → genuinely not found.
+    if media.is_empty() && policy.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // Display name: NFTCDN's, else the decoded on-chain asset name (e.g. a token ticker).
+    let name = nftcdn_name.or_else(|| name_bytes.as_deref().and_then(decode_asset_name));
 
     Ok(axum::Json(AssetMediaResponse {
         fingerprint,

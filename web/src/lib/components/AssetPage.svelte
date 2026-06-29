@@ -53,7 +53,7 @@
       const link = document.createElement('link');
       link.id = 'gallery-font';
       link.rel = 'stylesheet';
-      link.href = 'https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..500&display=swap';
+      link.href = 'https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500&display=swap';
       document.head.appendChild(link);
     }
     try {
@@ -215,12 +215,11 @@
   }
 
   .name {
-    font-family: 'Fraunces', Inter, serif;
-    font-optical-sizing: auto;
-    font-weight: 400;
+    font-family: 'Space Grotesk', Inter, sans-serif;
+    font-weight: 500;
     font-size: clamp(22px, 3vw, 38px);
     line-height: 1.1;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.015em;
     color: #fff;
   }
 

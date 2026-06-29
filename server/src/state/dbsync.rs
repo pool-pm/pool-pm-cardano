@@ -343,9 +343,10 @@ impl DbSync {
     pub async fn asset_chain_info(
         &self,
         fingerprint: &str,
-    ) -> Result<Option<(String, Option<String>, Option<i64>, Option<i64>)>, sqlx::Error> {
+    ) -> Result<Option<(String, Vec<u8>, Option<String>, Option<i64>, Option<i64>)>, sqlx::Error>
+    {
         let row = sqlx::query!(
-            r#"SELECT ma.policy AS "policy!", agg.supply, agg.first_mint, agg.last_mint
+            r#"SELECT ma.policy AS "policy!", ma.name AS "name!", agg.supply, agg.first_mint, agg.last_mint
                FROM multi_asset ma
                LEFT JOIN LATERAL (
                    SELECT SUM(m.quantity)::text AS supply,
@@ -361,7 +362,15 @@ impl DbSync {
         )
         .fetch_optional(&self.db)
         .await?;
-        Ok(row.map(|r| (hex::encode(r.policy), r.supply, r.first_mint, r.last_mint)))
+        Ok(row.map(|r| {
+            (
+                hex::encode(r.policy),
+                r.name,
+                r.supply,
+                r.first_mint,
+                r.last_mint,
+            )
+        }))
     }
 
     /// All assets of a policy, newest-first-minted first, keyset-paginated on
