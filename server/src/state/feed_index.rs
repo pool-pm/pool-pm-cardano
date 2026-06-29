@@ -22,7 +22,7 @@ pub struct DelegationEntry {
     pub to: Option<Vec<u8>>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct FeedIndex {
     pool_minted: HashMap<Vec<u8>, Vec<BlockRef>>,
     pool_stake_change: HashMap<Vec<u8>, Vec<BlockRef>>,

@@ -4,7 +4,7 @@ use pallas::ledger::traverse::MultiEraBlock;
 use pallas::network::miniprotocols::Point;
 use sqlx::types::Decimal;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -621,14 +621,25 @@ impl Worker {
         // Save once when catch-up completes (so a restart doesn't repeat it),
         // then every SNAPSHOT_INTERVAL blocks during normal operation.
         if catchup_complete || (catchup == 0 && height % SNAPSHOT_INTERVAL == 0) {
-            let state = stage.state.read().await;
-            match state.save_snapshot(
-                &stage.snapshot_path,
-                stage.snapshot_depth,
-                stage.genesis.magic,
-            ) {
-                Ok(saved_slot) => info!(saved_slot, "snapshot saved"),
-                Err(e) => warn!("failed to save snapshot: {}", e),
+            // Offload the 1.6 GB serialize + write off the sink/feeds: clone the
+            // point-in-time data under a brief read lock, then serialize + write on a
+            // blocking thread. The `swap` guard skips the interval if a prior save is
+            // still running (so two saves never stack).
+            if !stage.snapshot_saving.swap(true, Ordering::AcqRel) {
+                let (snap, fi, slot) = {
+                    let state = stage.state.read().await;
+                    state.clone_for_save(stage.snapshot_depth)
+                };
+                let path = stage.snapshot_path.clone();
+                let magic = stage.genesis.magic;
+                let saving = stage.snapshot_saving.clone();
+                tokio::task::spawn_blocking(move || {
+                    match crate::state::write_snapshot(&path, &snap, &fi, magic) {
+                        Ok(_) => info!(saved_slot = slot, "snapshot saved"),
+                        Err(e) => warn!("failed to save snapshot: {}", e),
+                    }
+                    saving.store(false, Ordering::Release);
+                });
             }
         }
 
@@ -736,6 +747,9 @@ pub struct Stage {
     catchup_target: AtomicU64,
     /// Shared flag: set to false once catch-up is complete. SSE server waits on this.
     pub catching_up: Arc<std::sync::atomic::AtomicBool>,
+    /// True while an offloaded periodic snapshot save is in flight, so a slow save can't
+    /// stack a second 1.6 GB serialize+write on top of itself.
+    snapshot_saving: Arc<AtomicBool>,
 
     pub input: MapperInputPort,
     pub cursor: SinkCursorPort,
@@ -781,6 +795,7 @@ pub fn bootstrapper(context: &Context, config: SinkConfig) -> Result<Stage, Erro
         snapshot_depth,
         catchup_target: AtomicU64::new(catchup_target.unwrap_or(0)),
         catching_up,
+        snapshot_saving: Arc::new(AtomicBool::new(false)),
         ops_count: Default::default(),
         latest_block: Default::default(),
         input: Default::default(),

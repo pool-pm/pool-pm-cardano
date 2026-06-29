@@ -174,6 +174,23 @@ fn held_asset_count(held: &HeldAssets) -> u32 {
     held.values().map(|names| names.len() as u32).sum()
 }
 
+/// Serialize `(snap, feed_index, magic)` and write it atomically (temp file + rename, so
+/// a crash mid-write leaves the previous snapshot intact). Free fn so it can run on a
+/// `spawn_blocking` thread from owned clones, without the `chain_state` lock or `&self`.
+/// Returns the persisted slot.
+pub fn write_snapshot(
+    path: &Path,
+    snap: &BlockSnapshot,
+    feed_index: &FeedIndex,
+    network_magic: u64,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let data = rmp_serde::to_vec(&(snap, feed_index, network_magic))?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &data)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(snap.slot)
+}
+
 impl BlockSnapshot {
     /// Look up the shortest ADA Handle for an address, if any.
     pub fn handle_for(&self, address: &str) -> Option<String> {
@@ -1369,6 +1386,9 @@ impl State {
 
     /// Save snapshot + feed_index + network_magic to disk. Picks the snapshot
     /// `depth` blocks back from tip. Writes atomically via tmp file + rename.
+    /// Synchronously serialize + atomically write the snapshot `depth` blocks behind the
+    /// tip. Used by the rare post-reset save (already off the steady-state hot path); the
+    /// periodic save offloads via [`State::clone_for_save`] + [`write_snapshot`] instead.
     pub fn save_snapshot(
         &self,
         path: &Path,
@@ -1376,12 +1396,19 @@ impl State {
         network_magic: u64,
     ) -> Result<u64, Box<dyn std::error::Error>> {
         let idx = self.history.len().saturating_sub(depth);
-        let snap = &self.history[idx];
-        let data = rmp_serde::to_vec(&(snap, &self.feed_index, network_magic))?;
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, &data)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(snap.slot)
+        write_snapshot(path, &self.history[idx], &self.feed_index, network_magic)
+    }
+
+    /// Clone the point-in-time data to persist (the snapshot `depth` blocks behind the
+    /// tip + the feed index), so the caller can serialize + write it *off* the
+    /// `chain_state` lock. The `BlockSnapshot` clone is O(1) (`imbl` structural sharing);
+    /// the `FeedIndex` clone is a ms-scale deep copy of the pruned 5-day index. Returns
+    /// the cloned data plus its slot.
+    pub fn clone_for_save(&self, depth: usize) -> (BlockSnapshot, FeedIndex, u64) {
+        let idx = self.history.len().saturating_sub(depth);
+        let snap = self.history[idx].clone();
+        let slot = snap.slot;
+        (snap, self.feed_index.clone(), slot)
     }
 
     /// Load snapshot + feed_index from disk. Validates network magic matches.
