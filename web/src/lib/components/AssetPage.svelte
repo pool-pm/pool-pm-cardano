@@ -20,12 +20,12 @@
 
   // The on-chain metadata to display, minus the media-technical keys (the artwork
   // itself stands in for those).
-  const META_SKIP = new Set(['name', 'image', 'mediaType', 'files']);
+  const META_SKIP = new Set(['name', 'image', 'logo', 'mediatype', 'files']);
   const metaShown = $derived.by(() => {
     const m = metadata;
     if (!m || typeof m !== 'object' || Array.isArray(m)) return null;
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(m)) if (!META_SKIP.has(k)) out[k] = v;
+    for (const [k, v] of Object.entries(m)) if (!META_SKIP.has(k.toLowerCase())) out[k] = v;
     return Object.keys(out).length ? out : null;
   });
 
