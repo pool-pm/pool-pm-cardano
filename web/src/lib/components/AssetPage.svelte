@@ -302,6 +302,9 @@
     font-size: 12px;
     color: rgba(255, 255, 255, 0.62);
     scrollbar-width: thin;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 6px;
+    padding: 10px 12px;
     text-shadow:
       0 1px 6px rgba(0, 0, 0, 0.6),
       0 0 2px rgba(0, 0, 0, 0.45);
@@ -328,7 +331,8 @@
     width: 20px;
     height: 20px;
     border: none;
-    border-radius: 4px;
+    /* The panel already provides the dark backing, so the × itself is bare. */
+    background: transparent;
     font-size: 13px;
   }
 
