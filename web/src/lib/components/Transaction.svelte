@@ -437,16 +437,8 @@
     flex-shrink: 0;
   }
 
-  .vote-badge.yes {
-    color: #111;
-    background: oklch(0.7 0.25 145);
-  }
-
-  .vote-badge.no {
-    color: #111;
-    background: oklch(0.7 0.25 25);
-  }
-
+  .vote-badge.yes,
+  .vote-badge.no,
   .vote-badge.abstain {
     color: #111;
     background: rgb(255 255 255 / 0.5);
@@ -461,9 +453,7 @@
 
   .vote-action {
     color: rgb(255 255 255 / 0.4);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
 
   .deleg-section {
