@@ -20,7 +20,7 @@
 
   // The on-chain metadata to display, minus the media-technical keys (the artwork
   // itself stands in for those).
-  const META_SKIP = new Set(['name', 'image', 'logo', 'mediatype', 'files']);
+  const META_SKIP = new Set(['name', 'ticker', 'image', 'logo', 'mediatype', 'files', 'decimals']);
   const metaShown = $derived.by(() => {
     const m = metadata;
     if (!m || typeof m !== 'object' || Array.isArray(m)) return null;
