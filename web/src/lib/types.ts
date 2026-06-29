@@ -54,6 +54,8 @@ export interface AssetMediaResponse {
   /** First / last mint times (unix seconds); a range when minted across several txs. */
   first_mint?: number;
   last_mint?: number;
+  /** Raw on-chain CIP-25/68 metadata object, for the page to format. */
+  metadata?: Record<string, unknown>;
   media: AssetMedia[];
 }
 

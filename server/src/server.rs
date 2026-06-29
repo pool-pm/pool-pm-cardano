@@ -2673,6 +2673,10 @@ struct AssetMediaResponse {
     first_mint: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_mint: Option<i64>,
+    /// The raw on-chain CIP-25/68 `metadata` object from NFTCDN, passed through for the
+    /// page to format (the frontend drops the media-technical keys).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<serde_json::Value>,
     media: Vec<AssetMedia>,
 }
 
@@ -2734,6 +2738,7 @@ async fn asset_media(
             .as_str()
             .or_else(|| meta["name"].as_str())
             .map(str::to_string);
+        let metadata = inner.is_object().then(|| inner.clone());
 
         let media = match inner["files"].as_array() {
             Some(files) if !files.is_empty() => files
@@ -2756,11 +2761,13 @@ async fn asset_media(
                 name: name.clone().unwrap_or_else(|| fingerprint.clone()),
             }],
         };
-        Ok::<(Option<String>, Vec<AssetMedia>), StatusCode>((name, media))
+        Ok::<(Option<String>, Option<serde_json::Value>, Vec<AssetMedia>), StatusCode>((
+            name, metadata, media,
+        ))
     };
 
     let (media_res, info) = tokio::join!(media_fut, info_fut);
-    let (name, media) = media_res?;
+    let (name, metadata, media) = media_res?;
     let (policy, quantity, first_mint, last_mint) = match info {
         Some((p, q, f, l)) => (Some(p), q, f, l),
         None => (None, None, None, None),
@@ -2773,6 +2780,7 @@ async fn asset_media(
         quantity,
         first_mint,
         last_mint,
+        metadata,
         media,
     }))
 }

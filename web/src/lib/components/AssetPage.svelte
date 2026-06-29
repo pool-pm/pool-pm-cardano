@@ -12,8 +12,20 @@
   let quantity = $state<string | null>(null);
   let firstMint = $state<number | null>(null);
   let lastMint = $state<number | null>(null);
+  let metadata = $state<Record<string, unknown> | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
+
+  // The on-chain metadata to display, minus the media-technical keys (the artwork
+  // itself stands in for those).
+  const META_SKIP = new Set(['name', 'image', 'mediaType', 'files']);
+  const metaShown = $derived.by(() => {
+    const m = metadata;
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return null;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(m)) if (!META_SKIP.has(k)) out[k] = v;
+    return Object.keys(out).length ? out : null;
+  });
 
   function fmtDate(epoch: number): string {
     return new Date(epoch * 1000).toLocaleDateString(undefined, {
@@ -54,6 +66,7 @@
       quantity = data.quantity ?? null;
       firstMint = data.first_mint ?? null;
       lastMint = data.last_mint ?? null;
+      metadata = data.metadata ?? null;
       document.title = data.name ?? fingerprint;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -103,7 +116,38 @@
       </dl>
     </div>
   {/if}
+
+  {#if !loading && !error && metaShown}
+    <div class="meta-panel" transition:fade={{ duration: 400 }}>
+      {@render jsonNode(metaShown)}
+    </div>
+  {/if}
 </div>
+
+<!-- Recursively format a JSON value as label/value rows (objects), comma-joined
+     primitives (arrays), or plain text. -->
+{#snippet jsonNode(value: unknown)}
+  {#if value !== null && typeof value === 'object' && !Array.isArray(value)}
+    <dl class="kv">
+      {#each Object.entries(value as Record<string, unknown>) as [k, v]}
+        <div class="row">
+          <dt>{k}</dt>
+          <dd>{@render jsonNode(v)}</dd>
+        </div>
+      {/each}
+    </dl>
+  {:else if Array.isArray(value)}
+    {#if value.every((x) => x === null || typeof x !== 'object')}
+      {value.join(', ')}
+    {:else}
+      <div class="arr">
+        {#each value as item}{@render jsonNode(item)}{/each}
+      </div>
+    {/if}
+  {:else}
+    {String(value)}
+  {/if}
+{/snippet}
 
 <style>
   .asset-page {
@@ -219,5 +263,63 @@
   .meta a:hover {
     color: #fff;
     text-decoration: underline;
+  }
+
+  /* Bottom-left: the on-chain metadata, formatted — same type/treatment as the
+     right placard but left-aligned and scrollable. */
+  .meta-panel {
+    position: fixed;
+    left: clamp(16px, 3.5vw, 48px);
+    bottom: clamp(16px, 3.5vw, 48px);
+    z-index: 2;
+    max-width: min(46vw, 400px);
+    max-height: 62dvh;
+    overflow-y: auto;
+    font-family: Inter, sans-serif;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.62);
+    scrollbar-width: thin;
+    text-shadow:
+      0 1px 6px rgba(0, 0, 0, 0.6),
+      0 0 2px rgba(0, 0, 0, 0.45);
+  }
+
+  .kv {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .kv .row {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+  }
+
+  .kv dt {
+    flex-shrink: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    font-size: 9px;
+    color: rgba(255, 255, 255, 0.4);
+  }
+
+  .kv dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .kv .arr {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  /* Nested objects: a subtle indent + rule to show the hierarchy. */
+  .kv dd > .kv {
+    margin-top: 2px;
+    padding-left: 8px;
+    border-left: 1px solid rgba(255, 255, 255, 0.12);
   }
 </style>
