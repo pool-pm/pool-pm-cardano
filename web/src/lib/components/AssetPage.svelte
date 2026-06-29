@@ -258,13 +258,12 @@
 
   .meta a {
     pointer-events: auto;
-    color: rgba(255, 255, 255, 0.85);
-    font-family: ui-monospace, 'SF Mono', monospace;
+    color: inherit;
     text-decoration: none;
   }
 
-  .meta a:hover {
-    color: #fff;
+  .meta a:hover,
+  .meta a:focus-visible {
     text-decoration: underline;
   }
 
