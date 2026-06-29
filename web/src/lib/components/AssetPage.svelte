@@ -172,9 +172,12 @@
   nftcdn-media-player {
     width: 100%;
     height: 100%;
+    outline: none;
   }
 
-  /* Keep aspect ratio: fit media inside its full-window container. */
+  /* Keep aspect ratio: fit media inside its full-window container. The `outline:
+     none` suppresses the browser's native focus ring around the media (it appears
+     after the element is fullscreened/focused). */
   nftcdn-media-player::part(img),
   nftcdn-media-player::part(video),
   nftcdn-media-player::part(iframe),
@@ -183,6 +186,7 @@
     width: 100%;
     height: 100%;
     object-fit: contain;
+    outline: none;
   }
 
   .status {
