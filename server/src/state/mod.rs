@@ -89,9 +89,13 @@ pub type AssetKey = (Option<Vec<u8>>, Vec<u8>);
 /// One subject's held assets, grouped by policy exactly like a UTXO's
 /// [`crate::model::PolicyAssets`]: 28-byte policy id → asset name bytes → number of
 /// unspent UTXOs holding that token. Binary throughout (the CIP-14 fingerprint is
-/// derived from policy+name on demand). Grouping by policy stores the policy once and
-/// lets the assets page render its per-policy sections straight from memory.
-pub type HeldAssets = HashMap<Vec<u8>, HashMap<Vec<u8>, u32>>;
+/// derived from policy+name on demand); grouping by policy stores the policy once.
+/// Both levels are `OrdMap` (sorted, with `diff` + `ptr_eq`) so a connection can derive
+/// its live tile changes by structurally diffing this against the previous snapshot —
+/// O(actual changes), skipping shared subtrees — see [`held_diff`]. Serializes
+/// identically to a `HashMap` (rmp encodes both as a map), so the on-disk snapshot is
+/// unaffected.
+pub type HeldAssets = OrdMap<Vec<u8>, OrdMap<Vec<u8>, u32>>;
 
 impl BlockSnapshot {
     /// Distinct multi-assets currently held by one payment address — an O(1) lookup,
@@ -110,7 +114,7 @@ impl BlockSnapshot {
     /// `COUNT(DISTINCT)` db query (tens of seconds).
     pub fn stake_asset_count(&self, cred: &[u8]) -> u32 {
         let mut union: std::collections::HashSet<(&[u8], &[u8])> = std::collections::HashSet::new();
-        for (_addr, held) in self.cred_entries(cred) {
+        for (_addr, held) in cred_range(&self.asset_holdings, cred) {
             for (policy, names) in held {
                 for name in names.keys() {
                     union.insert((policy.as_slice(), name.as_slice()));
@@ -118,19 +122,6 @@ impl BlockSnapshot {
             }
         }
         union.len() as u32
-    }
-
-    /// Iterate the holdings entries for a stake credential's payment addresses — the
-    /// contiguous `(Some(cred), …)` prefix of the sorted map, in address order.
-    fn cred_entries<'a>(
-        &'a self,
-        cred: &'a [u8],
-    ) -> impl Iterator<Item = (&'a Vec<u8>, &'a HeldAssets)> {
-        let start: AssetKey = (Some(cred.to_vec()), Vec::new());
-        self.asset_holdings
-            .range(start..)
-            .take_while(move |((c, _), _)| c.as_deref() == Some(cred))
-            .map(|((_, addr), held)| (addr, held))
     }
 
     /// Every `(policy, name)` token currently held by a payment address — the rows the
@@ -155,7 +146,7 @@ impl BlockSnapshot {
     pub fn stake_held_assets(&self, cred: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
         let mut seen: std::collections::HashSet<(&[u8], &[u8])> = std::collections::HashSet::new();
         let mut out = Vec::new();
-        for (_addr, held) in self.cred_entries(cred) {
+        for (_addr, held) in cred_range(&self.asset_holdings, cred) {
             for (policy, names) in held {
                 for name in names.keys() {
                     if seen.insert((policy.as_slice(), name.as_slice())) {
@@ -200,48 +191,39 @@ impl BlockSnapshot {
     }
 }
 
-/// The subject of an [`AssetCountDelta`] — a watched payment address or stake
-/// credential (raw bytes).
-#[derive(Clone)]
-pub enum AssetSubject {
-    Address(Vec<u8>),
-    Stake(Vec<u8>),
-}
+/// A `(policy bytes, name bytes)` token — the unit a live assets-grid tile is keyed by;
+/// its CIP-14 fingerprint is derived on demand via `asset_fingerprint`.
+pub type Token = (Vec<u8>, Vec<u8>);
 
-/// A distinct-asset transition for a watched subject within one block: `added` is true
-/// on a `0→1` unspent-UTXO count (the asset is now held), false on `1→0` (it fully
-/// left). Produced by [`State::apply_block`] for the assets feeds.
-#[derive(Clone)]
-pub struct AssetCountDelta {
-    pub subject: AssetSubject,
-    pub fingerprint: String,
-    pub added: bool,
-}
+/// The global per-address holdings map ([`BlockSnapshot::asset_holdings`]'s type). A
+/// connection caches the previous block's handle (O(1)) and diffs the current one for
+/// its live grid tiles.
+pub type AssetHoldings = OrdMap<AssetKey, HeldAssets>;
 
-/// Apply a single token's `+1`/`-1` to one address's `policy → name → unspent-UTXO
-/// count` in the global holdings map, returning the address-level `0↔1` transition this
-/// crossed: `Some(true)` on `0→1` (now held), `Some(false)` on `1→0` (no longer held),
-/// `None` otherwise. Empty policy/name/address entries are pruned, so the map's keys
-/// stay exactly the addresses currently holding ≥1 token. Pure over its inputs —
-/// unit-tested.
+/// Apply a single token's `+1`/`-1` to one address's `policy → name → unspent-UTXO count`
+/// in the global holdings map. Empty name/policy/address entries are pruned, so the map's
+/// keys stay exactly the addresses currently holding ≥1 token. The live tile deltas are
+/// *not* emitted here — each open assets page derives them by diffing snapshots
+/// ([`held_diff`]); this only maintains the map.
 fn bump_one(
     holdings: &mut OrdMap<AssetKey, HeldAssets>,
     key: &AssetKey,
     policy: &[u8],
     name: &[u8],
     add: bool,
-) -> Option<bool> {
+) {
     if add {
         let held = holdings.entry(key.clone()).or_default();
         let names = held.entry(policy.to_vec()).or_default();
-        let c = names.entry(name.to_vec()).or_insert(0);
-        let was_zero = *c == 0;
-        *c += 1;
-        was_zero.then_some(true)
+        *names.entry(name.to_vec()).or_insert(0) += 1;
     } else {
-        let held = holdings.get_mut(key)?;
-        let names = held.get_mut(policy)?;
-        let c = names.get_mut(name)?;
+        let Some(held) = holdings.get_mut(key) else {
+            return;
+        };
+        let Some(names) = held.get_mut(policy) else {
+            return;
+        };
+        let Some(c) = names.get_mut(name) else { return };
         *c -= 1;
         if *c == 0 {
             names.remove(name);
@@ -251,17 +233,48 @@ fn bump_one(
             if held.is_empty() {
                 holdings.remove(key);
             }
-            Some(false)
-        } else {
-            None
         }
     }
 }
 
+/// Apply one UTXO's policy-grouped assets to the global holdings map (`add` = produced,
+/// else consumed), computing the UTXO's stake credential once. Maintained for *every*
+/// address; live tile deltas are derived per connection by diffing, not emitted here.
+fn apply_utxo_assets(
+    address: &[u8],
+    assets: &crate::model::PolicyAssets,
+    add: bool,
+    holdings: &mut OrdMap<AssetKey, HeldAssets>,
+) {
+    if assets.is_empty() {
+        return;
+    }
+    let cred = stake_credential_from_address_bytes(address);
+    let key: AssetKey = (cred, address.to_vec());
+    for (policy, names) in assets {
+        for (name, _qty) in names {
+            bump_one(holdings, &key, policy, name, add);
+        }
+    }
+}
+
+/// The credential's payment-address holdings — the contiguous `(Some(cred), …)` prefix of
+/// the sorted map, in address order. Shared by the count/grid helpers and the live diff.
+fn cred_range<'a>(
+    holdings: &'a OrdMap<AssetKey, HeldAssets>,
+    cred: &'a [u8],
+) -> impl Iterator<Item = (&'a [u8], &'a HeldAssets)> {
+    let start: AssetKey = (Some(cred.to_vec()), Vec::new());
+    holdings
+        .range(start..)
+        .take_while(move |((c, _), _)| c.as_deref() == Some(cred))
+        .map(|((_, addr), held)| (addr.as_slice(), held))
+}
+
 /// Does any payment address sharing `cred` *other than* `exclude` currently hold the
 /// `(policy, name)` token? A prefix range-scan over the credential's contiguous keys,
-/// O(#addresses of the credential). Called only for watched stakes on an address-level
-/// `0↔1`, so it's off the hot path.
+/// O(#addresses of the credential). Used by [`stake_tile_diff`] to lift an address-level
+/// gain/loss to the stake's union.
 fn stake_holds(
     holdings: &OrdMap<AssetKey, HeldAssets>,
     cred: &[u8],
@@ -269,66 +282,129 @@ fn stake_holds(
     policy: &[u8],
     name: &[u8],
 ) -> bool {
-    let start: AssetKey = (Some(cred.to_vec()), Vec::new());
-    holdings
-        .range(start..)
-        .take_while(|((c, _), _)| c.as_deref() == Some(cred))
-        .any(|((_, addr), held)| {
-            addr.as_slice() != exclude
-                && held
-                    .get(policy)
-                    .is_some_and(|names| names.contains_key(name))
-        })
+    cred_range(holdings, cred).any(|(addr, held)| {
+        addr != exclude
+            && held
+                .get(policy)
+                .is_some_and(|names| names.contains_key(name))
+    })
 }
 
-/// Apply one UTXO's policy-grouped assets to the global holdings map (`add` = produced,
-/// else consumed), computing the UTXO's stake credential once. The map is *always*
-/// maintained (every address); the watched sets only gate which transitions are
-/// broadcast as [`AssetCountDelta`]s to open assets pages. For a watched stake, an
-/// address-level `0↔1` becomes a stake-level transition only when no *other* address
-/// sharing the credential holds the token. The delta carries the CIP-14 fingerprint
-/// (derived from policy+name) for the wire — computed only when actually emitting.
-#[allow(clippy::too_many_arguments)]
-fn apply_utxo_assets(
-    address: &[u8],
-    assets: &crate::model::PolicyAssets,
-    add: bool,
-    holdings: &mut OrdMap<AssetKey, HeldAssets>,
-    watched_addresses: &std::collections::HashSet<Vec<u8>>,
-    watched_stakes: &std::collections::HashSet<Vec<u8>>,
-    deltas: &mut Vec<AssetCountDelta>,
+/// Accumulate the `(policy, name)` tokens added/removed between two `HeldAssets`
+/// snapshots into `added`/`removed`, via imbl's structural `diff` — shared subtrees are
+/// skipped, so the cost is O(actual changes). At the name level a key that appears is a
+/// tile add, one that disappears (we prune at count 0) is a tile remove; a count change
+/// with the key still present is no tile change.
+fn held_diff(
+    prev: &HeldAssets,
+    curr: &HeldAssets,
+    added: &mut Vec<Token>,
+    removed: &mut Vec<Token>,
 ) {
-    if assets.is_empty() {
-        return;
-    }
-    let cred = stake_credential_from_address_bytes(address);
-    let key: AssetKey = (cred.clone(), address.to_vec());
-    let addr_watched = watched_addresses.contains(address);
-    let stake_watched = cred.as_ref().is_some_and(|c| watched_stakes.contains(c));
-    for (policy, names) in assets {
-        for (name, _qty) in names {
-            let Some(added) = bump_one(holdings, &key, policy, name, add) else {
-                continue;
-            };
-            if addr_watched {
-                deltas.push(AssetCountDelta {
-                    subject: AssetSubject::Address(address.to_vec()),
-                    fingerprint: asset_fingerprint(policy, name),
-                    added,
-                });
+    use imbl::ordmap::DiffItem;
+    for d in prev.diff(curr) {
+        match d {
+            DiffItem::Add(policy, names) => {
+                added.extend(names.keys().map(|n| (policy.clone(), n.clone())))
             }
-            if stake_watched {
-                let cred = cred.as_ref().unwrap();
-                if !stake_holds(holdings, cred, address, policy, name) {
-                    deltas.push(AssetCountDelta {
-                        subject: AssetSubject::Stake(cred.clone()),
-                        fingerprint: asset_fingerprint(policy, name),
-                        added,
-                    });
+            DiffItem::Remove(policy, names) => {
+                removed.extend(names.keys().map(|n| (policy.clone(), n.clone())))
+            }
+            DiffItem::Update {
+                old: (policy, old_names),
+                new: (_, new_names),
+            } => {
+                for nd in old_names.diff(new_names) {
+                    match nd {
+                        DiffItem::Add(name, _) => added.push((policy.clone(), name.clone())),
+                        DiffItem::Remove(name, _) => removed.push((policy.clone(), name.clone())),
+                        DiffItem::Update { .. } => {}
+                    }
                 }
             }
         }
     }
+}
+
+/// Live tile changes for one payment address between two holdings snapshots: `(added,
+/// removed)` `(policy, name)` tokens. O(1) when the address's entry is structurally
+/// unchanged (shared node).
+pub fn address_tile_diff(
+    prev: &AssetHoldings,
+    curr: &AssetHoldings,
+    key: &AssetKey,
+) -> (Vec<Token>, Vec<Token>) {
+    let (p, c) = (prev.get(key), curr.get(key));
+    if let (Some(p), Some(c)) = (p, c) {
+        if p.ptr_eq(c) {
+            return (Vec::new(), Vec::new());
+        }
+    }
+    let empty = HeldAssets::new();
+    let (mut added, mut removed) = (Vec::new(), Vec::new());
+    held_diff(
+        p.unwrap_or(&empty),
+        c.unwrap_or(&empty),
+        &mut added,
+        &mut removed,
+    );
+    (added, removed)
+}
+
+/// Live tile changes for a stake credential (the union over its addresses) between two
+/// holdings snapshots. A token is on the stake's grid iff *any* of the credential's
+/// addresses holds it, so a per-address gain/loss is a stake change only when the
+/// credential-wide membership flips. We diff each changed address to find the *candidate*
+/// tokens (cheap — `ptr_eq` skips unchanged addresses), dedupe them, then keep only those
+/// whose union membership actually flipped between `prev` and `curr` (so two addresses
+/// gaining the same token in one step is a single add, not two).
+pub fn stake_tile_diff(
+    prev: &AssetHoldings,
+    curr: &AssetHoldings,
+    cred: &[u8],
+) -> (Vec<Token>, Vec<Token>) {
+    use std::collections::{HashMap, HashSet};
+    let prev_addrs: HashMap<&[u8], &HeldAssets> = cred_range(prev, cred).collect();
+    let curr_addrs: HashMap<&[u8], &HeldAssets> = cred_range(curr, cred).collect();
+    let empty = HeldAssets::new();
+    let mut candidates: HashSet<Token> = HashSet::new();
+    let addrs: HashSet<&[u8]> = prev_addrs
+        .keys()
+        .chain(curr_addrs.keys())
+        .copied()
+        .collect();
+    for addr in addrs {
+        let (p, c) = (prev_addrs.get(addr).copied(), curr_addrs.get(addr).copied());
+        if let (Some(p), Some(c)) = (p, c) {
+            if p.ptr_eq(c) {
+                continue;
+            }
+        }
+        // At the stake level an add and a remove are both just "this token changed on
+        // some address" — collect them together as candidates.
+        let (mut a_add, mut a_rem) = (Vec::new(), Vec::new());
+        held_diff(
+            p.unwrap_or(&empty),
+            c.unwrap_or(&empty),
+            &mut a_add,
+            &mut a_rem,
+        );
+        candidates.extend(a_add);
+        candidates.extend(a_rem);
+    }
+    // `stake_holds(.., &[], ..)` = "any address of the credential holds it" (no real
+    // address is the empty slice), i.e. union membership.
+    let (mut added, mut removed) = (Vec::new(), Vec::new());
+    for (policy, name) in candidates {
+        let in_prev = stake_holds(prev, cred, &[], &policy, &name);
+        let in_curr = stake_holds(curr, cred, &[], &policy, &name);
+        match (in_prev, in_curr) {
+            (false, true) => added.push((policy, name)),
+            (true, false) => removed.push((policy, name)),
+            _ => {}
+        }
+    }
+    (added, removed)
 }
 
 /// A delegation map plus its reverse index: `(cred -> target, target -> {creds})`.
@@ -374,21 +450,7 @@ pub struct State {
     // the first post-catch-up block backfills (and a rollback resets them to 0).
     pub pool_meta_cursor: i64,
     pub drep_meta_cursor: i64,
-    /// Subjects with an open assets page that want live `AssetCountDelta`s, by raw
-    /// key. The holdings map is *global* (every address), so this — not map presence —
-    /// gates delta emission. Connection metadata (not chain state): not in
-    /// `BlockSnapshot`, not rolled back. `asset_lru` keeps these LRU-bounded (an open
-    /// page beyond the cap simply stops getting live grid updates until reloaded).
-    /// `std` sets for O(1) membership in `apply_block`'s hot loop.
-    watched_addresses: std::collections::HashSet<Vec<u8>>,
-    watched_stakes: std::collections::HashSet<Vec<u8>>,
-    /// Recency order over the watched sets, `(is_stake, key)` least-recent first;
-    /// front is evicted once the watched count exceeds [`ASSET_LRU_CAP`].
-    asset_lru: Vec<(bool, Vec<u8>)>,
 }
-
-/// Max subjects emitting live asset-grid deltas; least-recently-viewed are evicted.
-const ASSET_LRU_CAP: usize = 1024;
 
 impl State {
     pub fn new(db_url: Url) -> Self {
@@ -399,33 +461,6 @@ impl State {
             feed_index: FeedIndex::new(),
             pool_meta_cursor: 0,
             drep_meta_cursor: 0,
-            watched_addresses: std::collections::HashSet::new(),
-            watched_stakes: std::collections::HashSet::new(),
-            asset_lru: Vec::new(),
-        }
-    }
-
-    /// Register an open assets page for `subject` (`is_stake`, raw `key`) so the sink
-    /// emits live grid `AssetCountDelta`s for it, and mark it most-recently-used. The
-    /// count itself comes from the always-current global `asset_holdings` (no seed) —
-    /// this only controls live grid deltas. LRU-bounded: the least-recently-viewed
-    /// subject stops receiving deltas once over [`ASSET_LRU_CAP`].
-    pub fn track_asset_subject(&mut self, is_stake: bool, key: Vec<u8>) {
-        self.asset_lru
-            .retain(|(s, k)| !(*s == is_stake && k == &key));
-        if is_stake {
-            self.watched_stakes.insert(key.clone());
-        } else {
-            self.watched_addresses.insert(key.clone());
-        }
-        self.asset_lru.push((is_stake, key));
-        while self.asset_lru.len() > ASSET_LRU_CAP {
-            let (s, k) = self.asset_lru.remove(0);
-            if s {
-                self.watched_stakes.remove(&k);
-            } else {
-                self.watched_addresses.remove(&k);
-            }
         }
     }
 
@@ -834,7 +869,7 @@ impl State {
         let mut holdings: OrdMap<AssetKey, HeldAssets> = OrdMap::new();
         let mut cur_addr: Option<String> = None;
         let mut cur_key: Option<AssetKey> = None;
-        let mut held: HeldAssets = HashMap::new();
+        let mut held = HeldAssets::new();
         let mut rows: u64 = 0;
         db.asset_holdings_for_each(last_tx_id, |addr, policy, name, count| {
             rows += 1;
@@ -1038,9 +1073,9 @@ impl State {
     /// `address_balances` can be decremented without re-looking up inputs that
     /// predate the snapshot (and aren't in `prev.utxos`).
     ///
-    /// Returns the block's watched-asset transitions (empty unless an assets page is
-    /// open) so the sink can fan them out to the matching assets-feed connections.
-    pub fn apply_block(&mut self, update: BlockUpdate) -> Vec<AssetCountDelta> {
+    /// Live asset-grid deltas aren't produced here — each open assets page derives its
+    /// own by diffing `asset_holdings` against the previous snapshot ([`held_diff`]).
+    pub fn apply_block(&mut self, update: BlockUpdate) {
         let BlockUpdate {
             slot,
             block_hash,
@@ -1062,14 +1097,11 @@ impl State {
 
         let mut utxos = prev.utxos.clone();
         let mut address_balances = prev.address_balances.clone();
-        // Global per-address asset holdings (O(1) imbl clone) + this block's watched
-        // transitions for the assets feeds. The map is maintained for every address;
-        // the watched sets only gate which `0↔1`s become broadcast deltas.
+        // Global per-address asset holdings (O(1) imbl clone), maintained for every
+        // address. Live tile deltas are derived per open assets page by diffing this
+        // against the previous snapshot — nothing is emitted from here.
         let mut asset_holdings = prev.asset_holdings.clone();
         let asset_holdings_populated = prev.asset_holdings_populated;
-        let watched_addresses = &self.watched_addresses;
-        let watched_stakes = &self.watched_stakes;
-        let mut asset_deltas: Vec<AssetCountDelta> = Vec::new();
 
         for (key, output) in consumed {
             utxos.remove(key);
@@ -1083,15 +1115,7 @@ impl State {
                     address_balances.remove(&output.address);
                 }
             }
-            apply_utxo_assets(
-                &output.address,
-                &output.assets,
-                false,
-                &mut asset_holdings,
-                watched_addresses,
-                watched_stakes,
-                &mut asset_deltas,
-            );
+            apply_utxo_assets(&output.address, &output.assets, false, &mut asset_holdings);
         }
         for (key, output) in produced {
             let bal: i64 = output
@@ -1099,15 +1123,7 @@ impl State {
                 .try_into()
                 .expect("lovelace value must fit i64");
             *address_balances.entry(output.address.clone()).or_insert(0) += bal;
-            apply_utxo_assets(
-                &output.address,
-                &output.assets,
-                true,
-                &mut asset_holdings,
-                watched_addresses,
-                watched_stakes,
-                &mut asset_deltas,
-            );
+            apply_utxo_assets(&output.address, &output.assets, true, &mut asset_holdings);
             utxos.insert(key, output);
         }
 
@@ -1231,8 +1247,6 @@ impl State {
         if self.history.len() > MAX_HISTORY {
             self.history.drain(..self.history.len() - MAX_HISTORY);
         }
-
-        asset_deltas
     }
 
     /// Net change to `total_staked` from this block's pool delegation changes: a
@@ -1480,41 +1494,31 @@ mod tests {
     use oura::framework::GenesisValues;
 
     #[test]
-    fn bump_one_transitions_on_0_and_1_boundaries() {
+    fn bump_one_maintains_and_prunes() {
         let mut holdings: OrdMap<AssetKey, HeldAssets> = OrdMap::new();
         let key: AssetKey = (None, b"addr".to_vec());
         let policy = vec![0xaau8; 28];
         let name = b"TOKEN".to_vec();
 
-        // First UTXO of the token arrives → 0→1, key/policy created on demand.
-        assert_eq!(
-            bump_one(&mut holdings, &key, &policy, &name, true),
-            Some(true)
-        );
+        bump_one(&mut holdings, &key, &policy, &name, true);
+        assert_eq!(holdings[&key][&policy][&name], 1);
+        bump_one(&mut holdings, &key, &policy, &name, true);
+        assert_eq!(holdings[&key][&policy][&name], 2);
+        bump_one(&mut holdings, &key, &policy, &name, false);
         assert_eq!(holdings[&key][&policy][&name], 1);
 
-        // Second UTXO → still held, no boundary (1→2).
-        assert_eq!(bump_one(&mut holdings, &key, &policy, &name, true), None);
-        assert_eq!(holdings[&key][&policy][&name], 2);
-
-        // One spent → still held, no boundary (2→1).
-        assert_eq!(bump_one(&mut holdings, &key, &policy, &name, false), None);
-
-        // Last one spent → 1→0; name/policy dropped and (now-empty) key removed, so the
-        // map's keys stay exactly the addresses currently holding ≥1 token.
-        assert_eq!(
-            bump_one(&mut holdings, &key, &policy, &name, false),
-            Some(false)
-        );
-        assert!(!holdings.contains_key(&key));
+        // Last UTXO spent → name/policy dropped and the (now-empty) address key removed,
+        // so the map's keys stay exactly the addresses currently holding ≥1 token.
+        bump_one(&mut holdings, &key, &policy, &name, false);
+        assert!(holdings.is_empty());
 
         // Spending a token the map never had is a no-op.
-        assert_eq!(bump_one(&mut holdings, &key, &policy, &name, false), None);
+        bump_one(&mut holdings, &key, &policy, &name, false);
+        assert!(holdings.is_empty());
     }
 
     #[test]
-    fn watched_gating_and_stake_union() {
-        // Two payment addresses sharing one stake credential; both hold the same token.
+    fn tile_diffs_address_stake_and_rollback() {
         let cred = vec![0xcd; 28];
         let addr1 = b"addr-one".to_vec();
         let addr2 = b"addr-two".to_vec();
@@ -1522,50 +1526,50 @@ mod tests {
         let key2: AssetKey = (Some(cred.clone()), addr2.clone());
         let policy = vec![0xab; 28];
         let name = b"SHARED".to_vec();
-        let assets: crate::model::PolicyAssets = vec![(policy.clone(), vec![(name.clone(), 1u64)])];
+        let tok = (policy.clone(), name.clone());
 
-        let mut holdings: OrdMap<AssetKey, HeldAssets> = OrdMap::new();
+        // s0 empty → s1: addr1 gains the token.
+        let s0: OrdMap<AssetKey, HeldAssets> = OrdMap::new();
+        let mut s1 = s0.clone();
+        bump_one(&mut s1, &key1, &policy, &name, true);
 
-        // addr1 gains the token → address-level 0→1; since no other address of the
-        // credential holds it yet, the stake union also gains it (one delta).
-        let mut d = Vec::new();
-        bump_one(&mut holdings, &key1, &policy, &name, true);
-        if !stake_holds(&holdings, &cred, &addr1, &policy, &name) {
-            d.push(true);
-        }
-        assert_eq!(d.len(), 1, "first holder adds to the stake union");
-
-        // addr2 also gains it → address-level 0→1, but the stake union does NOT change
-        // (addr1 already holds it), so no stake delta.
-        bump_one(&mut holdings, &key2, &policy, &name, true);
-        let other = stake_holds(&holdings, &cred, &addr2, &policy, &name);
-        assert!(other, "addr1 still holds it, so the union is unchanged");
-
-        // addr1 drops it → checking the *other* addresses (excluding addr1), addr2
-        // still holds it → union unchanged.
-        bump_one(&mut holdings, &key1, &policy, &name, false);
-        assert!(stake_holds(&holdings, &cred, &addr1, &policy, &name));
-
-        // addr2 drops it → nobody else holds it → union loses it.
-        bump_one(&mut holdings, &key2, &policy, &name, false);
-        assert!(!stake_holds(&holdings, &cred, &addr2, &policy, &name));
-
-        // Sanity: with nothing watched, apply_utxo_assets still maintains the map but
-        // emits no deltas.
-        let empty: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
-        let mut holdings2: OrdMap<AssetKey, HeldAssets> = OrdMap::new();
-        let mut deltas = Vec::new();
-        apply_utxo_assets(
-            &addr1,
-            &assets,
-            true,
-            &mut holdings2,
-            &empty,
-            &empty,
-            &mut deltas,
+        // Address diff: addr1 gains a tile; an untouched address sees nothing.
+        assert_eq!(
+            address_tile_diff(&s0, &s1, &key1),
+            (vec![tok.clone()], vec![])
         );
-        assert!(deltas.is_empty(), "unwatched subject emits no deltas");
-        assert_eq!(holdings2.len(), 1);
+        assert_eq!(address_tile_diff(&s0, &s1, &key2), (vec![], vec![]));
+
+        // Stake diff: first holder → the union gains the token.
+        assert_eq!(
+            stake_tile_diff(&s0, &s1, &cred),
+            (vec![tok.clone()], vec![])
+        );
+
+        // s1 → s2: addr2 also gains it. The union already had it (addr1) → no change.
+        let mut s2 = s1.clone();
+        bump_one(&mut s2, &key2, &policy, &name, true);
+        assert_eq!(stake_tile_diff(&s1, &s2, &cred), (vec![], vec![]));
+
+        // s2 → s3: addr1 drops it; addr2 still holds → union unchanged.
+        let mut s3 = s2.clone();
+        bump_one(&mut s3, &key1, &policy, &name, false);
+        assert_eq!(stake_tile_diff(&s2, &s3, &cred), (vec![], vec![]));
+
+        // s3 → s4: addr2 drops it; nobody holds → union loses it.
+        let mut s4 = s3.clone();
+        bump_one(&mut s4, &key2, &policy, &name, false);
+        assert_eq!(
+            stake_tile_diff(&s3, &s4, &cred),
+            (vec![], vec![tok.clone()])
+        );
+
+        // Rollback s4 → s2 (both addresses regain it in one step): one corrective add,
+        // not two — the union flipped once.
+        assert_eq!(
+            stake_tile_diff(&s4, &s2, &cred),
+            (vec![tok.clone()], vec![])
+        );
     }
 
     #[test]

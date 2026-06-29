@@ -6,7 +6,7 @@ import type {
   CardanoInfo,
   Config,
   DRepInfo,
-  AssetLiveEvent,
+  AssetDelta,
   Event,
   MempoolTxEvent,
   PoolInfo,
@@ -24,10 +24,10 @@ function sectionSlot(sec: Section): number {
 let source: EventSource | null = null;
 let pendingPrune = new Set<string>();
 
-// The assets grid registers a single handler here to receive live asset deltas and
-// rollbacks (it loads its initial page over HTTP and isn't a store consumer).
-let assetLiveHandler: ((e: AssetLiveEvent) => void) | null = null;
-export function onAssetLive(fn: (e: AssetLiveEvent) => void): () => void {
+// The assets grid registers a single handler here to receive live asset deltas (it
+// loads its initial page over HTTP and isn't a store consumer).
+let assetLiveHandler: ((e: AssetDelta) => void) | null = null;
+export function onAssetLive(fn: (e: AssetDelta) => void): () => void {
   assetLiveHandler = fn;
   return () => {
     if (assetLiveHandler === fn) assetLiveHandler = null;
@@ -246,8 +246,8 @@ function handleEvent(event: Event): void {
     case 'Rollback':
       // Keep the mempool (i === 0) and any block/reward section at/under the rollback slot.
       sections.update((s) => s.filter((section, i) => i === 0 || sectionSlot(section) <= event.slot));
-      // Let the assets grid revert live deltas from rolled-back blocks.
-      assetLiveHandler?.({ kind: 'rollback', slot: event.slot });
+      // The assets grid needs no special rollback handling: the server emits a corrective
+      // AssetDelta (diffed against the reverted snapshot), delivered like any other delta.
       break;
   }
 }
@@ -293,7 +293,6 @@ export function connectSSE(url: string): void {
         feedCursor = { slot: data.slot, epoch: data.epoch, stake: data.stake };
       } else if (data.type === 'AssetDelta') {
         assetLiveHandler?.({
-          kind: 'delta',
           slot: data.slot,
           added: data.added ?? [],
           removed: data.removed ?? [],

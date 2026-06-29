@@ -684,8 +684,7 @@ fn resolve_event_assets(event: &mut crate::event::Event, size: u16) {
         crate::event::Event::Rollback { .. }
         | crate::event::Event::MempoolPrune { .. }
         | crate::event::Event::ReplayCursor { .. }
-        | crate::event::Event::Reward { .. }
-        | crate::event::Event::AssetChanges { .. } => return,
+        | crate::event::Event::Reward { .. } => return,
     };
     for tx in txs {
         for inp in &mut tx.inputs {
@@ -1627,47 +1626,32 @@ struct AssetDeltaWire<'a> {
     removed: Vec<String>,
 }
 
-/// Convert a broadcast `AssetChanges` into this connection's `AssetDelta` SSE message,
-/// keeping only changes for the feed's own subject (payment address or stake
-/// credential) and building thumbnail tiles for added assets. `None` when nothing
-/// matches (so the live stream just continues).
+/// Build this connection's `AssetDelta` SSE from the tile changes it derived by diffing
+/// its subject's holdings between two snapshots (see `state::address_tile_diff` /
+/// `state::stake_tile_diff`). `added` carries ready-to-render tiles, `removed` their
+/// fingerprints. `None` when nothing changed. The CIP-14 fingerprint is derived from
+/// each token's policy+name. On rollback this is just the corrective diff — no special
+/// case (the client applies adds/removes the same way).
 fn asset_delta_event(
-    filter: &filter::FeedFilter,
+    added: Vec<crate::state::Token>,
+    removed: Vec<crate::state::Token>,
     slot: u64,
-    changes: &[crate::event::AssetChange],
     nftcdn: &NftcdnConfig,
 ) -> Option<Result<SseEvent, Infallible>> {
-    let (want_addr, want_cred): (Option<Vec<u8>>, Option<&[u8]>) = match filter {
-        filter::FeedFilter::Address(addr) => (address_bytes(addr), None),
-        filter::FeedFilter::Stake(payload) => (None, Some(&payload[1..])),
-        _ => return None,
-    };
-    let mut added: Vec<AssetItem> = Vec::new();
-    let mut removed: Vec<String> = Vec::new();
-    for c in changes {
-        let mine = match (&want_addr, want_cred) {
-            (Some(a), _) => c.address.as_deref() == Some(a.as_slice()),
-            (_, Some(cred)) => c.cred.as_deref() == Some(cred),
-            _ => false,
-        };
-        if !mine {
-            continue;
-        }
-        if c.added {
-            let (src, srcset) = build_thumb_urls(nftcdn, &c.fingerprint);
-            added.push(AssetItem {
-                fingerprint: c.fingerprint.clone(),
-                name: c.name.clone(),
-                src,
-                srcset,
-            });
-        } else {
-            removed.push(c.fingerprint.clone());
-        }
-    }
     if added.is_empty() && removed.is_empty() {
         return None;
     }
+    let added: Vec<AssetItem> = added
+        .into_iter()
+        .map(|(policy, name)| {
+            let fingerprint = crate::model::asset_fingerprint(&policy, &name);
+            row_to_asset(nftcdn, fingerprint, name)
+        })
+        .collect();
+    let removed: Vec<String> = removed
+        .into_iter()
+        .map(|(policy, name)| crate::model::asset_fingerprint(&policy, &name))
+        .collect();
     let json = serde_json::to_string(&AssetDeltaWire {
         kind: "AssetDelta",
         slot,
@@ -1690,6 +1674,7 @@ struct LiveState {
     assets_count: Option<u32>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_live_stream(
     rx: tokio::sync::broadcast::Receiver<crate::event::Event>,
     filter: filter::FeedFilter,
@@ -1698,6 +1683,9 @@ fn build_live_stream(
     size: u16,
     nftcdn: NftcdnConfig,
     mainnet: bool,
+    // True for the assets-page endpoint: this connection also emits live grid tile
+    // deltas (derived by diffing its subject's holdings between snapshots).
+    wants_tiles: bool,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> {
     futures::stream::unfold(
         (
@@ -1709,29 +1697,41 @@ fn build_live_stream(
             size,
             nftcdn,
             mainnet,
+            None::<crate::state::AssetHoldings>,
+            wants_tiles,
         ),
-        |(mut rx, filter, chain_state, mut live, mut buf, size, nftcdn, mainnet)| async move {
+        |(
+            mut rx,
+            filter,
+            chain_state,
+            mut live,
+            mut buf,
+            size,
+            nftcdn,
+            mainnet,
+            mut prev_holdings,
+            wants_tiles,
+        )| async move {
             loop {
                 if let Some(sse) = buf.pop_front() {
                     return Some((
                         sse,
-                        (rx, filter, chain_state, live, buf, size, nftcdn, mainnet),
+                        (
+                            rx,
+                            filter,
+                            chain_state,
+                            live,
+                            buf,
+                            size,
+                            nftcdn,
+                            mainnet,
+                            prev_holdings,
+                            wants_tiles,
+                        ),
                     ));
                 }
 
                 let event = rx.next().await?.ok()?;
-
-                // Live asset-grid deltas (assets feeds): convert to this subject's
-                // AssetDelta SSE and skip the tx-filter path below.
-                if let crate::event::Event::AssetChanges { slot, changes } = &event {
-                    if let Some(sse) = asset_delta_event(&filter, *slot, changes, &nftcdn) {
-                        return Some((
-                            sse,
-                            (rx, filter, chain_state, live, buf, size, nftcdn, mainnet),
-                        ));
-                    }
-                    continue;
-                }
 
                 if matches!(
                     event,
@@ -1824,6 +1824,52 @@ fn build_live_stream(
                             }
                         }
                     }
+
+                    // Live grid tile deltas for an open assets page: diff this subject's
+                    // holdings against the previous snapshot. A rollback is just the
+                    // corrective diff (curr = the reverted snapshot), so no special case.
+                    if wants_tiles {
+                        let slot = match &event {
+                            crate::event::Event::Block { slot, .. }
+                            | crate::event::Event::Rollback { slot } => *slot,
+                            _ => 0,
+                        };
+                        let curr = {
+                            let guard = chain_state.read().await;
+                            guard.current().map(|s| s.asset_holdings.clone())
+                        };
+                        if let Some(curr) = curr {
+                            if let Some(prev) = &prev_holdings {
+                                let (added, removed) = match &filter {
+                                    filter::FeedFilter::Address(addr) => {
+                                        match address_bytes(addr) {
+                                            Some(addr_b) => {
+                                                let cred =
+                                                crate::pallas::stake_credential_from_address_bytes(
+                                                    &addr_b,
+                                                );
+                                                crate::state::address_tile_diff(
+                                                    prev,
+                                                    &curr,
+                                                    &(cred, addr_b),
+                                                )
+                                            }
+                                            None => (Vec::new(), Vec::new()),
+                                        }
+                                    }
+                                    filter::FeedFilter::Stake(payload) => {
+                                        crate::state::stake_tile_diff(prev, &curr, &payload[1..])
+                                    }
+                                    _ => (Vec::new(), Vec::new()),
+                                };
+                                if let Some(sse) = asset_delta_event(added, removed, slot, &nftcdn)
+                                {
+                                    buf.push_back(sse);
+                                }
+                            }
+                            prev_holdings = Some(curr);
+                        }
+                    }
                 }
 
                 let delegators = {
@@ -1839,7 +1885,18 @@ fn build_live_stream(
                 {
                     return Some((
                         sse,
-                        (rx, filter, chain_state, live, buf, size, nftcdn, mainnet),
+                        (
+                            rx,
+                            filter,
+                            chain_state,
+                            live,
+                            buf,
+                            size,
+                            nftcdn,
+                            mainnet,
+                            prev_holdings,
+                            wants_tiles,
+                        ),
                     ));
                 }
             }
@@ -2499,6 +2556,7 @@ async fn filtered_events(
         size,
         state.nftcdn.clone(),
         state.mainnet,
+        false, // regular feed: header/count only, no grid tiles
     );
     let stream = replay.chain(live);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
@@ -2550,19 +2608,9 @@ async fn asset_feed_events(
         }
     };
 
-    // Register this subject as watched so the sink emits live grid deltas
-    // (`AssetCountDelta` → `AssetDelta` SSE) for it (LRU-bounded). No seed query — the
-    // count and tiles both come from the always-current global `asset_holdings` map.
-    let (is_stake, key): (bool, Vec<u8>) = match &filter {
-        filter::FeedFilter::Stake(payload) => (true, payload[1..].to_vec()),
-        filter::FeedFilter::Address(addr) => (false, address_bytes(addr).unwrap_or_default()),
-        _ => (false, Vec::new()),
-    };
-    state
-        .chain_state
-        .write()
-        .await
-        .track_asset_subject(is_stake, key);
+    // No registration needed: this connection derives its own live grid tile deltas in
+    // `build_live_stream` (wants_tiles=true) by diffing its subject's holdings between
+    // snapshots — count and tiles both come from the always-current `asset_holdings` map.
 
     // Seed the live stream so the header re-emits on balance/asset changes.
     let initial_live = {
@@ -2594,6 +2642,7 @@ async fn asset_feed_events(
         size,
         state.nftcdn.clone(),
         state.mainnet,
+        true, // assets page: emit live grid tile deltas via per-block holdings diff
     );
     let stream = replay.chain(live);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
@@ -2778,9 +2827,9 @@ fn build_thumb_urls(nftcdn: &NftcdnConfig, fingerprint: &str) -> (String, String
     (src, srcset)
 }
 
-fn row_to_asset(state: &AppState, fingerprint: String, name_bytes: Vec<u8>) -> AssetItem {
+fn row_to_asset(nftcdn: &NftcdnConfig, fingerprint: String, name_bytes: Vec<u8>) -> AssetItem {
     let name = decode_asset_name(&name_bytes);
-    let (src, srcset) = build_thumb_urls(&state.nftcdn, &fingerprint);
+    let (src, srcset) = build_thumb_urls(nftcdn, &fingerprint);
     AssetItem {
         fingerprint,
         name,
@@ -2822,7 +2871,7 @@ async fn policy_assets(
 
     let assets = rows
         .into_iter()
-        .map(|(_, fingerprint, name_bytes)| row_to_asset(&state, fingerprint, name_bytes))
+        .map(|(_, fingerprint, name_bytes)| row_to_asset(&state.nftcdn, fingerprint, name_bytes))
         .collect();
 
     Ok(axum::Json(AssetsResponse {
@@ -2872,7 +2921,7 @@ async fn owned_assets(
         .take(POLICY_PAGE_SIZE as usize)
         .map(|(policy, name)| {
             let fingerprint = crate::model::asset_fingerprint(&policy, &name);
-            row_to_asset(&state, fingerprint, name)
+            row_to_asset(&state.nftcdn, fingerprint, name)
         })
         .collect();
     let next = offset + assets.len();

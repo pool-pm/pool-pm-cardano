@@ -203,9 +203,6 @@ impl FeedFilter {
             | Event::MempoolPrune { .. }
             | Event::ReplayCursor { .. }
             | Event::Reward { .. } => Some(event.clone()),
-            // Converted to the AssetDelta SSE per-connection in the live stream before
-            // reaching here; dropped if it ever does.
-            Event::AssetChanges { .. } => None,
         }
     }
 }

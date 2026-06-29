@@ -64,8 +64,6 @@ impl EventBus {
             }
             // Per-connection replay-only events — never broadcast through the bus.
             Event::ReplayCursor { .. } | Event::Reward { .. } => {}
-            // Live per-block asset deltas: broadcast (below) but not retained.
-            Event::AssetChanges { .. } => {}
         }
 
         let _ = inner.tx.send(event);

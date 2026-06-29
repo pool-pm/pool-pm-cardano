@@ -437,9 +437,6 @@ impl Worker {
             }
         };
 
-        // Watched-asset transitions this block (empty unless an assets page is open),
-        // captured under the lock and fanned out after it's released.
-        let asset_deltas: Vec<crate::state::AssetCountDelta>;
         {
             let mut state = stage.state.write().await;
             let block_ref = BlockRef {
@@ -479,7 +476,7 @@ impl Worker {
             let prune_boundary = slot.saturating_sub(FEED_INDEX_WINDOW);
             state.feed_index.prune(prune_boundary);
 
-            asset_deltas = state.apply_block(BlockUpdate {
+            state.apply_block(BlockUpdate {
                 slot,
                 block_hash: block_hash.clone(),
                 epoch,
@@ -539,45 +536,6 @@ impl Worker {
 
         let tx_count = txs.len();
 
-        // Build the watched-asset change list before `txs` is moved into the Block
-        // event (added assets take their decoded name from this block's outputs).
-        let asset_changes: Vec<crate::event::AssetChange> = if asset_deltas.is_empty() {
-            Vec::new()
-        } else {
-            let mut names: std::collections::HashMap<&str, Option<String>> =
-                std::collections::HashMap::new();
-            for tx in &txs {
-                for out in &tx.outputs {
-                    for a in &out.assets {
-                        names
-                            .entry(a.fingerprint.as_str())
-                            .or_insert_with(|| a.name.clone());
-                    }
-                }
-            }
-            asset_deltas
-                .into_iter()
-                .map(|d| {
-                    let name = if d.added {
-                        names.get(d.fingerprint.as_str()).cloned().flatten()
-                    } else {
-                        None
-                    };
-                    let (address, cred) = match d.subject {
-                        crate::state::AssetSubject::Address(a) => (Some(a), None),
-                        crate::state::AssetSubject::Stake(c) => (None, Some(c)),
-                    };
-                    crate::event::AssetChange {
-                        address,
-                        cred,
-                        fingerprint: d.fingerprint,
-                        name,
-                        added: d.added,
-                    }
-                })
-                .collect()
-        };
-
         stage
             .event_bus
             .send(Event::Block {
@@ -590,16 +548,6 @@ impl Worker {
                 txs,
             })
             .await;
-
-        if !asset_changes.is_empty() {
-            stage
-                .event_bus
-                .send(Event::AssetChanges {
-                    slot,
-                    changes: asset_changes,
-                })
-                .await;
-        }
 
         let catchup = stage.catchup_target.load(Ordering::Relaxed);
         let mut catchup_complete = false;
