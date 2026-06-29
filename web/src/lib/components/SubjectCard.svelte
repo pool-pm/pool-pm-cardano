@@ -90,18 +90,16 @@
           >
         </div>
       {/if}
-      {#if stake.assets_count !== undefined}
-        <div class="pool-param">
-          <span class="pool-param-label">assets</span>
-          {#if stake.assets_count > 0}
-            <a class="pool-param-value stake-link" style:color href="/{stake.stake_address}/assets"
-              >{stake.assets_count}</a
-            >
-          {:else}
-            <span class="pool-param-value">{stake.assets_count}</span>
-          {/if}
-        </div>
-      {/if}
+      <div class="pool-param">
+        <span class="pool-param-label">assets</span>
+        {#if stake.assets_count > 0}
+          <a class="pool-param-value stake-link" style:color href="/{stake.stake_address}/assets"
+            >{stake.assets_count}</a
+          >
+        {:else}
+          <span class="pool-param-value">{stake.assets_count}</span>
+        {/if}
+      </div>
     </div>
   </div>
 {:else if address}
@@ -126,7 +124,7 @@
           >
         </div>
       {/if}
-      {#if address.assets_count !== undefined && address.assets_count > 0}
+      {#if address.assets_count > 0}
         <div class="pool-param">
           <span class="pool-param-label">assets</span>
           <a class="pool-param-value stake-link" style:color href="/{address.address}/assets">{address.assets_count}</a>

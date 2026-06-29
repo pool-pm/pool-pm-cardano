@@ -2528,63 +2528,41 @@ async fn asset_feed_events(
     // Subscribe for live events; the snapshot (tx history) is intentionally dropped.
     let (_snapshot, rx) = state.bus.subscribe().await;
 
-    // Connect-time count, queried once and shared by the header send and the live seed.
+    // Header (config + Stake/Address info) built synchronously: the `assets_count` is an
+    // in-memory read of `asset_holdings` (O(1) for an address, a ms-scale union for a
+    // stake), so there's no slow seed to defer to a background task — config + header go
+    // straight into the replay stream.
     let assets_count = subject_assets_count(&filter, &state.chain_state).await;
-
-    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<SseEvent, Infallible>>(32);
-    let replay_filter = filter.clone();
-    let replay_state = state.clone();
-    tokio::spawn(async move {
-        let _ = sender
-            .send(config_event(
-                replay_state.nftcdn.subdomain,
-                &replay_state.genesis,
-                replay_state.magic,
-            ))
-            .await;
-        match &replay_filter {
+    let config = config_event(state.nftcdn.subdomain, &state.genesis, state.magic);
+    let header = {
+        let guard = state.chain_state.read().await;
+        let snap = guard.current();
+        match &filter {
             filter::FeedFilter::Stake(payload) => {
-                let cred = payload[1..].to_vec();
-                let stake_address = replay_filter.feed_id();
-                send_stake_info(
-                    &sender,
-                    &replay_state.chain_state,
-                    &stake_address,
-                    &cred,
-                    assets_count,
-                )
-                .await;
+                stake_sse_event(&filter.feed_id(), &payload[1..], snap, assets_count)
             }
             filter::FeedFilter::Address(addr) => {
                 let addr_bytes = address_bytes(addr).unwrap_or_default();
-                send_address_info(
-                    &sender,
-                    &replay_state.chain_state,
-                    addr,
-                    &addr_bytes,
-                    replay_state.mainnet,
-                    assets_count,
-                )
-                .await;
+                address_sse_event(addr, &addr_bytes, snap, state.mainnet, assets_count)
             }
-            _ => {}
+            // Guarded above: only Stake / Address feeds reach here.
+            _ => unreachable!(),
         }
+    };
 
-        // Register this subject as watched so the sink emits live grid deltas
-        // (`AssetCountDelta` → `AssetDelta` SSE) for it. No seed query — the count and
-        // tiles come from the always-current global `asset_holdings` map; this only
-        // toggles per-block delta broadcasting (LRU-bounded).
-        let (is_stake, key): (bool, Vec<u8>) = match &replay_filter {
-            filter::FeedFilter::Stake(payload) => (true, payload[1..].to_vec()),
-            filter::FeedFilter::Address(addr) => (false, address_bytes(addr).unwrap_or_default()),
-            _ => (false, Vec::new()),
-        };
-        replay_state
-            .chain_state
-            .write()
-            .await
-            .track_asset_subject(is_stake, key);
-    });
+    // Register this subject as watched so the sink emits live grid deltas
+    // (`AssetCountDelta` → `AssetDelta` SSE) for it (LRU-bounded). No seed query — the
+    // count and tiles both come from the always-current global `asset_holdings` map.
+    let (is_stake, key): (bool, Vec<u8>) = match &filter {
+        filter::FeedFilter::Stake(payload) => (true, payload[1..].to_vec()),
+        filter::FeedFilter::Address(addr) => (false, address_bytes(addr).unwrap_or_default()),
+        _ => (false, Vec::new()),
+    };
+    state
+        .chain_state
+        .write()
+        .await
+        .track_asset_subject(is_stake, key);
 
     // Seed the live stream so the header re-emits on balance/asset changes.
     let initial_live = {
@@ -2607,7 +2585,7 @@ async fn asset_feed_events(
         }
     };
 
-    let replay = tokio_stream::wrappers::ReceiverStream::new(receiver);
+    let replay = futures::stream::iter([config, header]);
     let live = build_live_stream(
         rx,
         filter,
@@ -2855,10 +2833,13 @@ async fn policy_assets(
 }
 
 /// List assets currently owned by a payment address (`addr1…`) or stake
-/// credential (`stake1…`). Same response shape and pagination scheme as
-/// `policy_assets`, but **does not** filter CIP-68 reference NFTs — owned
-/// listings show what the wallet actually holds. Only `Address` and `Stake`
-/// filter kinds are accepted; pool/drep ids return 400.
+/// credential (`stake1…`), served **from the in-memory `asset_holdings` map** — no
+/// db scan (the old two-step `unspent_ids` path took tens of seconds for a whale).
+/// Unlike `policy_assets` it does **not** filter CIP-68 reference NFTs — owned
+/// listings show what the wallet actually holds — and it orders by `(policy, name)`
+/// (grouping each policy's tokens) rather than mint recency, with the `cursor` an
+/// integer offset into that stable order. Only `Address` and `Stake` filter kinds
+/// are accepted; pool/drep ids return 400.
 async fn owned_assets(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(feed_id): axum::extract::Path<String>,
@@ -2866,34 +2847,37 @@ async fn owned_assets(
 ) -> Result<axum::Json<AssetsResponse>, StatusCode> {
     let filter = filter::FeedFilter::from_path(&feed_id).ok_or(StatusCode::BAD_REQUEST)?;
 
-    // Take the db handle under the read lock but release it before the query so a
-    // page fetch never queues other readers behind the sink's pending writer.
-    // The query itself is the bullet-proof two-step index path (see dbsync).
-    let db = state
-        .chain_state
-        .read()
-        .await
-        .db_handle()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let rows = match &filter {
-        filter::FeedFilter::Address(addr) => {
-            db.address_assets(addr, query.cursor, POLICY_PAGE_SIZE)
-                .await
+    // Collect the held (policy, name) tokens under a brief read lock (a clone, no
+    // await), then sort + paginate + sign URLs off the lock so a page fetch never
+    // queues other readers behind the sink's pending writer.
+    let mut held = {
+        let guard = state.chain_state.read().await;
+        let snap = guard.current().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+        match &filter {
+            filter::FeedFilter::Address(addr) => {
+                let bytes = address_bytes(addr).ok_or(StatusCode::BAD_REQUEST)?;
+                snap.address_held_assets(&bytes)
+            }
+            filter::FeedFilter::Stake(payload) => snap.stake_held_assets(&payload[1..]),
+            _ => return Err(StatusCode::BAD_REQUEST),
         }
-        filter::FeedFilter::Stake(payload) => {
-            db.stake_assets(payload, query.cursor, POLICY_PAGE_SIZE)
-                .await
-        }
-        _ => return Err(StatusCode::BAD_REQUEST),
-    }
-    .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    };
+    held.sort_unstable();
 
-    let has_more = rows.len() as i64 == POLICY_PAGE_SIZE;
-    let cursor = rows.last().map(|(id, ..)| *id);
-    let assets = rows
+    let total = held.len();
+    let offset = query.cursor.unwrap_or(0).max(0) as usize;
+    let assets: Vec<AssetItem> = held
         .into_iter()
-        .map(|(_, fingerprint, name_bytes)| row_to_asset(&state, fingerprint, name_bytes))
+        .skip(offset)
+        .take(POLICY_PAGE_SIZE as usize)
+        .map(|(policy, name)| {
+            let fingerprint = crate::model::asset_fingerprint(&policy, &name);
+            row_to_asset(&state, fingerprint, name)
+        })
         .collect();
+    let next = offset + assets.len();
+    let has_more = next < total;
+    let cursor = has_more.then_some(next as i64);
 
     Ok(axum::Json(AssetsResponse {
         assets,

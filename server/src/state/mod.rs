@@ -132,6 +132,40 @@ impl BlockSnapshot {
             .take_while(move |((c, _), _)| c.as_deref() == Some(cred))
             .map(|((_, addr), held)| (addr, held))
     }
+
+    /// Every `(policy, name)` token currently held by a payment address — the rows the
+    /// owned-assets grid renders, straight from memory (no db scan). Unsorted; the
+    /// caller sorts and paginates.
+    pub fn address_held_assets(&self, address: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let cred = stake_credential_from_address_bytes(address);
+        let mut out = Vec::new();
+        if let Some(held) = self.asset_holdings.get(&(cred, address.to_vec())) {
+            for (policy, names) in held {
+                for name in names.keys() {
+                    out.push((policy.clone(), name.clone()));
+                }
+            }
+        }
+        out
+    }
+
+    /// Distinct `(policy, name)` tokens held across every payment address sharing a
+    /// stake credential — deduped, since the same asset on two of the credential's
+    /// addresses is one owned asset. Unsorted; the caller sorts and paginates.
+    pub fn stake_held_assets(&self, cred: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut seen: std::collections::HashSet<(&[u8], &[u8])> = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for (_addr, held) in self.cred_entries(cred) {
+            for (policy, names) in held {
+                for name in names.keys() {
+                    if seen.insert((policy.as_slice(), name.as_slice())) {
+                        out.push((policy.clone(), name.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Total distinct tokens in a subject's [`HeldAssets`] — `Σ` over policies of the

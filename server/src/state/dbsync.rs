@@ -382,35 +382,6 @@ impl DbSync {
             .collect())
     }
 
-    /// All distinct assets currently held by a payment address, newest-minted
-    /// first, keyset-paginated on `multi_asset.id` (same scheme as
-    /// `assets_by_policy`). **No CIP-68 reference-token filter** — owned-asset
-    /// listings show what the wallet actually holds (including reference NFTs
-    /// it may hold). Returns (id, fingerprint, name).
-    pub async fn address_assets(
-        &self,
-        address: &str,
-        cursor: Option<i64>,
-        limit: i64,
-    ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
-        let ids = self.address_unspent_ids(address).await?;
-        self.assets_page(&ids, cursor, limit).await
-    }
-
-    /// All distinct assets currently held across every payment address that
-    /// shares the given stake credential, newest-minted first, keyset-paginated
-    /// on `multi_asset.id`. `hash_raw` is the full 29-byte reward-address
-    /// payload (matches `stake_address.hash_raw`).
-    pub async fn stake_assets(
-        &self,
-        hash_raw: &[u8],
-        cursor: Option<i64>,
-        limit: i64,
-    ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
-        let ids = self.stake_unspent_ids(hash_raw).await?;
-        self.assets_page(&ids, cursor, limit).await
-    }
-
     /// Batch-resolve UTXOs. Returns (address, lovelace, assets, unspent).
     /// `unspent` is true when consumed_by_tx_id IS NULL — callers can cache these.
     pub async fn resolve_utxos_batch(
@@ -752,90 +723,6 @@ impl DbSync {
             f(r.address, r.policy, r.name, r.count);
         }
         Ok(())
-    }
-
-    // --- Two-step current-holdings queries (/assets pages) ---
-    //
-    // Every per-address/stake holdings query runs in two steps:
-    //   1. fetch the current (unconsumed) `tx_out.id`s via the partial index
-    //      (`idx_tx_out_address_id_unspent` / `idx_tx_out_stake_unspent`), bounded
-    //      by the address's *current* UTXO count;
-    //   2. resolve assets from `ma_tx_out` keyed on that explicit id array.
-    // Splitting it this way is what makes the queries bullet-proof: step 2's
-    // `tx_out_id = ANY($ids)` has an exact, known cardinality, so the planner
-    // always takes `idx_ma_tx_out_tx_out_id` and can never flip to a parallel
-    // seq scan of all ~472M `ma_tx_out` rows — the failure mode that a single
-    // joined query hits whenever the address's row-estimate creeps over the
-    // join-flip threshold (drained whales, expression-indexed keys, etc.).
-
-    /// Current (unconsumed) `tx_out.id`s for a payment address, via the partial
-    /// `idx_tx_out_address_id_unspent`. Cost ∝ the address's *current* holdings.
-    async fn address_unspent_ids(&self, address: &str) -> Result<Vec<i64>, sqlx::Error> {
-        let Some(raw) = address_raw(address) else {
-            return Ok(Vec::new());
-        };
-        sqlx::query_scalar!(
-            r#"SELECT id FROM tx_out
-               WHERE address_id IN (SELECT id FROM address WHERE raw = $1)
-                 AND consumed_by_tx_id IS NULL"#,
-            raw
-        )
-        .fetch_all(&self.db)
-        .await
-    }
-
-    /// Current (unconsumed) `tx_out.id`s across every payment address sharing a
-    /// stake credential (29-byte `hash_raw`), via `idx_tx_out_stake_unspent`.
-    async fn stake_unspent_ids(&self, hash_raw: &[u8]) -> Result<Vec<i64>, sqlx::Error> {
-        sqlx::query_scalar!(
-            r#"SELECT id FROM tx_out
-               WHERE stake_address_id = (SELECT id FROM stake_address WHERE hash_raw = $1)
-                 AND consumed_by_tx_id IS NULL"#,
-            hash_raw
-        )
-        .fetch_all(&self.db)
-        .await
-    }
-
-    /// One page of distinct assets held across the given `tx_out` ids, newest-
-    /// minted first, keyset-paginated on `multi_asset.id` (same scheme as
-    /// `assets_by_policy`). Returns (id, fingerprint, name). **No CIP-68
-    /// reference-token filter** — owned listings show what the wallet holds.
-    async fn assets_page(
-        &self,
-        ids: &[i64],
-        cursor: Option<i64>,
-        limit: i64,
-    ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        // Distinct assets over the explicit id array (index-driven; see the
-        // module note above), then keyset-paginate and join `multi_asset` for
-        // only this page's metadata.
-        let rows = sqlx::query!(
-            r#"WITH held AS MATERIALIZED (
-                SELECT DISTINCT ident AS id FROM ma_tx_out WHERE tx_out_id = ANY($1)
-            )
-            SELECT ma.id AS "id!", ma.fingerprint AS "fingerprint!", ma.name AS "name!"
-            FROM (
-                SELECT id FROM held
-                WHERE ($2::bigint IS NULL OR id < $2)
-                ORDER BY id DESC
-                LIMIT $3
-            ) page
-            JOIN multi_asset ma ON ma.id = page.id
-            ORDER BY ma.id DESC"#,
-            ids,
-            cursor,
-            limit
-        )
-        .fetch_all(&self.db)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| (r.id, r.fingerprint, r.name))
-            .collect())
     }
 
     pub async fn rewards(

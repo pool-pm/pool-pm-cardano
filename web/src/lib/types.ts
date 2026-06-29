@@ -242,8 +242,9 @@ export interface StakeInfo {
   drep_id?: string;
   drep_name?: string | null;
   /** Distinct multi-assets across every payment address sharing this stake;
-   * updated live per block. Plain number — counts won't approach 2^53. */
-  assets_count?: number;
+   * always present (read from the in-memory holdings map), updated live per
+   * block. Plain number — counts won't approach 2^53. */
+  assets_count: number;
 }
 
 export interface AddressInfo {
@@ -251,8 +252,9 @@ export interface AddressInfo {
   balance?: string;
   stake_address?: string;
   handle?: string;
-  /** Distinct multi-assets currently held; updated live per block. */
-  assets_count?: number;
+  /** Distinct multi-assets currently held; always present (in-memory),
+   * updated live per block. */
+  assets_count: number;
 }
 
 export interface FeedTx extends BlockTx {
