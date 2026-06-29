@@ -15,6 +15,8 @@
   let metadata = $state<Record<string, unknown> | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  let metaOpen = $state(true); // bottom-left metadata panel; collapses to an (i) button
+  let placardHeight = $state(0); // measured, so the media reserves room above it
 
   // The on-chain metadata to display, minus the media-technical keys (the artwork
   // itself stands in for those).
@@ -85,14 +87,14 @@
     <div class="status">No media for this asset.</div>
   {:else}
     {#each media as m (m.src)}
-      <div class="media-item">
+      <div class="media-item" style:padding-bottom={placardHeight ? `${placardHeight + 24}px` : undefined}>
         <nftcdn-media-player src={m.src} type={m.type} name={m.name}></nftcdn-media-player>
       </div>
     {/each}
   {/if}
 
   {#if !loading && !error && (name || policyShort || quantityLabel || mintLabel)}
-    <div class="placard" transition:fade={{ duration: 400 }}>
+    <div class="placard" bind:clientHeight={placardHeight} transition:fade={{ duration: 400 }}>
       <dl class="meta">
         {#if quantityLabel}
           <div class="row">
@@ -118,9 +120,21 @@
   {/if}
 
   {#if !loading && !error && metaShown}
-    <div class="meta-panel" transition:fade={{ duration: 400 }}>
-      {@render jsonNode(metaShown)}
-    </div>
+    {#if metaOpen}
+      <div class="meta-panel" transition:fade={{ duration: 200 }}>
+        <button class="meta-close" type="button" onclick={() => (metaOpen = false)} aria-label="Hide metadata">✕</button
+        >
+        {@render jsonNode(metaShown)}
+      </div>
+    {:else}
+      <button
+        class="meta-info"
+        type="button"
+        onclick={() => (metaOpen = true)}
+        aria-label="Show metadata"
+        transition:fade={{ duration: 200 }}>i</button
+      >
+    {/if}
   {/if}
 </div>
 
@@ -163,7 +177,10 @@
     width: 100%;
     height: 100dvh;
     box-sizing: border-box;
-    padding: var(--asset-margin, 16px);
+    /* The media zone sits between the top corner icons (48px @ 12px) and the
+       bottom-right placard (its measured height is reserved inline), with a small
+       side margin. The bottom-left metadata may overlay this. */
+    padding: 72px var(--asset-margin, 16px) var(--asset-margin, 16px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -274,6 +291,10 @@
     left: 12px;
     bottom: 12px;
     z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
     max-width: min(46vw, 400px);
     max-height: 62dvh;
     overflow-y: auto;
@@ -284,6 +305,51 @@
     text-shadow:
       0 1px 6px rgba(0, 0, 0, 0.6),
       0 0 2px rgba(0, 0, 0, 0.45);
+  }
+
+  /* Close (×) in the panel's top-right; (i) button when the panel is hidden. */
+  .meta-close,
+  .meta-info {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+    cursor: pointer;
+    background: rgba(0, 0, 0, 0.3);
+    color: rgba(255, 255, 255, 0.7);
+    font-family: Inter, sans-serif;
+    line-height: 1;
+    padding: 0;
+    transition: color 0.15s ease;
+  }
+
+  .meta-close {
+    align-self: flex-end;
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+
+  .meta-info {
+    position: fixed;
+    left: 12px;
+    bottom: 12px;
+    z-index: 2;
+    width: 26px;
+    height: 26px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 50%;
+    font-size: 14px;
+    font-style: italic;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  }
+
+  .meta-close:hover,
+  .meta-info:hover {
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.7);
   }
 
   .kv {
