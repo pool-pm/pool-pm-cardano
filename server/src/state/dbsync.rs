@@ -772,6 +772,50 @@ impl DbSync {
         Ok(row.count)
     }
 
+    /// `fingerprint → unspent-UTXO count` across the given `tx_out` ids — the seed
+    /// for an assets feed's live tracking (count = number of the subject's current
+    /// UTXOs holding that fingerprint, so the sink's per-block `0↔1` transitions stay
+    /// exact). Same two-step path / `ANY($ids)` cardinality guard as `assets_count`.
+    /// `ma.fingerprint` is db-sync's CIP-14 value — identical to the sink's
+    /// `asset_fingerprint`, so seed and live keys match.
+    async fn asset_counts(&self, ids: &[i64]) -> Result<Vec<(String, u32)>, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query!(
+            r#"SELECT ma.fingerprint AS "fingerprint!", COUNT(*)::int AS "count!"
+               FROM ma_tx_out m
+               JOIN multi_asset ma ON ma.id = m.ident
+               WHERE m.tx_out_id = ANY($1)
+               GROUP BY ma.fingerprint"#,
+            ids
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.fingerprint, r.count as u32))
+            .collect())
+    }
+
+    /// Seed `fingerprint → unspent-UTXO count` for a payment address.
+    pub async fn address_asset_counts(
+        &self,
+        address: &str,
+    ) -> Result<Vec<(String, u32)>, sqlx::Error> {
+        let ids = self.address_unspent_ids(address).await?;
+        self.asset_counts(&ids).await
+    }
+
+    /// Seed `fingerprint → unspent-UTXO count` for a stake credential (29-byte hash_raw).
+    pub async fn stake_asset_counts(
+        &self,
+        hash_raw: &[u8],
+    ) -> Result<Vec<(String, u32)>, sqlx::Error> {
+        let ids = self.stake_unspent_ids(hash_raw).await?;
+        self.asset_counts(&ids).await
+    }
+
     /// One page of distinct assets held across the given `tx_out` ids, newest-
     /// minted first, keyset-paginated on `multi_asset.id` (same scheme as
     /// `assets_by_policy`). Returns (id, fingerprint, name). **No CIP-68

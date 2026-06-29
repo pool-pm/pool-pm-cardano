@@ -59,6 +59,18 @@ pub struct BlockSnapshot {
     /// homepage % figure, re-synced on restart via `populate_total_staked`).
     #[serde(default)]
     pub total_staked: i64,
+    /// Per-asset *unspent-UTXO count* for the payment addresses currently being
+    /// watched by an open assets page (`address → fingerprint → #UTXOs holding it`).
+    /// Lazily seeded on connect and LRU-bounded (see `State::asset_lru`), so this is
+    /// small — only live viewers, not every address. A `0→1` count is a freshly held
+    /// asset, `1→0` means it fully left. Mirrors `address_balances` (per address) and,
+    /// being a snapshot field, reverts automatically on rollback.
+    #[serde(default)]
+    pub address_assets: HashMap<Vec<u8>, HashMap<String, u32>>,
+    /// Same, keyed by 28-byte stake credential (the union over all the credential's
+    /// payment addresses, incl. ones that appear later). Mirrors `stakes`.
+    #[serde(default)]
+    pub stake_assets: HashMap<Vec<u8>, HashMap<String, u32>>,
 }
 
 impl BlockSnapshot {
@@ -67,6 +79,101 @@ impl BlockSnapshot {
         self.handle_by_address
             .get(address)
             .and_then(|handles| handles.iter().min_by_key(|h| h.len()).cloned())
+    }
+}
+
+/// The subject of an [`AssetCountDelta`] — a watched payment address or stake
+/// credential (raw bytes).
+#[derive(Clone)]
+pub enum AssetSubject {
+    Address(Vec<u8>),
+    Stake(Vec<u8>),
+}
+
+/// A distinct-asset transition for a watched subject within one block: `added` is true
+/// on a `0→1` unspent-UTXO count (the asset is now held), false on `1→0` (it fully
+/// left). Produced by [`State::apply_block`] for the assets feeds.
+#[derive(Clone)]
+pub struct AssetCountDelta {
+    pub subject: AssetSubject,
+    pub fingerprint: String,
+    pub added: bool,
+}
+
+/// Apply a single UTXO's `+1`/`-1` to a watched subject's per-fingerprint unspent-UTXO
+/// count, recording a `0↔1` transition into `deltas`. No-op when `key` isn't tracked
+/// (the common case — most addresses have no open assets page). The subject entry is
+/// kept even when it holds no assets (it's tracked because someone is watching it; only
+/// LRU eviction removes it). Pure over its inputs — unit-tested.
+fn bump_asset_count(
+    map: &mut HashMap<Vec<u8>, HashMap<String, u32>>,
+    key: &[u8],
+    fp: &str,
+    add: bool,
+    is_stake: bool,
+    deltas: &mut Vec<AssetCountDelta>,
+) {
+    let Some(inner) = map.get_mut(key) else {
+        return; // not a watched subject
+    };
+    let subject = || {
+        if is_stake {
+            AssetSubject::Stake(key.to_vec())
+        } else {
+            AssetSubject::Address(key.to_vec())
+        }
+    };
+    if add {
+        let c = inner.entry(fp.to_string()).or_insert(0);
+        let was_zero = *c == 0;
+        *c += 1;
+        if was_zero {
+            deltas.push(AssetCountDelta {
+                subject: subject(),
+                fingerprint: fp.to_string(),
+                added: true,
+            });
+        }
+    } else if let Some(c) = inner.get_mut(fp) {
+        *c -= 1;
+        if *c == 0 {
+            inner.remove(fp);
+            deltas.push(AssetCountDelta {
+                subject: subject(),
+                fingerprint: fp.to_string(),
+                added: false,
+            });
+        }
+    }
+}
+
+/// Apply one UTXO's assets to the watched-subject count maps, computing the UTXO's
+/// stake credential at most once. `add` = produced (else consumed). No-op when the
+/// UTXO carries no assets or nothing is being tracked.
+#[allow(clippy::too_many_arguments)]
+fn apply_utxo_assets(
+    address: &[u8],
+    assets: &[(String, u64)],
+    add: bool,
+    track_addr: bool,
+    track_stake: bool,
+    address_assets: &mut HashMap<Vec<u8>, HashMap<String, u32>>,
+    stake_assets: &mut HashMap<Vec<u8>, HashMap<String, u32>>,
+    deltas: &mut Vec<AssetCountDelta>,
+) {
+    if assets.is_empty() || (!track_addr && !track_stake) {
+        return;
+    }
+    let cred = track_stake
+        .then(|| stake_credential_from_address_bytes(address))
+        .flatten();
+    for (fp, _qty) in assets {
+        if track_addr {
+            bump_asset_count(address_assets, address, fp, add, false, deltas);
+        }
+        if let Some(ref c) = cred {
+            bump_asset_count(stake_assets, c, fp, add, true, deltas);
+        }
     }
 }
 
@@ -614,6 +721,9 @@ impl State {
             handle_by_address,
             address_by_handle,
             gov_action_titles,
+            // Watched-asset maps are seeded lazily per connection, not at reset.
+            address_assets: HashMap::new(),
+            stake_assets: HashMap::new(),
         });
         self.feed_index = FeedIndex::new();
         self.pool_meta_cursor = pool_meta_cursor;
@@ -636,7 +746,10 @@ impl State {
     /// `consumed` carries each input's `(utxo_ref, resolved_output)` so
     /// `address_balances` can be decremented without re-looking up inputs that
     /// predate the snapshot (and aren't in `prev.utxos`).
-    pub fn apply_block(&mut self, update: BlockUpdate) {
+    ///
+    /// Returns the block's watched-asset transitions (empty unless an assets page is
+    /// open) so the sink can fan them out to the matching assets-feed connections.
+    pub fn apply_block(&mut self, update: BlockUpdate) -> Vec<AssetCountDelta> {
         let BlockUpdate {
             slot,
             block_hash,
@@ -658,6 +771,13 @@ impl State {
 
         let mut utxos = prev.utxos.clone();
         let mut address_balances = prev.address_balances.clone();
+        // Watched-asset count maps + the per-block transitions for the assets feeds.
+        // Both maps empty (no open assets page) ⇒ the per-UTXO asset work is skipped.
+        let mut address_assets = prev.address_assets.clone();
+        let mut stake_assets = prev.stake_assets.clone();
+        let track_addr = !address_assets.is_empty();
+        let track_stake = !stake_assets.is_empty();
+        let mut asset_deltas: Vec<AssetCountDelta> = Vec::new();
 
         for (key, output) in consumed {
             utxos.remove(key);
@@ -671,6 +791,16 @@ impl State {
                     address_balances.remove(&output.address);
                 }
             }
+            apply_utxo_assets(
+                &output.address,
+                &output.assets,
+                false,
+                track_addr,
+                track_stake,
+                &mut address_assets,
+                &mut stake_assets,
+                &mut asset_deltas,
+            );
         }
         for (key, output) in produced {
             let bal: i64 = output
@@ -678,6 +808,16 @@ impl State {
                 .try_into()
                 .expect("lovelace value must fit i64");
             *address_balances.entry(output.address.clone()).or_insert(0) += bal;
+            apply_utxo_assets(
+                &output.address,
+                &output.assets,
+                true,
+                track_addr,
+                track_stake,
+                &mut address_assets,
+                &mut stake_assets,
+                &mut asset_deltas,
+            );
             utxos.insert(key, output);
         }
 
@@ -789,6 +929,8 @@ impl State {
             decimals,
             address_balances,
             address_balances_populated,
+            address_assets,
+            stake_assets,
             handle_by_address,
             address_by_handle,
             gov_action_titles,
@@ -799,6 +941,8 @@ impl State {
         if self.history.len() > MAX_HISTORY {
             self.history.drain(..self.history.len() - MAX_HISTORY);
         }
+
+        asset_deltas
     }
 
     /// Net change to `total_staked` from this block's pool delegation changes: a

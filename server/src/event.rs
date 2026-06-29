@@ -172,6 +172,14 @@ pub enum Event {
     Rollback {
         slot: u64,
     },
+    /// Per-block distinct-asset transitions for the addresses/credentials currently
+    /// watched by open assets pages (empty otherwise). Broadcast on the bus and
+    /// converted per-connection into the `AssetDelta` SSE message; never serialized to
+    /// a client directly. Not stored in the bus history.
+    AssetChanges {
+        slot: u64,
+        changes: Vec<AssetChange>,
+    },
     MempoolPrune {
         removed: Vec<String>,
     },
@@ -196,6 +204,21 @@ pub enum Event {
         #[serde(default)]
         stake: Option<i64>,
     },
+}
+
+/// One watched-subject distinct-asset transition (see `Event::AssetChanges`). Exactly
+/// one of `address`/`cred` is set (the subject); `added` is true on first-held, false
+/// on fully-gone. `name` is the decoded asset name for building a grid tile on add.
+#[derive(Clone, Serialize)]
+pub struct AssetChange {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<Vec<u8>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cred: Option<Vec<u8>>,
+    pub fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub added: bool,
 }
 
 #[derive(Clone, Serialize)]

@@ -683,7 +683,8 @@ fn resolve_event_assets(event: &mut crate::event::Event, size: u16) {
         crate::event::Event::Rollback { .. }
         | crate::event::Event::MempoolPrune { .. }
         | crate::event::Event::ReplayCursor { .. }
-        | crate::event::Event::Reward { .. } => return,
+        | crate::event::Event::Reward { .. }
+        | crate::event::Event::AssetChanges { .. } => return,
     };
     for tx in txs {
         for inp in &mut tx.inputs {
