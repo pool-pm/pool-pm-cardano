@@ -53,7 +53,7 @@
       const link = document.createElement('link');
       link.id = 'gallery-font';
       link.rel = 'stylesheet';
-      link.href = 'https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500&display=swap';
+      link.href = 'https://fonts.googleapis.com/css2?family=Outfit:wght@300&display=swap';
       document.head.appendChild(link);
     }
     try {
@@ -215,11 +215,11 @@
   }
 
   .name {
-    font-family: 'Space Grotesk', Inter, sans-serif;
-    font-weight: 500;
+    font-family: 'Outfit', Inter, sans-serif;
+    font-weight: 300;
     font-size: clamp(22px, 3vw, 38px);
     line-height: 1.1;
-    letter-spacing: -0.015em;
+    letter-spacing: -0.005em;
     color: #fff;
   }
 
