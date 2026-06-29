@@ -16,9 +16,7 @@ use crate::cip68;
 use crate::event::Event;
 use crate::event_bus::EventBus;
 use crate::mempool::extract_tx;
-use crate::model::{
-    asset_fingerprint, is_handle_policy, parse_handle_name, pool_bech32_id, TxOutput,
-};
+use crate::model::{is_handle_policy, parse_handle_name, pool_bech32_id, TxOutput};
 use crate::nftcdn::NftcdnConfig;
 use crate::pallas::{
     stake_credential_bytes, stake_credential_from_address_bytes, MultiEraTxExt, PoolUpdate,
@@ -233,13 +231,13 @@ impl Worker {
                             }
                         }
                     }
-                    let mut assets = Vec::new();
+                    let mut assets: crate::model::PolicyAssets = Vec::new();
                     for pa in output.value().assets().iter() {
                         let policy_id = pa.policy().as_ref();
+                        let mut tokens: Vec<(Vec<u8>, u64)> = Vec::new();
                         for a in pa.assets().iter() {
                             if let Some(raw) = a.output_coin() {
-                                let fp = asset_fingerprint(policy_id, a.name());
-                                assets.push((fp, raw));
+                                tokens.push((a.name().to_vec(), raw));
                             }
                             // Detect ADA Handle tokens (classic, CIP-68, virtual)
                             if is_handle_policy(policy_id) {
@@ -267,6 +265,9 @@ impl Worker {
                                     }
                                 }
                             }
+                        }
+                        if !tokens.is_empty() {
+                            assets.push((policy_id.to_vec(), tokens));
                         }
                     }
                     produced.insert(

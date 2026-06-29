@@ -263,6 +263,41 @@ pub struct AssetInfo {
     pub size: u16,
 }
 
+/// Build display `AssetInfo`s from a UTXO's binary policy-grouped assets
+/// ([`crate::model::PolicyAssets`]), deriving the CIP-14 fingerprint from policy+name
+/// and decoding the (UTF-8) asset name. `decimals_of` / `ladder_of` are resolved per
+/// fingerprint by the caller (the snapshot's `decimals` map and the nftcdn ladder).
+/// Shared by the mempool and the block input-resolution paths so a resolved input shows
+/// the same asset detail as a freshly-decoded output (including the name, which the old
+/// fingerprint-only `TxOutput` couldn't provide).
+pub fn policy_assets_to_info(
+    assets: &crate::model::PolicyAssets,
+    mut decimals_of: impl FnMut(&str) -> u8,
+    mut ladder_of: impl FnMut(&str) -> Vec<(u16, String)>,
+) -> Vec<AssetInfo> {
+    let mut out = Vec::new();
+    for (policy, tokens) in assets {
+        for (name, qty) in tokens {
+            let fingerprint = crate::model::asset_fingerprint(policy, name);
+            let decimals = decimals_of(&fingerprint);
+            let tks = ladder_of(&fingerprint);
+            let name = std::str::from_utf8(name)
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            out.push(AssetInfo {
+                fingerprint,
+                name,
+                quantity: format_quantity(*qty, decimals),
+                tks,
+                tk: None,
+                size: 0,
+            });
+        }
+    }
+    out
+}
+
 /// Format a raw on-chain quantity with the given number of decimals.
 /// E.g. `format_quantity(1500000, 6)` → `"1.5"`, `format_quantity(100, 0)` → `"100"`.
 pub fn format_quantity(raw: u64, decimals: u8) -> String {

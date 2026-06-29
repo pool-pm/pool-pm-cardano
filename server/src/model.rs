@@ -73,12 +73,19 @@ pub fn drep_bech32_id(bytes: &[u8]) -> String {
     }
 }
 
+/// A UTXO's multi-assets, grouped by policy exactly like Pallas's `Multiasset`
+/// (`policy → name → quantity`): each 28-byte policy id is stored once, with its
+/// `(asset name, quantity)` entries. Binary throughout (raw policy / name bytes, not
+/// hex) to keep the serialized snapshot compact; the CIP-14 fingerprint is derived on
+/// demand via `asset_fingerprint(policy, name)` rather than stored.
+pub type PolicyAssets = Vec<(Vec<u8>, Vec<(Vec<u8>, u64)>)>;
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct TxOutput {
     pub lovelaces: Decimal,
     pub address: Vec<u8>,
     #[serde(default)]
-    pub assets: Vec<(String, u64)>,
+    pub assets: PolicyAssets,
 }
 
 /// ADA Handle policy IDs (same on all networks).

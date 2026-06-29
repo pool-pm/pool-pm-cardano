@@ -60,19 +60,20 @@ pub struct BlockSnapshot {
     #[serde(default)]
     pub total_staked: i64,
     /// Global per-address multi-asset holdings: `(stake credential | None for
-    /// enterprise, payment-address bytes) → fingerprint → #unspent UTXOs holding it`.
-    /// Sorted by credential first, so every payment address sharing a stake key forms
-    /// a contiguous prefix range — the stake-page count is that prefix's union of
-    /// fingerprints (derived on demand, never pre-aggregated, so each asset is stored
-    /// *once*). The address-page count is one O(1) lookup's `len()`. A key exists iff
-    /// the address currently holds ≥1 asset; an inner `0→1` is a freshly held asset,
-    /// `1→0` means it fully left. Fully populated at `reset()` from db-sync, serialized
-    /// into the snapshot (warm resume skips the populate), maintained per block by the
-    /// sink, and — being a snapshot field — reverted automatically on rollback. ADA
-    /// keeps its two maps (`address_balances` + `stakes`) because it has a hot
-    /// aggregation path; assets don't, so one composite map suffices.
+    /// enterprise, payment-address bytes) → policy → name → #unspent UTXOs holding it`
+    /// (see [`HeldAssets`] — the leaf is grouped by policy like a UTXO, binary
+    /// throughout). Sorted by credential first, so every payment address sharing a stake
+    /// key forms a contiguous prefix range — the stake-page count is that prefix's union
+    /// of `(policy, name)` pairs (derived on demand, never pre-aggregated, so each asset
+    /// is stored *once*). The address-page count is one O(1) lookup's token total. A key
+    /// exists iff the address currently holds ≥1 token; a leaf `0→1` is a freshly held
+    /// token, `1→0` means it fully left. Fully populated at `reset()` from db-sync,
+    /// serialized into the snapshot (warm resume skips the populate), maintained per
+    /// block by the sink, and — being a snapshot field — reverted automatically on
+    /// rollback. ADA keeps its two maps (`address_balances` + `stakes`) because it has a
+    /// hot aggregation path; assets don't, so one composite map suffices.
     #[serde(default)]
-    pub asset_holdings: OrdMap<AssetKey, HashMap<String, u32>>,
+    pub asset_holdings: OrdMap<AssetKey, HeldAssets>,
     /// True iff `asset_holdings` was fully populated from db-sync (by `reset()` or
     /// `populate_asset_holdings`). False on snapshots saved before the field existed,
     /// so warm resume runs the one-time populate. Mirrors `address_balances_populated`.
@@ -85,26 +86,35 @@ pub struct BlockSnapshot {
 /// a stake's payment addresses are a contiguous range.
 pub type AssetKey = (Option<Vec<u8>>, Vec<u8>);
 
+/// One subject's held assets, grouped by policy exactly like a UTXO's
+/// [`crate::model::PolicyAssets`]: 28-byte policy id → asset name bytes → number of
+/// unspent UTXOs holding that token. Binary throughout (the CIP-14 fingerprint is
+/// derived from policy+name on demand). Grouping by policy stores the policy once and
+/// lets the assets page render its per-policy sections straight from memory.
+pub type HeldAssets = HashMap<Vec<u8>, HashMap<Vec<u8>, u32>>;
+
 impl BlockSnapshot {
-    /// Distinct multi-assets currently held by one payment address — an O(1) lookup
-    /// plus the inner map's `len()`.
+    /// Distinct multi-assets currently held by one payment address — an O(1) lookup,
+    /// then the sum of each policy's token count.
     pub fn address_asset_count(&self, address: &[u8]) -> u32 {
         let cred = stake_credential_from_address_bytes(address);
         self.asset_holdings
             .get(&(cred, address.to_vec()))
-            .map(|m| m.len() as u32)
+            .map(held_asset_count)
             .unwrap_or(0)
     }
 
     /// Distinct multi-assets held across every payment address sharing a 28-byte stake
-    /// credential — the union of fingerprints over the credential's contiguous prefix
-    /// range. In-memory (~ms even for a 167k-asset whale) vs the old `COUNT(DISTINCT)`
-    /// db query (tens of seconds).
+    /// credential — the union of `(policy, name)` pairs over the credential's contiguous
+    /// prefix range. In-memory (~ms even for a 167k-asset whale) vs the old
+    /// `COUNT(DISTINCT)` db query (tens of seconds).
     pub fn stake_asset_count(&self, cred: &[u8]) -> u32 {
-        let mut union: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for (_addr, inner) in self.cred_entries(cred) {
-            for fp in inner.keys() {
-                union.insert(fp.as_str());
+        let mut union: std::collections::HashSet<(&[u8], &[u8])> = std::collections::HashSet::new();
+        for (_addr, held) in self.cred_entries(cred) {
+            for (policy, names) in held {
+                for name in names.keys() {
+                    union.insert((policy.as_slice(), name.as_slice()));
+                }
             }
         }
         union.len() as u32
@@ -115,13 +125,19 @@ impl BlockSnapshot {
     fn cred_entries<'a>(
         &'a self,
         cred: &'a [u8],
-    ) -> impl Iterator<Item = (&'a Vec<u8>, &'a HashMap<String, u32>)> {
+    ) -> impl Iterator<Item = (&'a Vec<u8>, &'a HeldAssets)> {
         let start: AssetKey = (Some(cred.to_vec()), Vec::new());
         self.asset_holdings
             .range(start..)
             .take_while(move |((c, _), _)| c.as_deref() == Some(cred))
-            .map(|((_, addr), inner)| (addr, inner))
+            .map(|((_, addr), held)| (addr, held))
     }
+}
+
+/// Total distinct tokens in a subject's [`HeldAssets`] — `Σ` over policies of the
+/// policy's token count.
+fn held_asset_count(held: &HeldAssets) -> u32 {
+    held.values().map(|names| names.len() as u32).sum()
 }
 
 impl BlockSnapshot {
@@ -151,36 +167,37 @@ pub struct AssetCountDelta {
     pub added: bool,
 }
 
-/// Apply a single UTXO's `+1`/`-1` to one address's per-fingerprint unspent-UTXO count
-/// in the global holdings map, returning the address-level `0↔1` transition this
+/// Apply a single token's `+1`/`-1` to one address's `policy → name → unspent-UTXO
+/// count` in the global holdings map, returning the address-level `0↔1` transition this
 /// crossed: `Some(true)` on `0→1` (now held), `Some(false)` on `1→0` (no longer held),
-/// `None` otherwise. The key is created on first hold and removed when it holds nothing,
-/// so the map's keys stay exactly the addresses currently holding ≥1 asset. Pure over
-/// its inputs — unit-tested.
+/// `None` otherwise. Empty policy/name/address entries are pruned, so the map's keys
+/// stay exactly the addresses currently holding ≥1 token. Pure over its inputs —
+/// unit-tested.
 fn bump_one(
-    holdings: &mut OrdMap<AssetKey, HashMap<String, u32>>,
+    holdings: &mut OrdMap<AssetKey, HeldAssets>,
     key: &AssetKey,
-    fp: &str,
+    policy: &[u8],
+    name: &[u8],
     add: bool,
 ) -> Option<bool> {
     if add {
-        if let Some(inner) = holdings.get_mut(key) {
-            let c = inner.entry(fp.to_string()).or_insert(0);
-            let was_zero = *c == 0;
-            *c += 1;
-            return was_zero.then_some(true);
-        }
-        let mut inner = HashMap::new();
-        inner.insert(fp.to_string(), 1u32);
-        holdings.insert(key.clone(), inner);
-        Some(true)
+        let held = holdings.entry(key.clone()).or_default();
+        let names = held.entry(policy.to_vec()).or_default();
+        let c = names.entry(name.to_vec()).or_insert(0);
+        let was_zero = *c == 0;
+        *c += 1;
+        was_zero.then_some(true)
     } else {
-        let inner = holdings.get_mut(key)?;
-        let c = inner.get_mut(fp)?;
+        let held = holdings.get_mut(key)?;
+        let names = held.get_mut(policy)?;
+        let c = names.get_mut(name)?;
         *c -= 1;
         if *c == 0 {
-            inner.remove(fp);
-            if inner.is_empty() {
+            names.remove(name);
+            if names.is_empty() {
+                held.remove(policy);
+            }
+            if held.is_empty() {
                 holdings.remove(key);
             }
             Some(false)
@@ -190,35 +207,42 @@ fn bump_one(
     }
 }
 
-/// Does any payment address sharing `cred` *other than* `exclude` currently hold `fp`?
-/// A prefix range-scan over the credential's contiguous keys, O(#addresses of the
-/// credential). Called only for watched stakes on an address-level `0↔1`, so it's off
-/// the hot path.
-fn stake_holds_fp(
-    holdings: &OrdMap<AssetKey, HashMap<String, u32>>,
+/// Does any payment address sharing `cred` *other than* `exclude` currently hold the
+/// `(policy, name)` token? A prefix range-scan over the credential's contiguous keys,
+/// O(#addresses of the credential). Called only for watched stakes on an address-level
+/// `0↔1`, so it's off the hot path.
+fn stake_holds(
+    holdings: &OrdMap<AssetKey, HeldAssets>,
     cred: &[u8],
     exclude: &[u8],
-    fp: &str,
+    policy: &[u8],
+    name: &[u8],
 ) -> bool {
     let start: AssetKey = (Some(cred.to_vec()), Vec::new());
     holdings
         .range(start..)
         .take_while(|((c, _), _)| c.as_deref() == Some(cred))
-        .any(|((_, addr), inner)| addr.as_slice() != exclude && inner.contains_key(fp))
+        .any(|((_, addr), held)| {
+            addr.as_slice() != exclude
+                && held
+                    .get(policy)
+                    .is_some_and(|names| names.contains_key(name))
+        })
 }
 
-/// Apply one UTXO's assets to the global holdings map (`add` = produced, else
-/// consumed), computing the UTXO's stake credential once. The map is *always*
+/// Apply one UTXO's policy-grouped assets to the global holdings map (`add` = produced,
+/// else consumed), computing the UTXO's stake credential once. The map is *always*
 /// maintained (every address); the watched sets only gate which transitions are
 /// broadcast as [`AssetCountDelta`]s to open assets pages. For a watched stake, an
 /// address-level `0↔1` becomes a stake-level transition only when no *other* address
-/// sharing the credential holds the fingerprint.
+/// sharing the credential holds the token. The delta carries the CIP-14 fingerprint
+/// (derived from policy+name) for the wire — computed only when actually emitting.
 #[allow(clippy::too_many_arguments)]
 fn apply_utxo_assets(
     address: &[u8],
-    assets: &[(String, u64)],
+    assets: &crate::model::PolicyAssets,
     add: bool,
-    holdings: &mut OrdMap<AssetKey, HashMap<String, u32>>,
+    holdings: &mut OrdMap<AssetKey, HeldAssets>,
     watched_addresses: &std::collections::HashSet<Vec<u8>>,
     watched_stakes: &std::collections::HashSet<Vec<u8>>,
     deltas: &mut Vec<AssetCountDelta>,
@@ -230,25 +254,27 @@ fn apply_utxo_assets(
     let key: AssetKey = (cred.clone(), address.to_vec());
     let addr_watched = watched_addresses.contains(address);
     let stake_watched = cred.as_ref().is_some_and(|c| watched_stakes.contains(c));
-    for (fp, _qty) in assets {
-        let Some(added) = bump_one(holdings, &key, fp, add) else {
-            continue;
-        };
-        if addr_watched {
-            deltas.push(AssetCountDelta {
-                subject: AssetSubject::Address(address.to_vec()),
-                fingerprint: fp.clone(),
-                added,
-            });
-        }
-        if stake_watched {
-            let cred = cred.as_ref().unwrap();
-            if !stake_holds_fp(holdings, cred, address, fp) {
+    for (policy, names) in assets {
+        for (name, _qty) in names {
+            let Some(added) = bump_one(holdings, &key, policy, name, add) else {
+                continue;
+            };
+            if addr_watched {
                 deltas.push(AssetCountDelta {
-                    subject: AssetSubject::Stake(cred.clone()),
-                    fingerprint: fp.clone(),
+                    subject: AssetSubject::Address(address.to_vec()),
+                    fingerprint: asset_fingerprint(policy, name),
                     added,
                 });
+            }
+            if stake_watched {
+                let cred = cred.as_ref().unwrap();
+                if !stake_holds(holdings, cred, address, policy, name) {
+                    deltas.push(AssetCountDelta {
+                        subject: AssetSubject::Stake(cred.clone()),
+                        fingerprint: asset_fingerprint(policy, name),
+                        added,
+                    });
+                }
             }
         }
     }
@@ -752,19 +778,19 @@ impl State {
     async fn fetch_asset_holdings(
         db: &DbSync,
         last_tx_id: i64,
-    ) -> Result<OrdMap<AssetKey, HashMap<String, u32>>, sqlx::Error> {
+    ) -> Result<OrdMap<AssetKey, HeldAssets>, sqlx::Error> {
         use pallas::ledger::addresses::Address;
-        let mut holdings: OrdMap<AssetKey, HashMap<String, u32>> = OrdMap::new();
+        let mut holdings: OrdMap<AssetKey, HeldAssets> = OrdMap::new();
         let mut cur_addr: Option<String> = None;
         let mut cur_key: Option<AssetKey> = None;
-        let mut inner: HashMap<String, u32> = HashMap::new();
+        let mut held: HeldAssets = HashMap::new();
         let mut rows: u64 = 0;
-        db.asset_holdings_for_each(last_tx_id, |addr, fp, count| {
+        db.asset_holdings_for_each(last_tx_id, |addr, policy, name, count| {
             rows += 1;
             if cur_addr.as_deref() != Some(addr.as_str()) {
                 if let Some(k) = cur_key.take() {
-                    if !inner.is_empty() {
-                        holdings.insert(k, std::mem::take(&mut inner));
+                    if !held.is_empty() {
+                        holdings.insert(k, std::mem::take(&mut held));
                     }
                 }
                 cur_key = Address::from_bech32(&addr).ok().map(|a| {
@@ -774,13 +800,13 @@ impl State {
                 cur_addr = Some(addr);
             }
             if cur_key.is_some() && count > 0 {
-                inner.insert(fp, count as u32);
+                held.entry(policy).or_default().insert(name, count as u32);
             }
         })
         .await?;
         if let Some(k) = cur_key.take() {
-            if !inner.is_empty() {
-                holdings.insert(k, inner);
+            if !held.is_empty() {
+                holdings.insert(k, held);
             }
         }
         tracing::info!(
@@ -1359,7 +1385,7 @@ impl State {
         &self,
         tx_hash: &[u8],
         index: i16,
-    ) -> (Option<String>, u64, Vec<(String, u64)>) {
+    ) -> (Option<String>, u64, crate::model::PolicyAssets) {
         if let Some(utxo) = self
             .current()
             .and_then(|s| s.utxos.get(&(tx_hash.to_vec(), index)))
@@ -1394,71 +1420,79 @@ mod tests {
 
     #[test]
     fn bump_one_transitions_on_0_and_1_boundaries() {
-        let mut holdings: OrdMap<AssetKey, HashMap<String, u32>> = OrdMap::new();
+        let mut holdings: OrdMap<AssetKey, HeldAssets> = OrdMap::new();
         let key: AssetKey = (None, b"addr".to_vec());
-        let fp = "asset1xyz";
+        let policy = vec![0xaau8; 28];
+        let name = b"TOKEN".to_vec();
 
-        // First UTXO of the asset arrives → 0→1, key created on demand.
-        assert_eq!(bump_one(&mut holdings, &key, fp, true), Some(true));
-        assert_eq!(holdings[&key][fp], 1);
+        // First UTXO of the token arrives → 0→1, key/policy created on demand.
+        assert_eq!(
+            bump_one(&mut holdings, &key, &policy, &name, true),
+            Some(true)
+        );
+        assert_eq!(holdings[&key][&policy][&name], 1);
 
         // Second UTXO → still held, no boundary (1→2).
-        assert_eq!(bump_one(&mut holdings, &key, fp, true), None);
-        assert_eq!(holdings[&key][fp], 2);
+        assert_eq!(bump_one(&mut holdings, &key, &policy, &name, true), None);
+        assert_eq!(holdings[&key][&policy][&name], 2);
 
         // One spent → still held, no boundary (2→1).
-        assert_eq!(bump_one(&mut holdings, &key, fp, false), None);
+        assert_eq!(bump_one(&mut holdings, &key, &policy, &name, false), None);
 
-        // Last one spent → 1→0; fingerprint dropped and (now-empty) key removed, so
-        // the map's keys stay exactly the addresses currently holding ≥1 asset.
-        assert_eq!(bump_one(&mut holdings, &key, fp, false), Some(false));
+        // Last one spent → 1→0; name/policy dropped and (now-empty) key removed, so the
+        // map's keys stay exactly the addresses currently holding ≥1 token.
+        assert_eq!(
+            bump_one(&mut holdings, &key, &policy, &name, false),
+            Some(false)
+        );
         assert!(!holdings.contains_key(&key));
 
-        // Spending an asset the map never had is a no-op.
-        assert_eq!(bump_one(&mut holdings, &key, fp, false), None);
+        // Spending a token the map never had is a no-op.
+        assert_eq!(bump_one(&mut holdings, &key, &policy, &name, false), None);
     }
 
     #[test]
     fn watched_gating_and_stake_union() {
-        // Two payment addresses sharing one stake credential; both hold the same asset.
+        // Two payment addresses sharing one stake credential; both hold the same token.
         let cred = vec![0xcd; 28];
         let addr1 = b"addr-one".to_vec();
         let addr2 = b"addr-two".to_vec();
         let key1: AssetKey = (Some(cred.clone()), addr1.clone());
         let key2: AssetKey = (Some(cred.clone()), addr2.clone());
-        let fp = "asset1shared".to_string();
-        let assets = [(fp.clone(), 1u64)];
+        let policy = vec![0xab; 28];
+        let name = b"SHARED".to_vec();
+        let assets: crate::model::PolicyAssets = vec![(policy.clone(), vec![(name.clone(), 1u64)])];
 
-        let mut holdings: OrdMap<AssetKey, HashMap<String, u32>> = OrdMap::new();
+        let mut holdings: OrdMap<AssetKey, HeldAssets> = OrdMap::new();
 
-        // addr1 gains the asset → address-level 0→1; since no other address of the
+        // addr1 gains the token → address-level 0→1; since no other address of the
         // credential holds it yet, the stake union also gains it (one delta).
         let mut d = Vec::new();
-        bump_one(&mut holdings, &key1, &fp, true);
-        if !stake_holds_fp(&holdings, &cred, &addr1, &fp) {
+        bump_one(&mut holdings, &key1, &policy, &name, true);
+        if !stake_holds(&holdings, &cred, &addr1, &policy, &name) {
             d.push(true);
         }
         assert_eq!(d.len(), 1, "first holder adds to the stake union");
 
         // addr2 also gains it → address-level 0→1, but the stake union does NOT change
         // (addr1 already holds it), so no stake delta.
-        bump_one(&mut holdings, &key2, &fp, true);
-        let other = stake_holds_fp(&holdings, &cred, &addr2, &fp);
+        bump_one(&mut holdings, &key2, &policy, &name, true);
+        let other = stake_holds(&holdings, &cred, &addr2, &policy, &name);
         assert!(other, "addr1 still holds it, so the union is unchanged");
 
         // addr1 drops it → checking the *other* addresses (excluding addr1), addr2
         // still holds it → union unchanged.
-        bump_one(&mut holdings, &key1, &fp, false);
-        assert!(stake_holds_fp(&holdings, &cred, &addr1, &fp));
+        bump_one(&mut holdings, &key1, &policy, &name, false);
+        assert!(stake_holds(&holdings, &cred, &addr1, &policy, &name));
 
         // addr2 drops it → nobody else holds it → union loses it.
-        bump_one(&mut holdings, &key2, &fp, false);
-        assert!(!stake_holds_fp(&holdings, &cred, &addr2, &fp));
+        bump_one(&mut holdings, &key2, &policy, &name, false);
+        assert!(!stake_holds(&holdings, &cred, &addr2, &policy, &name));
 
         // Sanity: with nothing watched, apply_utxo_assets still maintains the map but
         // emits no deltas.
         let empty: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
-        let mut holdings2: OrdMap<AssetKey, HashMap<String, u32>> = OrdMap::new();
+        let mut holdings2: OrdMap<AssetKey, HeldAssets> = OrdMap::new();
         let mut deltas = Vec::new();
         apply_utxo_assets(
             &addr1,

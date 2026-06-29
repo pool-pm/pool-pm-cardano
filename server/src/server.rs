@@ -898,7 +898,7 @@ async fn resolve_block_inputs(
         let db = guard.db_handle();
         let mut resolved = std::collections::HashMap::<
             (Vec<u8>, i16),
-            (String, u64, Vec<(String, u64)>),
+            (String, u64, crate::model::PolicyAssets),
         >::with_capacity(input_keys.len());
         let mut remaining = Vec::new();
         if let Some(s) = snap {
@@ -969,21 +969,11 @@ async fn resolve_block_inputs(
                 inp.handle = handle_by_address
                     .get(addr)
                     .and_then(|hs| hs.iter().min_by_key(|h| h.len()).cloned());
-                inp.assets = raw_assets
-                    .iter()
-                    .map(|(fp, raw)| {
-                        let dec = decimals.get(fp).copied().unwrap_or(0);
-                        let tks = nftcdn.compute_ladder(fp, "preview");
-                        AssetInfo {
-                            fingerprint: fp.clone(),
-                            name: None,
-                            quantity: format_quantity(*raw, dec),
-                            tks,
-                            tk: None,
-                            size: 0,
-                        }
-                    })
-                    .collect();
+                inp.assets = crate::event::policy_assets_to_info(
+                    raw_assets,
+                    |fp| decimals.get(fp).copied().unwrap_or(0),
+                    |fp| nftcdn.compute_ladder(fp, "preview"),
+                );
             }
         }
     }

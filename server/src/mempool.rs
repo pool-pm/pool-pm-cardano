@@ -54,24 +54,16 @@ pub async fn extract_tx(
                 .resolve_input(input.hash().as_ref(), input_index)
                 .await
         };
-        let assets = raw_assets
-            .iter()
-            .map(|(fp, raw)| {
-                let decimals = state
+        let assets = crate::event::policy_assets_to_info(
+            &raw_assets,
+            |fp| {
+                state
                     .current()
                     .and_then(|s| s.decimals.get(fp).copied())
-                    .unwrap_or(0);
-                let tks = nftcdn.compute_ladder(fp, "preview");
-                AssetInfo {
-                    fingerprint: fp.clone(),
-                    name: None,
-                    quantity: format_quantity(*raw, decimals),
-                    tks,
-                    tk: None,
-                    size: 0,
-                }
-            })
-            .collect();
+                    .unwrap_or(0)
+            },
+            |fp| nftcdn.compute_ladder(fp, "preview"),
+        );
         let handle = address
             .as_ref()
             .and_then(|a| state.current().and_then(|s| s.handle_for(a)));

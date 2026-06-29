@@ -8,7 +8,7 @@ use sqlx::{
 use tokio::time::Duration;
 use url::Url;
 
-use crate::model::{asset_fingerprint, parse_handle_name, DRep, Pool, CIP67_LABEL_222};
+use crate::model::{parse_handle_name, DRep, Pool, CIP67_LABEL_222};
 
 /// Raw on-chain bytes of a bech32 payment address — db-sync's `address.raw`
 /// (same serialization pallas produces). `None` for Byron / non-bech32 input
@@ -22,7 +22,23 @@ fn address_raw(address: &str) -> Option<Vec<u8>> {
 /// A resolved UTXO: `(address, lovelace, assets, unspent)`, keyed by
 /// `(tx_hash, output_index)`. Returned by `resolve_utxos_batch`.
 type ResolvedUtxos =
-    std::collections::HashMap<(Vec<u8>, i16), (String, u64, Vec<(String, u64)>, bool)>;
+    std::collections::HashMap<(Vec<u8>, i16), (String, u64, crate::model::PolicyAssets, bool)>;
+
+/// Add one `(policy, name, quantity)` token to a [`crate::model::PolicyAssets`],
+/// grouping under its policy (stored once, first-seen order) — the Pallas-style nested
+/// shape. The linear policy scan is fine: a single UTXO holds only a handful of
+/// policies. Used by the UTXO-resolution queries (one row per token).
+fn push_policy_asset(
+    assets: &mut crate::model::PolicyAssets,
+    policy: &[u8],
+    name: Vec<u8>,
+    qty: u64,
+) {
+    match assets.iter_mut().find(|(p, _)| p == policy) {
+        Some((_, tokens)) => tokens.push((name, qty)),
+        None => assets.push((policy.to_vec(), vec![(name, qty)])),
+    }
+}
 
 /// Statements slower than this are logged at WARN. Sized to the ~100 ms
 /// per-query target with headroom: anything over 1s in steady state signals a
@@ -266,7 +282,8 @@ impl DbSync {
         &self,
         tx_hash: &[u8],
         index: i16,
-    ) -> Result<Option<(String, sqlx::types::Decimal, Vec<(String, u64)>)>, sqlx::Error> {
+    ) -> Result<Option<(String, sqlx::types::Decimal, crate::model::PolicyAssets)>, sqlx::Error>
+    {
         let row = sqlx::query!(
             r#"SELECT tx_out.id, a.address, tx_out.value
             FROM tx_out
@@ -288,7 +305,7 @@ impl DbSync {
         .fetch_all(&self.db)
         .await?;
 
-        let mut assets = Vec::new();
+        let mut assets: crate::model::PolicyAssets = Vec::new();
         if !ma_rows.is_empty() {
             let idents: Vec<i64> = ma_rows.iter().map(|r| r.ident).collect();
             let ma_info = sqlx::query!(
@@ -305,7 +322,7 @@ impl DbSync {
             for r in &ma_rows {
                 if let Some((policy, name)) = lookup.get(&r.ident) {
                     let qty: u64 = r.quantity.try_into().unwrap_or(0);
-                    assets.push((asset_fingerprint(policy, name), qty));
+                    push_policy_asset(&mut assets, policy, name.clone(), qty);
                 }
             }
         }
@@ -462,7 +479,7 @@ impl DbSync {
                         if let Some(key) = id_to_key.get(&r.tx_out_id) {
                             if let Some(entry) = result.get_mut(key) {
                                 let qty: u64 = r.quantity.try_into().unwrap_or(0);
-                                entry.2.push((asset_fingerprint(policy, name), qty));
+                                push_policy_asset(&mut entry.2, policy, name.clone(), qty);
                             }
                         }
                     }
@@ -700,15 +717,16 @@ impl DbSync {
     }
 
     /// Stream every address's current (unspent as-of `last_tx_id`) multi-asset
-    /// holdings as `(bech32 address, fingerprint, unspent-UTXO count)`, ordered by
-    /// address so the caller can group per address, invoking `f` once per row. The
-    /// cold-start populate for the global [`BlockSnapshot::asset_holdings`] map (warm
-    /// resume deserializes instead). Heavy — a full join of the unspent `tx_out` set
-    /// with `ma_tx_out` (~15M output rows); streamed (`fetch`, not `fetch_all`) so the
-    /// result never materializes as one giant `Vec`. Counts per `(address_id, ident)`
-    /// in a MATERIALIZED CTE on integer keys, then resolves the text address /
-    /// fingerprint — same shape as `asset_counts` but global.
-    pub async fn asset_holdings_for_each<F: FnMut(String, String, i32)>(
+    /// holdings as `(bech32 address, policy bytes, name bytes, unspent-UTXO count)`,
+    /// ordered by address so the caller can group per address, invoking `f` once per
+    /// token. The cold-start populate for the global [`BlockSnapshot::asset_holdings`]
+    /// map (warm resume deserializes instead). Heavy — a full join of the unspent
+    /// `tx_out` set with `ma_tx_out` (~15M output rows); streamed (`fetch`, not
+    /// `fetch_all`) so the result never materializes as one giant `Vec`. Counts per
+    /// `(address_id, ident)` in a MATERIALIZED CTE on integer keys, then resolves the
+    /// text address plus the asset's policy/name (binary — the map keys, fingerprint
+    /// derived on demand).
+    pub async fn asset_holdings_for_each<F: FnMut(String, Vec<u8>, Vec<u8>, i32)>(
         &self,
         last_tx_id: i64,
         mut f: F,
@@ -722,7 +740,7 @@ impl DbSync {
                   AND (o.consumed_by_tx_id IS NULL OR o.consumed_by_tx_id > $1)
                 GROUP BY o.address_id, m.ident
             )
-            SELECT a.address AS "address!", ma.fingerprint AS "fingerprint!", held.c AS "count!"
+            SELECT a.address AS "address!", ma.policy AS "policy!", ma.name AS "name!", held.c AS "count!"
             FROM held
             JOIN address a ON a.id = held.address_id
             JOIN multi_asset ma ON ma.id = held.ident
@@ -731,7 +749,7 @@ impl DbSync {
         )
         .fetch(&self.db);
         while let Some(r) = stream.try_next().await? {
-            f(r.address, r.fingerprint, r.count);
+            f(r.address, r.policy, r.name, r.count);
         }
         Ok(())
     }
