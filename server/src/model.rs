@@ -80,7 +80,7 @@ pub fn drep_bech32_id(bytes: &[u8]) -> String {
 /// demand via `asset_fingerprint(policy, name)` rather than stored.
 pub type PolicyAssets = Vec<(Vec<u8>, Vec<(Vec<u8>, u64)>)>;
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TxOutput {
     pub lovelaces: Decimal,
     pub address: Vec<u8>,

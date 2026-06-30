@@ -13,7 +13,7 @@ use crate::pallas::{stake_credential_from_address_bytes, PoolUpdate};
 pub use dbsync::DbSync;
 pub use feed_index::FeedIndex;
 
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BlockSnapshot {
     pub slot: u64,
     pub block_hash: Option<String>,
@@ -1763,6 +1763,257 @@ mod tests {
         assert_eq!(
             State::delegation_stake_delta(&prev_delegations, &changes, &stakes, &rewards),
             0
+        );
+    }
+
+    /// One fake block that touches **every** value `apply_block` maintains, then a rollback.
+    /// Asserts each tracked value is updated exactly, and that the rollback restores the
+    /// *entire* snapshot to its initial state (`BlockSnapshot: PartialEq` compares all fields).
+    #[test]
+    fn apply_block_updates_every_tracked_value_and_rollback_restores_them() {
+        use rust_decimal::Decimal;
+
+        // Credentials, pools, dreps, policies, addresses (57-byte base addresses so the
+        // holdings map derives a real stake credential from the address bytes).
+        let cred_a = vec![0xa1u8; 28];
+        let cred_b = vec![0xb1u8; 28];
+        let cred_c = vec![0xc1u8; 28]; // introduced by the block
+        let pool_p = vec![0x01u8; 28];
+        let pool_q = vec![0x02u8; 28]; // created by the block
+        let drep_x = [&[0x00u8][..], &[0xd1u8; 28]].concat(); // tagged (key) drep
+        let drep_y = [&[0x00u8][..], &[0xd2u8; 28]].concat();
+        let policy1 = vec![0x11u8; 28];
+        let name1 = b"TOK1".to_vec();
+        let policy2 = vec![0x22u8; 28];
+        let name2 = b"TOK2".to_vec();
+        let addr1 = [&[0x00u8][..], &[0x31; 28], &[0x41; 28]].concat(); // consumed
+        let addr2 = [&[0x00u8][..], &[0x32; 28], &[0x42; 28]].concat(); // untouched
+        let addr3 = [&[0x00u8][..], &[0x33; 28], &[0x43; 28]].concat(); // produced
+        let txh0 = vec![0xf0u8; 32];
+        let txh1 = vec![0xf1u8; 32];
+        let txh2 = vec![0xf2u8; 32];
+
+        let p1n1 = |q: u64| -> crate::model::PolicyAssets {
+            vec![(policy1.clone(), vec![(name1.clone(), q)])]
+        };
+        let p2n2 = |q: u64| -> crate::model::PolicyAssets {
+            vec![(policy2.clone(), vec![(name2.clone(), q)])]
+        };
+        let txout = |lov: u64, addr: &[u8], assets: crate::model::PolicyAssets| TxOutput {
+            lovelaces: Decimal::from(lov),
+            address: addr.to_vec(),
+            assets,
+        };
+        let set =
+            |creds: &[&[u8]]| -> HashSet<Vec<u8>> { creds.iter().map(|c| c.to_vec()).collect() };
+
+        // ---- Initial snapshot: non-trivial values in every tracked field. ----
+        let mut initial = BlockSnapshot {
+            slot: 100,
+            block_hash: Some("hash100".into()),
+            last_epoch: Some(10),
+            total_staked: 105, // cred_a delegated to pool_p: stakes 100 + rewards 5
+            address_balances_populated: true,
+            asset_holdings_populated: true,
+            ..BlockSnapshot::default()
+        };
+        initial
+            .utxos
+            .insert((txh0.clone(), 0), txout(2_000_000, &addr2, p1n1(3)));
+        initial
+            .utxos
+            .insert((txh1.clone(), 0), txout(1_000_000, &addr1, p1n1(10)));
+        initial.address_balances.insert(addr1.clone(), 1_000_000);
+        initial.address_balances.insert(addr2.clone(), 2_000_000);
+        apply_utxo_assets(&addr1, &p1n1(10), true, &mut initial.asset_holdings);
+        apply_utxo_assets(&addr2, &p1n1(3), true, &mut initial.asset_holdings);
+        initial.stakes.insert(cred_a.clone(), 100);
+        initial.stakes.insert(cred_b.clone(), 50);
+        initial.rewards.insert(cred_a.clone(), 5);
+        initial.rewards.insert(cred_b.clone(), 2);
+        initial
+            .pool_delegations
+            .insert(cred_a.clone(), pool_p.clone());
+        initial
+            .pool_delegators
+            .insert(pool_p.clone(), set(&[&cred_a]));
+        initial
+            .drep_delegations
+            .insert(cred_a.clone(), drep_x.clone());
+        initial
+            .drep_delegators
+            .insert(drep_x.clone(), set(&[&cred_a]));
+        let mut pp = Pool::from_registration(pool_p.clone(), 1000, 340, 3, 100);
+        pp.ticker = Some("AAA".into());
+        pp.blocks = 5;
+        initial.pools.insert(hex::encode(&pool_p), pp);
+        initial.dreps.insert(
+            drep_x.clone(),
+            DRep {
+                hash_bytes: drep_x[1..].to_vec(),
+                given_name: Some("X".into()),
+                active_until: Some(20),
+            },
+        );
+        initial.dreps.insert(
+            drep_y.clone(),
+            DRep {
+                hash_bytes: drep_y[1..].to_vec(),
+                given_name: Some("Y".into()),
+                active_until: Some(30),
+            },
+        );
+        // Maps apply_block carries unchanged (verify they survive a block).
+        initial.decimals.insert("fp1".into(), 6);
+        initial
+            .handle_by_address
+            .insert(hex::encode(&addr1), vec!["alice".into()]);
+        initial
+            .address_by_handle
+            .insert("alice".into(), hex::encode(&addr1));
+        initial
+            .gov_action_titles
+            .insert("txg#0".into(), "Title".into());
+
+        let mut state = State::new(Url::parse("postgresql:///test").unwrap());
+        state.restore_from_snapshot(initial.clone());
+
+        // ---- The fake block: exercises every apply_block input. ----
+        let produced = vec![((txh2.clone(), 0i16), txout(3_000_000, &addr3, p2n2(7)))];
+        let consumed = vec![((txh1.clone(), 0i16), txout(1_000_000, &addr1, p1n1(10)))];
+        // cred_a re-delegates pool_p -> pool_q (stays in set); cred_c newly delegates to pool_q.
+        let pool_deleg = vec![
+            (cred_a.clone(), Some(pool_q.clone())),
+            (cred_c.clone(), Some(pool_q.clone())),
+        ];
+        // cred_a undelegates its drep; cred_b newly delegates to drep_x.
+        let drep_deleg = vec![
+            (cred_a.clone(), None),
+            (cred_b.clone(), Some(drep_x.clone())),
+        ];
+        // pool_q registered (new); pool_p re-registered (must carry ticker + lifetime blocks).
+        let pool_updates: Vec<PoolUpdate> = vec![
+            (pool_q.clone(), 2000, 500, 1, 100),
+            (pool_p.clone(), 1500, 400, 5, 100),
+        ];
+        let pool_retire = vec![(pool_p.clone(), 15u64)]; // applied after the re-registration
+        let stake_changes = vec![
+            (cred_a.clone(), 25i64),
+            (cred_c.clone(), 200i64),
+            (cred_b.clone(), -10i64),
+        ];
+        let withdrawals = vec![(cred_a.clone(), 3i64), (cred_b.clone(), 1i64)];
+        let mut reward_deltas = HashMap::new();
+        reward_deltas.insert(cred_a.clone(), 1i64);
+        reward_deltas.insert(cred_c.clone(), 10i64);
+        let mut drep_active = HashMap::new();
+        drep_active.insert(drep_x.clone(), 25i64); // drep_y absent -> expires
+
+        state.apply_block(BlockUpdate {
+            slot: 200,
+            block_hash: "hash200".into(),
+            epoch: 11,
+            produced,
+            consumed: &consumed,
+            pool_delegation_changes: &pool_deleg,
+            drep_delegation_changes: &drep_deleg,
+            pool_updates: &pool_updates,
+            pool_retirements: &pool_retire,
+            issuer_pool_hash: Some(&pool_q),
+            stake_changes: &stake_changes,
+            withdrawal_changes: &withdrawals,
+            reward_deltas: Some(&reward_deltas),
+            drep_active_until: Some(&drep_active),
+        });
+
+        // ---- Forward: every tracked value updated exactly. ----
+        let cur = state.current().unwrap();
+        assert_eq!(cur.slot, 200);
+        assert_eq!(cur.block_hash.as_deref(), Some("hash200"));
+        assert_eq!(cur.last_epoch, Some(11));
+
+        // UTXOs: consumed dropped, produced inserted, untouched kept.
+        assert_eq!(cur.utxos.len(), 2);
+        assert!(cur.utxos.contains_key(&(txh0.clone(), 0)));
+        assert!(cur.utxos.contains_key(&(txh2.clone(), 0)));
+        assert!(!cur.utxos.contains_key(&(txh1.clone(), 0)));
+        assert_eq!(
+            cur.utxos.get(&(txh2.clone(), 0)).unwrap().lovelaces,
+            Decimal::from(3_000_000u64)
+        );
+
+        // Address balances: addr1 spent to 0 (pruned), addr2 untouched, addr3 credited.
+        assert_eq!(cur.address_balances.get(&addr1).copied(), None);
+        assert_eq!(cur.address_balances.get(&addr2).copied(), Some(2_000_000));
+        assert_eq!(cur.address_balances.get(&addr3).copied(), Some(3_000_000));
+
+        // Asset holdings: addr1's token removed, addr2 untouched, addr3's token added.
+        assert!(cur.address_held_assets(&addr1).is_empty());
+        assert_eq!(
+            cur.address_held_assets(&addr2),
+            vec![(policy1.clone(), name1.clone(), 3u128)]
+        );
+        assert_eq!(
+            cur.address_held_assets(&addr3),
+            vec![(policy2.clone(), name2.clone(), 7u128)]
+        );
+
+        // Pools: pool_q new + minted this block; pool_p carried blocks/ticker, params updated, retiring set.
+        let pq = cur.pools.get(&hex::encode(&pool_q)).unwrap();
+        assert_eq!(pq.blocks, 1);
+        assert_eq!(pq.ticker, None);
+        assert_eq!(pq.retiring_epoch, None);
+        let pp = cur.pools.get(&hex::encode(&pool_p)).unwrap();
+        assert_eq!(pp.blocks, 5);
+        assert_eq!(pp.ticker.as_deref(), Some("AAA"));
+        assert_eq!(pp.retiring_epoch, Some(15));
+        assert_eq!(pp.pledge, Decimal::from(1500u64));
+
+        // Pool delegations / delegators / live stake.
+        assert_eq!(cur.pool_delegations.get(&cred_a), Some(&pool_q));
+        assert_eq!(cur.pool_delegations.get(&cred_c), Some(&pool_q));
+        let q_del = cur.pool_delegators.get(&pool_q).unwrap();
+        assert!(q_del.len() == 2 && q_del.contains(&cred_a) && q_del.contains(&cred_c));
+        assert!(cur.pool_delegators.get(&pool_p).unwrap().is_empty());
+        assert_eq!(State::pool_live_stake(cur, &pool_q), Some(338)); // (125+3)+(200+10)
+        assert_eq!(State::pool_live_stake(cur, &pool_p), Some(0));
+
+        // DRep delegations / delegators / live stake.
+        assert_eq!(cur.drep_delegations.get(&cred_a), None);
+        assert_eq!(cur.drep_delegations.get(&cred_b), Some(&drep_x));
+        let x_del = cur.drep_delegators.get(&drep_x).unwrap();
+        assert!(x_del.len() == 1 && x_del.contains(&cred_b));
+        assert_eq!(State::drep_live_stake(cur, &drep_x), Some(41)); // 40 + 1
+
+        // Stakes.
+        assert_eq!(cur.stakes.get(&cred_a).copied(), Some(125));
+        assert_eq!(cur.stakes.get(&cred_b).copied(), Some(40));
+        assert_eq!(cur.stakes.get(&cred_c).copied(), Some(200));
+
+        // Rewards: withdrawals applied first, then epoch accruals.
+        assert_eq!(cur.rewards.get(&cred_a).copied(), Some(3)); // 5 - 3 + 1
+        assert_eq!(cur.rewards.get(&cred_b).copied(), Some(1)); // 2 - 1
+        assert_eq!(cur.rewards.get(&cred_c).copied(), Some(10)); // 0 + 10
+
+        // DReps refreshed at the epoch boundary (drep_y absent -> expired).
+        assert_eq!(cur.dreps.get(&drep_x).unwrap().active_until, Some(25));
+        assert_eq!(cur.dreps.get(&drep_y).unwrap().active_until, None);
+
+        // total_staked: only cred_c newly enters the pool-delegated set (+210).
+        assert_eq!(cur.total_staked, 315);
+
+        // Carried-through maps unchanged by the block.
+        assert_eq!(cur.decimals, initial.decimals);
+        assert_eq!(cur.handle_by_address, initial.handle_by_address);
+        assert_eq!(cur.address_by_handle, initial.address_by_handle);
+        assert_eq!(cur.gov_action_titles, initial.gov_action_titles);
+        assert!(cur.address_balances_populated && cur.asset_holdings_populated);
+
+        // ---- Rollback: the entire snapshot returns to the initial values. ----
+        assert!(state.rollback(100));
+        assert!(
+            *state.current().unwrap() == initial,
+            "rollback did not restore the initial snapshot exactly"
         );
     }
 }
