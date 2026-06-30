@@ -305,15 +305,23 @@ const SNAPSHOT_FORMAT: u32 = 4;
 /// rename, so a crash mid-write leaves the previous snapshot intact). Free fn so it can
 /// run on a `spawn_blocking` thread from owned clones, without the `chain_state` lock or
 /// `&self`. Returns the persisted slot.
+///
+/// Serializes **straight into a buffered file writer** rather than into one big `Vec<u8>`:
+/// the whole-state buffer would be a multi-GB transient (~half the live set) stacked on top
+/// of the live structures every `SNAPSHOT_INTERVAL` blocks — the dominant RSS spike. The
+/// `BufWriter` keeps the in-flight buffer to its 8 KB capacity.
 pub fn write_snapshot(
     path: &Path,
     snap: &BlockSnapshot,
     feed_index: &FeedIndex,
     network_magic: u64,
 ) -> Result<u64, Box<dyn std::error::Error>> {
-    let data = rmp_serde::to_vec(&(snap, feed_index, network_magic, SNAPSHOT_FORMAT))?;
+    use std::io::Write;
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, &data)?;
+    let mut wr = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+    rmp_serde::encode::write(&mut wr, &(snap, feed_index, network_magic, SNAPSHOT_FORMAT))?;
+    wr.flush()?;
+    wr.into_inner()?.sync_all()?;
     std::fs::rename(&tmp, path)?;
     Ok(snap.slot)
 }
@@ -1544,16 +1552,21 @@ impl State {
     }
 
     /// Load snapshot + feed_index from disk. Validates network magic matches.
+    ///
+    /// Deserializes **straight from a buffered file reader** rather than reading the whole
+    /// file into a `Vec<u8>` first: that byte buffer would be a multi-GB transient stacked
+    /// on the structures being built (the startup RSS spike). The `BufReader` streams it.
     pub fn load_snapshot(path: &Path, network_magic: u64) -> Option<(BlockSnapshot, FeedIndex)> {
-        let data = match std::fs::read(path) {
-            Ok(data) => data,
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
             Err(e) => {
                 tracing::warn!("failed to read snapshot from {}: {}", path.display(), e);
                 return None;
             }
         };
         tracing::info!("loading snapshot from {}...", path.display());
-        match rmp_serde::from_slice::<(BlockSnapshot, FeedIndex, u64, u32)>(&data) {
+        let rd = std::io::BufReader::new(file);
+        match rmp_serde::from_read::<_, (BlockSnapshot, FeedIndex, u64, u32)>(rd) {
             Ok((snap, fi, magic, format)) => {
                 if magic != network_magic {
                     tracing::warn!(
