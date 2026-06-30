@@ -108,6 +108,14 @@ fn start_from_boundary(db_url: &Url, tip_slot: u64) -> (IntersectConfig, Option<
 pub fn run(args: Args) -> Result<(), Error> {
     setup_tracing(args.verbose);
 
+    // Memory watchdog on a plain OS thread (independent of any async runtime), so RSS is
+    // sampled continuously even during a long single step like the asset-holdings build
+    // that would otherwise OOM with no log line in between.
+    std::thread::spawn(|| loop {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        tracing::info!(rss_mb = crate::state::rss_mb(), "mem watchdog");
+    });
+
     let nftcdn = NftcdnConfig::new(&args.network);
     let event_bus = Arc::new(EventBus::new(4096));
     let db_url = Url::parse(&args.db.replace("NETWORK", &args.network.to_string()))

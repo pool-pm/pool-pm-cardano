@@ -265,7 +265,7 @@ pub fn policy_assets_to_info(
             out.push(AssetInfo {
                 fingerprint,
                 name,
-                quantity: format_quantity(*qty, decimals),
+                quantity: format_quantity(*qty as u128, decimals),
                 tks,
                 tk: None,
                 size: 0,
@@ -277,13 +277,27 @@ pub fn policy_assets_to_info(
 
 /// Format a raw on-chain quantity with the given number of decimals.
 /// E.g. `format_quantity(1500000, 6)` → `"1.5"`, `format_quantity(100, 0)` → `"100"`.
-pub fn format_quantity(raw: u64, decimals: u8) -> String {
+pub fn format_quantity(raw: u128, decimals: u8) -> String {
     if decimals == 0 {
         return raw.to_string();
     }
-    let mut d = rust_decimal::Decimal::from(raw);
-    d.set_scale(decimals as u32).unwrap();
-    d.normalize().to_string()
+    // String-based (not rust_decimal, whose ~7.9e28 ceiling is below u128): shift the
+    // decimal point `decimals` places from the right, trimming trailing fractional zeros.
+    let dec = decimals as usize;
+    let digits = raw.to_string();
+    let padded = if digits.len() <= dec {
+        format!("{digits:0>width$}", width = dec + 1) // ensure ≥1 integer digit
+    } else {
+        digits
+    };
+    let cut = padded.len() - dec;
+    let int_part = &padded[..cut];
+    let frac = padded[cut..].trim_end_matches('0');
+    if frac.is_empty() {
+        int_part.to_string()
+    } else {
+        format!("{int_part}.{frac}")
+    }
 }
 
 #[cfg(test)]

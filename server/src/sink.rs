@@ -569,6 +569,10 @@ impl Worker {
         // Save once when catch-up completes (so a restart doesn't repeat it),
         // then every SNAPSHOT_INTERVAL blocks during normal operation.
         if catchup_complete || (catchup == 0 && height % SNAPSHOT_INTERVAL == 0) {
+            // Trace steady-state map sizes + RSS (O(1) per map; brief read lock).
+            if let Some(cur) = stage.state.read().await.current() {
+                cur.log_sizes("periodic");
+            }
             // Offload the 1.6 GB serialize + write off the sink/feeds: clone the
             // point-in-time data under a brief read lock, then serialize + write on a
             // blocking thread. The `swap` guard skips the interval if a prior save is

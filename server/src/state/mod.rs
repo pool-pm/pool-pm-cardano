@@ -59,21 +59,19 @@ pub struct BlockSnapshot {
     /// homepage % figure, re-synced on restart via `populate_total_staked`).
     #[serde(default)]
     pub total_staked: i64,
-    /// Global per-address multi-asset holdings: `(stake credential | None for
-    /// enterprise, payment-address bytes) → policy → name → #unspent UTXOs holding it`
-    /// (see [`HeldAssets`] — the leaf is grouped by policy like a UTXO, binary
-    /// throughout). Sorted by credential first, so every payment address sharing a stake
-    /// key forms a contiguous prefix range — the stake-page count is that prefix's union
-    /// of `(policy, name)` pairs (derived on demand, never pre-aggregated, so each asset
-    /// is stored *once*). The address-page count is one O(1) lookup's token total. A key
-    /// exists iff the address currently holds ≥1 token; a leaf `0→1` is a freshly held
-    /// token, `1→0` means it fully left. Fully populated at `reset()` from db-sync,
-    /// serialized into the snapshot (warm resume skips the populate), maintained per
-    /// block by the sink, and — being a snapshot field — reverted automatically on
-    /// rollback. ADA keeps its two maps (`address_balances` + `stakes`) because it has a
-    /// hot aggregation path; assets don't, so one composite map suffices.
+    /// Global per-address multi-asset holdings: a single **flat** map from a composite
+    /// [`HeldKey`] = `((stake credential | None, payment address), policy ++ name)` to the
+    /// held [`Qty`]. Flat (not nested per address/policy) because millions of tiny `imbl`
+    /// sub-maps each waste a near-empty fixed-capacity chunk; one big map fills its chunks
+    /// (~22 GB → ~3-4 GB on mainnet). The key sorts `(cred, addr, policy, name)`, so a
+    /// stake's payment addresses are a contiguous prefix and one address's tokens are a
+    /// sub-prefix — counts/grids/diffs are prefix range scans (see [`cred_range`] /
+    /// [`addr_range`]). A key exists iff that token is currently held (`> 0`). Fully
+    /// populated at `reset()` from db-sync, serialized into the snapshot (warm resume skips
+    /// the populate), maintained per block by the sink, and — being a snapshot field —
+    /// reverted automatically on rollback.
     #[serde(default)]
-    pub asset_holdings: OrdMap<AssetKey, HeldAssets>,
+    pub asset_holdings: AssetHoldings,
     /// True iff `asset_holdings` was fully populated from db-sync (by `reset()` or
     /// `populate_asset_holdings`). False on snapshots saved before the field existed,
     /// so warm resume runs the one-time populate. Mirrors `address_balances_populated`.
@@ -86,40 +84,87 @@ pub struct BlockSnapshot {
 /// a stake's payment addresses are a contiguous range.
 pub type AssetKey = (Option<Vec<u8>>, Vec<u8>);
 
-/// One subject's held assets, grouped by policy exactly like a UTXO's
-/// [`crate::model::PolicyAssets`]: 28-byte policy id → asset name bytes → number of
-/// unspent UTXOs holding that token. Binary throughout (the CIP-14 fingerprint is
-/// derived from policy+name on demand); grouping by policy stores the policy once.
-/// Both levels are `OrdMap` (sorted, with `diff` + `ptr_eq`) so a connection can derive
-/// its live tile changes by structurally diffing this against the previous snapshot —
-/// O(actual changes), skipping shared subtrees — see [`held_diff`]. Serializes
-/// identically to a `HashMap` (rmp encodes both as a map), so the on-disk snapshot is
-/// unaffected.
-pub type HeldAssets = OrdMap<Vec<u8>, OrdMap<Vec<u8>, u64>>;
+/// A held token quantity. `u128`, because a per-address sum across UTXOs can exceed `u64`
+/// (the ledger bounds a single output to `i64`, but several add up). MessagePack/rmp has
+/// no 128-bit int, so it serializes as a *variable-length* value: a plain int when it fits
+/// `u64` (the near-universal case — 1 byte for small amounts, fully back-compatible with
+/// the old `u64` leaf), else a `(low, high)` pair. Arithmetic uses the inner `.0`.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Qty(pub u128);
+
+impl serde::Serialize for Qty {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match u64::try_from(self.0) {
+            Ok(small) => s.serialize_u64(small),
+            Err(_) => (self.0 as u64, (self.0 >> 64) as u64).serialize(s),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Qty {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct QtyVisitor;
+        impl<'de> serde::de::Visitor<'de> for QtyVisitor {
+            type Value = Qty;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a u64, or a (low, high) u64 pair for amounts exceeding u64")
+            }
+            // Narrower uint widths forward here via serde's defaults.
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Qty, E> {
+                Ok(Qty(v as u128))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Qty, A::Error> {
+                use serde::de::Error;
+                let lo: u64 = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::custom("qty low"))?;
+                let hi: u64 = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::custom("qty high"))?;
+                Ok(Qty(((hi as u128) << 64) | lo as u128))
+            }
+        }
+        d.deserialize_any(QtyVisitor)
+    }
+}
+
+/// A held token's asset id: `policy (28 bytes) ++ name`. Since `policy` is fixed-width the
+/// packed bytes sort exactly as `(policy, name)` — and it's one allocation, not two.
+pub type AssetId = Box<[u8]>;
+
+/// Composite key of the flat [`AssetHoldings`] map: `((cred, addr), policy ++ name)`,
+/// sorting `(cred, addr, policy, name)`.
+pub type HeldKey = (AssetKey, AssetId);
+
+/// Pack a token's policy + name into an [`AssetId`].
+fn asset_id(policy: &[u8], name: &[u8]) -> AssetId {
+    let mut v = Vec::with_capacity(policy.len() + name.len());
+    v.extend_from_slice(policy);
+    v.extend_from_slice(name);
+    v.into_boxed_slice()
+}
+
+/// Split an [`AssetId`] back into `(policy, name)` (`policy` is always 28 bytes).
+fn split_asset(id: &[u8]) -> (&[u8], &[u8]) {
+    id.split_at(28)
+}
 
 impl BlockSnapshot {
-    /// Distinct multi-assets currently held by one payment address — an O(1) lookup,
-    /// then the sum of each policy's token count.
+    /// Distinct multi-assets currently held by one payment address — a count over the
+    /// address's contiguous key prefix.
     pub fn address_asset_count(&self, address: &[u8]) -> u32 {
         let cred = stake_credential_from_address_bytes(address);
-        self.asset_holdings
-            .get(&(cred, address.to_vec()))
-            .map(held_asset_count)
-            .unwrap_or(0)
+        addr_range(&self.asset_holdings, &(cred, address.to_vec())).count() as u32
     }
 
     /// Distinct multi-assets held across every payment address sharing a 28-byte stake
-    /// credential — the union of `(policy, name)` pairs over the credential's contiguous
-    /// prefix range. In-memory (~ms even for a 167k-asset whale) vs the old
-    /// `COUNT(DISTINCT)` db query (tens of seconds).
+    /// credential — the union of asset ids over the credential's contiguous prefix range
+    /// (the same asset on two addresses dedupes). In-memory (~ms even for a whale) vs the
+    /// old `COUNT(DISTINCT)` db query (tens of seconds).
     pub fn stake_asset_count(&self, cred: &[u8]) -> u32 {
-        let mut union: std::collections::HashSet<(&[u8], &[u8])> = std::collections::HashSet::new();
-        for (_addr, held) in cred_range(&self.asset_holdings, cred) {
-            for (policy, names) in held {
-                for name in names.keys() {
-                    union.insert((policy.as_slice(), name.as_slice()));
-                }
-            }
+        let mut union: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
+        for ((_, asset), _) in cred_range(&self.asset_holdings, cred) {
+            union.insert(asset);
         }
         union.len() as u32
     }
@@ -127,33 +172,30 @@ impl BlockSnapshot {
     /// Every `(policy, name, quantity)` token currently held by a payment address — the
     /// rows the owned-assets grid renders, straight from memory (no db scan). Unsorted;
     /// the caller sorts and paginates.
-    pub fn address_held_assets(&self, address: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, u64)> {
+    pub fn address_held_assets(&self, address: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, u128)> {
         let cred = stake_credential_from_address_bytes(address);
-        let mut out = Vec::new();
-        if let Some(held) = self.asset_holdings.get(&(cred, address.to_vec())) {
-            for (policy, names) in held {
-                for (name, qty) in names {
-                    out.push((policy.clone(), name.clone(), *qty));
-                }
-            }
-        }
-        out
+        addr_range(&self.asset_holdings, &(cred, address.to_vec()))
+            .map(|((_, asset), qty)| {
+                let (policy, name) = split_asset(asset);
+                (policy.to_vec(), name.to_vec(), qty.0)
+            })
+            .collect()
     }
 
     /// Distinct `(policy, name, quantity)` tokens held across every payment address
     /// sharing a stake credential — the same asset on two of the credential's addresses
     /// is one owned asset, with the quantities summed. Unsorted; the caller paginates.
-    pub fn stake_held_assets(&self, cred: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, u64)> {
-        let mut sums: std::collections::HashMap<(Vec<u8>, Vec<u8>), u64> =
-            std::collections::HashMap::new();
-        for (_addr, held) in cred_range(&self.asset_holdings, cred) {
-            for (policy, names) in held {
-                for (name, qty) in names {
-                    *sums.entry((policy.clone(), name.clone())).or_insert(0) += qty;
-                }
-            }
+    pub fn stake_held_assets(&self, cred: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, u128)> {
+        let mut sums: std::collections::HashMap<&[u8], u128> = std::collections::HashMap::new();
+        for ((_, asset), qty) in cred_range(&self.asset_holdings, cred) {
+            *sums.entry(asset).or_insert(0) += qty.0;
         }
-        sums.into_iter().map(|((p, n), q)| (p, n, q)).collect()
+        sums.into_iter()
+            .map(|(asset, q)| {
+                let (policy, name) = split_asset(asset);
+                (policy.to_vec(), name.to_vec(), q)
+            })
+            .collect()
     }
 }
 
@@ -164,34 +206,76 @@ pub fn address_token_qty(
     key: &AssetKey,
     policy: &[u8],
     name: &[u8],
-) -> u64 {
+) -> u128 {
     holdings
-        .get(key)
-        .and_then(|held| held.get(policy))
-        .and_then(|names| names.get(name))
-        .copied()
+        .get(&(key.clone(), asset_id(policy, name)))
+        .map(|q| q.0)
         .unwrap_or(0)
 }
 
 /// Quantity of one `(policy, name)` token summed across every payment address sharing a
 /// stake credential — the stake-level owned amount.
-pub fn stake_token_qty(holdings: &AssetHoldings, cred: &[u8], policy: &[u8], name: &[u8]) -> u64 {
+pub fn stake_token_qty(holdings: &AssetHoldings, cred: &[u8], policy: &[u8], name: &[u8]) -> u128 {
+    let target = asset_id(policy, name);
     cred_range(holdings, cred)
-        .filter_map(|(_addr, held)| held.get(policy).and_then(|names| names.get(name)).copied())
+        .filter_map(|((_, asset), q)| (asset == &target).then_some(q.0))
         .sum()
 }
 
-/// Total distinct tokens in a subject's [`HeldAssets`] — `Σ` over policies of the
-/// policy's token count.
-fn held_asset_count(held: &HeldAssets) -> u32 {
-    held.values().map(|names| names.len() as u32).sum()
+/// Process resident set size in MB (Linux `/proc/self/statm`, field 2 = resident pages),
+/// 0 if unavailable. For coarse memory tracing — pair with entry counts below to see
+/// which structure dominates and which `reset` step grows RSS the most.
+pub fn rss_mb() -> u64 {
+    std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|s| {
+            s.split_whitespace()
+                .nth(1)
+                .and_then(|v| v.parse::<u64>().ok())
+        })
+        .map_or(0, |pages| pages * 4096 / (1024 * 1024))
+}
+
+impl BlockSnapshot {
+    /// Log the entry count of every in-memory map plus current RSS. O(addresses) — skips
+    /// the ~15M asset-holdings leaf walk (its leaf count is logged at build time). A rough
+    /// per-entry byte estimate (`est_*_mb`) flags the dominant maps; RSS is the truth.
+    pub fn log_sizes(&self, label: &str) {
+        let mb = |n: usize, per: usize| (n.saturating_mul(per)) / (1024 * 1024);
+        tracing::info!(
+            label,
+            rss_mb = rss_mb(),
+            utxos = self.utxos.len(),
+            stakes = self.stakes.len(),
+            rewards = self.rewards.len(),
+            address_balances = self.address_balances.len(),
+            pool_delegations = self.pool_delegations.len(),
+            pool_delegators = self.pool_delegators.len(),
+            drep_delegations = self.drep_delegations.len(),
+            drep_delegators = self.drep_delegators.len(),
+            dreps = self.dreps.len(),
+            pools = self.pools.len(),
+            decimals = self.decimals.len(),
+            handles = self.handle_by_address.len(),
+            gov_titles = self.gov_action_titles.len(),
+            asset_holding_addrs = self.asset_holdings.len(),
+            // rough byte estimates (key+value+imbl node overhead), per map shape
+            est_stakes_mb = mb(self.stakes.len(), 96),
+            est_rewards_mb = mb(self.rewards.len(), 96),
+            est_addr_bal_mb = mb(self.address_balances.len(), 104),
+            est_pool_deleg_mb = mb(self.pool_delegations.len(), 136),
+            est_drep_deleg_mb = mb(self.drep_delegations.len(), 137),
+            "in-memory map sizes",
+        );
+    }
 }
 
 /// On-disk snapshot format version. Bump on any breaking change to a persisted field's
 /// shape/semantics that rmp can't catch (it tolerates int-width changes) — a mismatch is
 /// rejected on load so the state rebuilds from db-sync. v2: `asset_holdings` leaf went
-/// from UTXO count to summed held quantity.
-const SNAPSHOT_FORMAT: u32 = 2;
+/// from UTXO count to summed held quantity. v3: that leaf became a `u128` `Qty`. v4:
+/// `asset_holdings` flattened to one `OrdMap<HeldKey, Qty>`.
+const SNAPSHOT_FORMAT: u32 = 4;
 
 /// Serialize `(snap, feed_index, magic, format)` and write it atomically (temp file +
 /// rename, so a crash mid-write leaves the previous snapshot intact). Free fn so it can
@@ -226,44 +310,35 @@ pub type Token = (Vec<u8>, Vec<u8>);
 /// The global per-address holdings map ([`BlockSnapshot::asset_holdings`]'s type). A
 /// connection caches the previous block's handle (O(1)) and diffs the current one for
 /// its live grid tiles.
-pub type AssetHoldings = OrdMap<AssetKey, HeldAssets>;
+pub type AssetHoldings = OrdMap<HeldKey, Qty>;
 
-/// Apply a single token's `+1`/`-1` to one address's `policy → name → unspent-UTXO count`
-/// in the global holdings map. Empty name/policy/address entries are pruned, so the map's
-/// keys stay exactly the addresses currently holding ≥1 token. The live tile deltas are
-/// *not* emitted here — each open assets page derives them by diffing snapshots
-/// ([`held_diff`]); this only maintains the map.
+/// Apply a single token's `±qty` to one `(address, policy, name)` entry in the flat
+/// holdings map. An entry is pruned when it hits 0, so the keys stay exactly the tokens
+/// currently held. Live tile deltas are *not* emitted here — each open assets page derives
+/// them by diffing snapshots; this only maintains the map.
 fn bump_one(
-    holdings: &mut OrdMap<AssetKey, HeldAssets>,
+    holdings: &mut AssetHoldings,
     key: &AssetKey,
     policy: &[u8],
     name: &[u8],
-    qty: u64,
+    qty: u128,
     add: bool,
 ) {
+    let hkey = (key.clone(), asset_id(policy, name));
     if add {
-        let held = holdings.entry(key.clone()).or_default();
-        let names = held.entry(policy.to_vec()).or_default();
-        *names.entry(name.to_vec()).or_insert(0) += qty;
+        holdings.entry(hkey).or_default().0 += qty;
     } else {
-        let Some(held) = holdings.get_mut(key) else {
-            return;
-        };
-        let Some(names) = held.get_mut(policy) else {
-            return;
-        };
-        let Some(c) = names.get_mut(name) else { return };
-        // produced/consumed amounts balance exactly; saturate as a guard against
-        // any stray underflow rather than panic.
-        *c = c.saturating_sub(qty);
-        if *c == 0 {
-            names.remove(name);
-            if names.is_empty() {
-                held.remove(policy);
+        // produced/consumed amounts balance exactly; saturate as a guard against any stray
+        // underflow rather than panic, and prune the entry at 0.
+        let drop = match holdings.get_mut(&hkey) {
+            Some(c) => {
+                c.0 = c.0.saturating_sub(qty);
+                c.0 == 0
             }
-            if held.is_empty() {
-                holdings.remove(key);
-            }
+            None => false,
+        };
+        if drop {
+            holdings.remove(&hkey);
         }
     }
 }
@@ -275,7 +350,7 @@ fn apply_utxo_assets(
     address: &[u8],
     assets: &crate::model::PolicyAssets,
     add: bool,
-    holdings: &mut OrdMap<AssetKey, HeldAssets>,
+    holdings: &mut AssetHoldings,
 ) {
     if assets.is_empty() {
         return;
@@ -284,154 +359,113 @@ fn apply_utxo_assets(
     let key: AssetKey = (cred, address.to_vec());
     for (policy, names) in assets {
         for (name, qty) in names {
-            bump_one(holdings, &key, policy, name, *qty, add);
+            bump_one(holdings, &key, policy, name, *qty as u128, add);
         }
     }
 }
 
-/// The credential's payment-address holdings — the contiguous `(Some(cred), …)` prefix of
-/// the sorted map, in address order. Shared by the count/grid helpers and the live diff.
+/// The credential's held tokens — the contiguous `(Some(cred), …)` key prefix of the flat
+/// map, yielding `(&HeldKey, &Qty)`. Shared by the count/grid/diff helpers.
 fn cred_range<'a>(
-    holdings: &'a OrdMap<AssetKey, HeldAssets>,
+    holdings: &'a AssetHoldings,
     cred: &'a [u8],
-) -> impl Iterator<Item = (&'a [u8], &'a HeldAssets)> {
-    let start: AssetKey = (Some(cred.to_vec()), Vec::new());
+) -> impl Iterator<Item = (&'a HeldKey, &'a Qty)> {
+    let start: HeldKey = ((Some(cred.to_vec()), Vec::new()), Box::default());
     holdings
         .range(start..)
-        .take_while(move |((c, _), _)| c.as_deref() == Some(cred))
-        .map(|((_, addr), held)| (addr.as_slice(), held))
+        .take_while(move |(((c, _), _), _)| c.as_deref() == Some(cred))
 }
 
-/// Does any payment address sharing `cred` *other than* `exclude` currently hold the
-/// `(policy, name)` token? A prefix range-scan over the credential's contiguous keys,
-/// O(#addresses of the credential). Used by [`stake_tile_diff`] to lift an address-level
-/// gain/loss to the stake's union.
-fn stake_holds(
-    holdings: &OrdMap<AssetKey, HeldAssets>,
-    cred: &[u8],
-    exclude: &[u8],
-    policy: &[u8],
-    name: &[u8],
-) -> bool {
-    cred_range(holdings, cred).any(|(addr, held)| {
-        addr != exclude
-            && held
-                .get(policy)
-                .is_some_and(|names| names.contains_key(name))
-    })
-}
-
-/// Accumulate the `(policy, name)` tokens added/removed between two `HeldAssets`
-/// snapshots into `added`/`removed`, via imbl's structural `diff` — shared subtrees are
-/// skipped, so the cost is O(actual changes). At the name level a key that appears is a
-/// tile add, one that disappears (we prune at count 0) is a tile remove; a count change
-/// with the key still present is no tile change.
-fn held_diff(
-    prev: &HeldAssets,
-    curr: &HeldAssets,
-    added: &mut Vec<Token>,
-    removed: &mut Vec<Token>,
-) {
-    use imbl::ordmap::DiffItem;
-    for d in prev.diff(curr) {
-        match d {
-            DiffItem::Add(policy, names) => {
-                added.extend(names.keys().map(|n| (policy.clone(), n.clone())))
-            }
-            DiffItem::Remove(policy, names) => {
-                removed.extend(names.keys().map(|n| (policy.clone(), n.clone())))
-            }
-            DiffItem::Update {
-                old: (policy, old_names),
-                new: (_, new_names),
-            } => {
-                for nd in old_names.diff(new_names) {
-                    match nd {
-                        DiffItem::Add(name, _) => added.push((policy.clone(), name.clone())),
-                        DiffItem::Remove(name, _) => removed.push((policy.clone(), name.clone())),
-                        DiffItem::Update { .. } => {}
-                    }
-                }
-            }
-        }
-    }
+/// One payment address's held tokens — the contiguous `((cred, addr), …)` key prefix.
+fn addr_range<'a>(
+    holdings: &'a AssetHoldings,
+    key: &'a AssetKey,
+) -> impl Iterator<Item = (&'a HeldKey, &'a Qty)> {
+    let start: HeldKey = (key.clone(), Box::default());
+    holdings
+        .range(start..)
+        .take_while(move |((k, _), _)| k == key)
 }
 
 /// Live tile changes for one payment address between two holdings snapshots: `(added,
-/// removed)` `(policy, name)` tokens. O(1) when the address's entry is structurally
-/// unchanged (shared node).
+/// removed)` `(policy, name)` tokens. We walk the flat map's structural diff
+/// (`prev.diff(curr)`, O(the block's actual changes) — shared subtrees skipped) and keep
+/// only the changed keys whose `(cred, addr)` prefix is this subject. A key appearing is a
+/// tile add, one disappearing (we prune at qty 0) is a remove; a qty change with the key
+/// still present is no tile change. Whale-safe: only the block's moved tokens are visited.
 pub fn address_tile_diff(
     prev: &AssetHoldings,
     curr: &AssetHoldings,
     key: &AssetKey,
 ) -> (Vec<Token>, Vec<Token>) {
-    let (p, c) = (prev.get(key), curr.get(key));
-    if let (Some(p), Some(c)) = (p, c) {
-        if p.ptr_eq(c) {
-            return (Vec::new(), Vec::new());
+    use imbl::ordmap::DiffItem;
+    let (mut added, mut removed) = (Vec::new(), Vec::new());
+    for d in prev.diff(curr) {
+        match d {
+            DiffItem::Add((k, asset), _) if k == key => {
+                let (policy, name) = split_asset(asset);
+                added.push((policy.to_vec(), name.to_vec()));
+            }
+            DiffItem::Remove((k, asset), _) if k == key => {
+                let (policy, name) = split_asset(asset);
+                removed.push((policy.to_vec(), name.to_vec()));
+            }
+            _ => {}
         }
     }
-    let empty = HeldAssets::new();
-    let (mut added, mut removed) = (Vec::new(), Vec::new());
-    held_diff(
-        p.unwrap_or(&empty),
-        c.unwrap_or(&empty),
-        &mut added,
-        &mut removed,
-    );
     (added, removed)
 }
 
 /// Live tile changes for a stake credential (the union over its addresses) between two
 /// holdings snapshots. A token is on the stake's grid iff *any* of the credential's
 /// addresses holds it, so a per-address gain/loss is a stake change only when the
-/// credential-wide membership flips. We diff each changed address to find the *candidate*
-/// tokens (cheap — `ptr_eq` skips unchanged addresses), dedupe them, then keep only those
-/// whose union membership actually flipped between `prev` and `curr` (so two addresses
-/// gaining the same token in one step is a single add, not two).
+/// credential-wide membership flips. From the flat map's structural diff we collect the
+/// *candidate* assets (every asset whose entry changed on any of the credential's
+/// addresses), then resolve each candidate's union membership in `prev` and `curr` with
+/// one cred-prefix range scan each (whale-bounded, restricted to the candidates) — so two
+/// addresses gaining the same token in one step is a single add, not two.
 pub fn stake_tile_diff(
     prev: &AssetHoldings,
     curr: &AssetHoldings,
     cred: &[u8],
 ) -> (Vec<Token>, Vec<Token>) {
-    use std::collections::{HashMap, HashSet};
-    let prev_addrs: HashMap<&[u8], &HeldAssets> = cred_range(prev, cred).collect();
-    let curr_addrs: HashMap<&[u8], &HeldAssets> = cred_range(curr, cred).collect();
-    let empty = HeldAssets::new();
-    let mut candidates: HashSet<Token> = HashSet::new();
-    let addrs: HashSet<&[u8]> = prev_addrs
-        .keys()
-        .chain(curr_addrs.keys())
-        .copied()
-        .collect();
-    for addr in addrs {
-        let (p, c) = (prev_addrs.get(addr).copied(), curr_addrs.get(addr).copied());
-        if let (Some(p), Some(c)) = (p, c) {
-            if p.ptr_eq(c) {
-                continue;
+    use imbl::ordmap::DiffItem;
+    use std::collections::HashSet;
+    let mut candidates: HashSet<AssetId> = HashSet::new();
+    for d in prev.diff(curr) {
+        let (k, asset) = match d {
+            DiffItem::Add((k, asset), _) => (k, asset),
+            DiffItem::Remove((k, asset), _) => (k, asset),
+            DiffItem::Update {
+                old: ((k, asset), _),
+                ..
+            } => (k, asset),
+        };
+        if k.0.as_deref() == Some(cred) {
+            candidates.insert(asset.clone());
+        }
+    }
+    if candidates.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    // Which candidate assets the credential holds on *any* address in a snapshot — one
+    // range scan over the cred prefix, kept to the candidate set.
+    let present = |map: &AssetHoldings| -> HashSet<AssetId> {
+        let mut held: HashSet<AssetId> = HashSet::new();
+        for ((_, asset), _) in cred_range(map, cred) {
+            if candidates.contains(asset.as_ref()) {
+                held.insert(asset.clone());
             }
         }
-        // At the stake level an add and a remove are both just "this token changed on
-        // some address" — collect them together as candidates.
-        let (mut a_add, mut a_rem) = (Vec::new(), Vec::new());
-        held_diff(
-            p.unwrap_or(&empty),
-            c.unwrap_or(&empty),
-            &mut a_add,
-            &mut a_rem,
-        );
-        candidates.extend(a_add);
-        candidates.extend(a_rem);
-    }
-    // `stake_holds(.., &[], ..)` = "any address of the credential holds it" (no real
-    // address is the empty slice), i.e. union membership.
+        held
+    };
+    let (in_prev, in_curr) = (present(prev), present(curr));
     let (mut added, mut removed) = (Vec::new(), Vec::new());
-    for (policy, name) in candidates {
-        let in_prev = stake_holds(prev, cred, &[], &policy, &name);
-        let in_curr = stake_holds(curr, cred, &[], &policy, &name);
-        match (in_prev, in_curr) {
-            (false, true) => added.push((policy, name)),
-            (true, false) => removed.push((policy, name)),
+    for asset in candidates {
+        let (policy, name) = split_asset(&asset);
+        match (in_prev.contains(&asset), in_curr.contains(&asset)) {
+            (false, true) => added.push((policy.to_vec(), name.to_vec())),
+            (true, false) => removed.push((policy.to_vec(), name.to_vec())),
             _ => {}
         }
     }
@@ -895,40 +929,43 @@ impl State {
     async fn fetch_asset_holdings(
         db: &DbSync,
         last_tx_id: i64,
-    ) -> Result<OrdMap<AssetKey, HeldAssets>, sqlx::Error> {
+    ) -> Result<AssetHoldings, sqlx::Error> {
         use pallas::ledger::addresses::Address;
-        let mut holdings: OrdMap<AssetKey, HeldAssets> = OrdMap::new();
+        let mut holdings: AssetHoldings = OrdMap::new();
+        // The query is ordered by address, so cache the decoded `(cred, addr)` key and
+        // reuse it across that address's rows instead of re-decoding the bech32 each row.
         let mut cur_addr: Option<String> = None;
         let mut cur_key: Option<AssetKey> = None;
-        let mut held = HeldAssets::new();
         let mut rows: u64 = 0;
         db.asset_holdings_for_each(last_tx_id, |addr, policy, name, count| {
             rows += 1;
             if cur_addr.as_deref() != Some(addr.as_str()) {
-                if let Some(k) = cur_key.take() {
-                    if !held.is_empty() {
-                        holdings.insert(k, std::mem::take(&mut held));
-                    }
-                }
                 cur_key = Address::from_bech32(&addr).ok().map(|a| {
                     let bytes = a.to_vec();
                     (stake_credential_from_address_bytes(&bytes), bytes)
                 });
                 cur_addr = Some(addr);
             }
-            if cur_key.is_some() && count > 0 {
-                held.entry(policy).or_default().insert(name, count as u64);
+            // `count` is the summed quantity as text; parse to u128 (saturates only at the
+            // absurd u128 ceiling, far beyond any real token — so no precision is lost).
+            let qty = count.parse::<u128>().unwrap_or(u128::MAX);
+            if let (Some(key), true) = (&cur_key, qty > 0) {
+                holdings.insert((key.clone(), asset_id(&policy, &name)), Qty(qty));
+            }
+            if rows % 1_000_000 == 0 {
+                tracing::info!(
+                    rss_mb = rss_mb(),
+                    rows,
+                    entries = holdings.len(),
+                    "asset holdings: building (streaming)"
+                );
             }
         })
         .await?;
-        if let Some(k) = cur_key.take() {
-            if !held.is_empty() {
-                holdings.insert(k, held);
-            }
-        }
         tracing::info!(
+            rss_mb = rss_mb(),
             rows,
-            addresses = holdings.len(),
+            entries = holdings.len(),
             "asset holdings built from db-sync"
         );
         Ok(holdings)
@@ -949,6 +986,10 @@ impl State {
             .await?;
 
         let (last_tx_id, block_hash) = db.slot_info(slot).await?;
+        tracing::info!(
+            rss_mb = rss_mb(),
+            "reset: start (rebuilding state from db-sync)"
+        );
 
         tracing::info!("Fetching pools...");
         let pools = db.pools(last_tx_id, slot as i64).await?;
@@ -957,6 +998,7 @@ impl State {
         tracing::info!("Fetching pool delegations...");
         let (pool_delegations, pool_delegators) = db.pool_delegations(last_tx_id).await?;
         tracing::info!(
+            rss_mb = rss_mb(),
             "{} pool delegations in {} pools retrieved",
             pool_delegations.len(),
             pool_delegators.len()
@@ -965,6 +1007,7 @@ impl State {
         tracing::info!("Fetching DRep delegations...");
         let (drep_delegations, drep_delegators) = db.drep_delegations(last_tx_id).await?;
         tracing::info!(
+            rss_mb = rss_mb(),
             "{} DRep delegations in {} DReps retrieved",
             drep_delegations.len(),
             drep_delegators.len()
@@ -977,7 +1020,11 @@ impl State {
         let current_epoch = Self::epoch_for_slot(slot, genesis);
         tracing::info!("Fetching rewards (epoch {})...", current_epoch);
         let rewards = db.rewards(current_epoch, last_tx_id).await?;
-        tracing::info!("{} stake addresses with rewards", rewards.len());
+        tracing::info!(
+            rss_mb = rss_mb(),
+            "{} stake addresses with rewards",
+            rewards.len()
+        );
 
         tracing::info!("Fetching DRep metadata...");
         let dreps = db.drep_metadata(last_tx_id, 0).await?;
@@ -1045,9 +1092,14 @@ impl State {
 
         tracing::info!("Fetching per-address balances...");
         let balance_rows = db.address_balances(last_tx_id).await?;
-        tracing::info!("{} addresses with UTXOs", balance_rows.len());
+        tracing::info!(
+            rss_mb = rss_mb(),
+            "{} address-balance rows fetched (transient Vec)",
+            balance_rows.len()
+        );
         let (address_balances, stakes) = Self::balances_and_stakes(balance_rows);
         tracing::info!(
+            rss_mb = rss_mb(),
             "{} addresses with UTXOs, {} stake credentials",
             address_balances.len(),
             stakes.len()
@@ -1086,6 +1138,9 @@ impl State {
         self.pool_meta_cursor = pool_meta_cursor;
         self.drep_meta_cursor = drep_meta_cursor;
 
+        if let Some(snap) = self.history.last() {
+            snap.log_sizes("reset complete");
+        }
         Ok(())
     }
 
@@ -1104,8 +1159,9 @@ impl State {
     /// `address_balances` can be decremented without re-looking up inputs that
     /// predate the snapshot (and aren't in `prev.utxos`).
     ///
-    /// Live asset-grid deltas aren't produced here — each open assets page derives its
-    /// own by diffing `asset_holdings` against the previous snapshot ([`held_diff`]).
+    /// Live asset-grid deltas aren't produced here — each open assets page derives its own
+    /// by diffing `asset_holdings` against the previous snapshot ([`address_tile_diff`] /
+    /// [`stake_tile_diff`]).
     pub fn apply_block(&mut self, update: BlockUpdate) {
         let BlockUpdate {
             slot,
@@ -1274,6 +1330,13 @@ impl State {
             total_staked,
         });
 
+        // In-memory history serves only rollbacks: feed replay uses db-sync + feed_index
+        // (~30 blocks), and pool/drep/stake/address feeds + all other readers use the
+        // latest snapshot — none of them depend on this depth. Sized to k = 2160 (worst-
+        // case reversal); a rollback deeper than history safely falls back to reset() (see
+        // `sink`'s rollback handler). Each retained snapshot pins that block's per-map imbl
+        // delta nodes, so this is a *steady-state* memory lever — can drop to ~180 (~1 h,
+        // far beyond any real rollback) once the size logs confirm it's worth it.
         const MAX_HISTORY: usize = 2160;
         if self.history.len() > MAX_HISTORY {
             self.history.drain(..self.history.len() - MAX_HISTORY);
@@ -1534,26 +1597,50 @@ mod tests {
 
     #[test]
     fn bump_one_maintains_and_prunes() {
-        let mut holdings: OrdMap<AssetKey, HeldAssets> = OrdMap::new();
+        let mut holdings: AssetHoldings = OrdMap::new();
         let key: AssetKey = (None, b"addr".to_vec());
         let policy = vec![0xaau8; 28];
         let name = b"TOKEN".to_vec();
+        let hkey = (key.clone(), asset_id(&policy, &name));
 
         bump_one(&mut holdings, &key, &policy, &name, 1, true);
-        assert_eq!(holdings[&key][&policy][&name], 1);
+        assert_eq!(holdings[&hkey].0, 1);
         bump_one(&mut holdings, &key, &policy, &name, 1, true);
-        assert_eq!(holdings[&key][&policy][&name], 2);
+        assert_eq!(holdings[&hkey].0, 2);
         bump_one(&mut holdings, &key, &policy, &name, 1, false);
-        assert_eq!(holdings[&key][&policy][&name], 1);
+        assert_eq!(holdings[&hkey].0, 1);
 
-        // Last UTXO spent → name/policy dropped and the (now-empty) address key removed,
-        // so the map's keys stay exactly the addresses currently holding ≥1 token.
+        // Last UTXO spent → the entry hits 0 and is pruned, so the map's keys stay exactly
+        // the tokens currently held by ≥1 UTXO.
         bump_one(&mut holdings, &key, &policy, &name, 1, false);
         assert!(holdings.is_empty());
 
         // Spending a token the map never had is a no-op.
         bump_one(&mut holdings, &key, &policy, &name, 1, false);
         assert!(holdings.is_empty());
+    }
+
+    #[test]
+    fn qty_serde_roundtrips_including_above_u64() {
+        // Exact round-trip across the whole range — crucially the values above u64 that
+        // a `::bigint` SUM would have thrown on / clamping would have lost.
+        for v in [
+            0u128,
+            1,
+            u64::MAX as u128,
+            u64::MAX as u128 + 1,
+            (u64::MAX as u128) * 3, // a few near-i64::MAX UTXOs summed
+            u128::MAX,
+        ] {
+            let bytes = rmp_serde::to_vec(&Qty(v)).unwrap();
+            let back: Qty = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(back.0, v, "round-trip {v}");
+        }
+        // Back-compat: a leaf serialized as a plain u64 (old format) reads as Qty.
+        let old = rmp_serde::to_vec(&123u64).unwrap();
+        assert_eq!(rmp_serde::from_slice::<Qty>(&old).unwrap().0, 123);
+        // Small values stay 1 byte (same as the old u64 leaf), not the 2-int fallback.
+        assert_eq!(rmp_serde::to_vec(&Qty(1)).unwrap().len(), 1);
     }
 
     #[test]
@@ -1568,7 +1655,7 @@ mod tests {
         let tok = (policy.clone(), name.clone());
 
         // s0 empty → s1: addr1 gains the token.
-        let s0: OrdMap<AssetKey, HeldAssets> = OrdMap::new();
+        let s0: AssetHoldings = OrdMap::new();
         let mut s1 = s0.clone();
         bump_one(&mut s1, &key1, &policy, &name, 1, true);
 

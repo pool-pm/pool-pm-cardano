@@ -111,7 +111,7 @@ pub async fn extract_tx(
                             Some(AssetInfo {
                                 fingerprint,
                                 name,
-                                quantity: format_quantity(raw, decimals),
+                                quantity: format_quantity(raw as u128, decimals),
                                 tks,
                                 tk: None,
                                 size: 0,

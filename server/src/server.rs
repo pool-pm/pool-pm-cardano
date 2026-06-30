@@ -787,7 +787,7 @@ fn decode_block_txs(
                                     Some(AssetInfo {
                                         fingerprint: fp,
                                         name,
-                                        quantity: format_quantity(raw, decimals),
+                                        quantity: format_quantity(raw as u128, decimals),
                                         tks,
                                         tk: None,
                                         size: 0,
@@ -1641,7 +1641,7 @@ struct AssetDeltaWire<'a> {
 /// each token's policy+name. On rollback this is just the corrective diff — no special
 /// case (the client applies adds/removes the same way).
 fn asset_delta_event(
-    added: Vec<(Vec<u8>, Vec<u8>, u64)>,
+    added: Vec<(Vec<u8>, Vec<u8>, u128)>,
     removed: Vec<crate::state::Token>,
     slot: u64,
     nftcdn: &NftcdnConfig,
@@ -1878,7 +1878,7 @@ fn build_live_stream(
                                 };
                                 // Resolve each added tile's current owned quantity from the
                                 // snapshot (the diff only carries which (policy, name) changed).
-                                let added: Vec<(Vec<u8>, Vec<u8>, u64)> = added
+                                let added: Vec<(Vec<u8>, Vec<u8>, u128)> = added
                                     .into_iter()
                                     .map(|(policy, name)| {
                                         let qty = match &filter {
@@ -2961,7 +2961,7 @@ fn row_to_asset(
 
 /// The owned quantity formatted with the asset's decimals, or `None` when it's exactly 1
 /// (NFTs / single units — not worth showing).
-fn fmt_owned_qty(qty: u64, decimals: u8) -> Option<String> {
+fn fmt_owned_qty(qty: u128, decimals: u8) -> Option<String> {
     let s = crate::event::format_quantity(qty, decimals);
     (s != "1").then_some(s)
 }
@@ -3014,7 +3014,7 @@ async fn policy_assets(
 /// Held `(policy, name)` tokens for an address/stake subject, cloned off the
 /// `chain_state` lock (the clone is sync — no await held). Errs 400 for a
 /// non-address/stake filter or an unparseable address, 503 before the first snapshot.
-type HeldList = Vec<(Vec<u8>, Vec<u8>, u64)>;
+type HeldList = Vec<(Vec<u8>, Vec<u8>, u128)>;
 
 async fn collect_held(
     state: &AppState,
@@ -3042,7 +3042,7 @@ fn build_owned_tile(
     policy_hex: &str,
     policy: &[u8],
     name: Vec<u8>,
-    qty: u64,
+    qty: u128,
     decimals: &imbl::HashMap<String, u8>,
 ) -> AssetItem {
     let fingerprint = crate::model::asset_fingerprint(policy, &name);
@@ -3070,7 +3070,7 @@ async fn owned_assets(
 
     // held is sorted by (policy, name), so each policy's tokens are contiguous: count
     // them all, keeping up to GROUP_SAMPLES (name, quantity) samples for the thumbnail.
-    let mut groups: Vec<(Vec<u8>, usize, Vec<(Vec<u8>, u64)>)> = Vec::new();
+    let mut groups: Vec<(Vec<u8>, usize, Vec<(Vec<u8>, u128)>)> = Vec::new();
     for (policy, name, qty) in held {
         if let Some((p, count, samples)) = groups.last_mut() {
             if *p == policy {
