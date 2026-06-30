@@ -19,9 +19,16 @@
   const assetFileIndex = Number(assetMatch?.[2] ?? 0);
   const policyId = /^policy\/([0-9a-f]{56})$/.exec(path)?.[1] ?? null;
   const ownedAssetsSubject = /^((addr|stake)(_test)?1[a-z0-9]+)\/assets$/.exec(path)?.[1] ?? null;
+  // `/<bech32>/assets/<policy>` drills into one policy of an owned-assets page.
+  const ownedPolicyMatch = /^((addr|stake)(_test)?1[a-z0-9]+)\/assets\/([0-9a-f]{56})$/.exec(path);
+  const ownedPolicySubject = ownedPolicyMatch?.[1] ?? null;
+  const ownedPolicy = ownedPolicyMatch?.[4] ?? null;
+
+  // The owned-assets drill-down shares the subject's SSE feed (drop the /policy suffix).
+  const ssePath = ownedPolicySubject ? `${ownedPolicySubject}/assets` : path;
 
   function sseUrl(): string {
-    const base = path ? `${SSE_BASE}/${path}` : SSE_BASE;
+    const base = ssePath ? `${SSE_BASE}/${ssePath}` : SSE_BASE;
     // Negotiate thumbnail resolution: the server picks the power-of-2 nftcdn
     // size rung matching this device's pixel ratio.
     const sep = base.includes('?') ? '&' : '?';
@@ -112,6 +119,15 @@
       endpoint={`/api/assets/${ownedAssetsSubject}`}
       title={`${ownedAssetsSubject.slice(0, 12)}… assets`}
       mode="text-fallback"
+      grouped
+      subject={ownedAssetsSubject}
+    />
+  {:else if ownedPolicySubject && ownedPolicy}
+    <AssetsGrid
+      endpoint={`/api/assets/${ownedPolicySubject}/${ownedPolicy}`}
+      title={`${ownedPolicy.slice(0, 12)}… assets`}
+      mode="text-fallback"
+      policyFilter={ownedPolicy}
     />
   {:else}
     <Feed />

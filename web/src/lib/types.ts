@@ -62,10 +62,30 @@ export interface AssetMediaResponse {
 export interface PolicyAsset {
   fingerprint: string;
   name?: string;
+  /** Policy id (hex) — lets the owned-assets grid group/route tiles by policy. */
+  policy: string;
+  /** Owned quantity, decimals-formatted; present only when it isn't 1 (owned-assets
+   * tiles only — absent on the policy-browse grid). */
+  quantity?: string;
   /** Ready-signed nftcdn preview URL (128px rung); use as the img fallback src. */
   src: string;
   /** Multi-rung srcset ("url 1x, url 2x, url 4x"); empty when only one rung. */
   srcset: string;
+}
+
+/** One policy's tile on the owned-assets grid: its held-asset `count` and up to a few
+ * sample tiles for the stacked-card thumbnail. `count === 1` renders as a plain tile. */
+export interface AssetGroup {
+  policy: string;
+  count: number;
+  samples: PolicyAsset[];
+}
+
+/** A removed tile: `fingerprint` says which tile to drop; `policy` says which group to
+ * decrement (a fingerprint can't be mapped back to a policy client-side). */
+export interface AssetRef {
+  policy: string;
+  fingerprint: string;
 }
 
 /** Live `AssetDelta` SSE message on an assets feed: this connection's holdings change
@@ -77,17 +97,24 @@ export interface AssetDeltaEvent {
   type: 'AssetDelta';
   slot: number;
   added?: PolicyAsset[];
-  removed?: string[];
+  removed?: AssetRef[];
 }
 
 /** What `onAssetLive` delivers to the assets grid: one corrective delta to apply. */
-export type AssetDelta = { slot: number; added: PolicyAsset[]; removed: string[] };
+export type AssetDelta = { slot: number; added: PolicyAsset[]; removed: AssetRef[] };
 
 /** Response for both `/api/policy/{id}` and `/api/assets/{bech32}` — same
  * pagination scheme; the subject (policy id or address) is implicit in the URL. */
 export interface AssetsResponse {
   assets: PolicyAsset[];
   /** Last asset id of this page; pass back as `?cursor=` for the next page. */
+  cursor?: number;
+  has_more: boolean;
+}
+
+/** `/api/assets/{subject}` — the owned-assets grid grouped by policy, paginated by policy. */
+export interface GroupsResponse {
+  groups: AssetGroup[];
   cursor?: number;
   has_more: boolean;
 }

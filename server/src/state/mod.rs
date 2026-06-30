@@ -95,7 +95,7 @@ pub type AssetKey = (Option<Vec<u8>>, Vec<u8>);
 /// O(actual changes), skipping shared subtrees — see [`held_diff`]. Serializes
 /// identically to a `HashMap` (rmp encodes both as a map), so the on-disk snapshot is
 /// unaffected.
-pub type HeldAssets = OrdMap<Vec<u8>, OrdMap<Vec<u8>, u32>>;
+pub type HeldAssets = OrdMap<Vec<u8>, OrdMap<Vec<u8>, u64>>;
 
 impl BlockSnapshot {
     /// Distinct multi-assets currently held by one payment address — an O(1) lookup,
@@ -124,39 +124,61 @@ impl BlockSnapshot {
         union.len() as u32
     }
 
-    /// Every `(policy, name)` token currently held by a payment address — the rows the
-    /// owned-assets grid renders, straight from memory (no db scan). Unsorted; the
-    /// caller sorts and paginates.
-    pub fn address_held_assets(&self, address: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    /// Every `(policy, name, quantity)` token currently held by a payment address — the
+    /// rows the owned-assets grid renders, straight from memory (no db scan). Unsorted;
+    /// the caller sorts and paginates.
+    pub fn address_held_assets(&self, address: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, u64)> {
         let cred = stake_credential_from_address_bytes(address);
         let mut out = Vec::new();
         if let Some(held) = self.asset_holdings.get(&(cred, address.to_vec())) {
             for (policy, names) in held {
-                for name in names.keys() {
-                    out.push((policy.clone(), name.clone()));
+                for (name, qty) in names {
+                    out.push((policy.clone(), name.clone(), *qty));
                 }
             }
         }
         out
     }
 
-    /// Distinct `(policy, name)` tokens held across every payment address sharing a
-    /// stake credential — deduped, since the same asset on two of the credential's
-    /// addresses is one owned asset. Unsorted; the caller sorts and paginates.
-    pub fn stake_held_assets(&self, cred: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let mut seen: std::collections::HashSet<(&[u8], &[u8])> = std::collections::HashSet::new();
-        let mut out = Vec::new();
+    /// Distinct `(policy, name, quantity)` tokens held across every payment address
+    /// sharing a stake credential — the same asset on two of the credential's addresses
+    /// is one owned asset, with the quantities summed. Unsorted; the caller paginates.
+    pub fn stake_held_assets(&self, cred: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, u64)> {
+        let mut sums: std::collections::HashMap<(Vec<u8>, Vec<u8>), u64> =
+            std::collections::HashMap::new();
         for (_addr, held) in cred_range(&self.asset_holdings, cred) {
             for (policy, names) in held {
-                for name in names.keys() {
-                    if seen.insert((policy.as_slice(), name.as_slice())) {
-                        out.push((policy.clone(), name.clone()));
-                    }
+                for (name, qty) in names {
+                    *sums.entry((policy.clone(), name.clone())).or_insert(0) += qty;
                 }
             }
         }
-        out
+        sums.into_iter().map(|((p, n), q)| (p, n, q)).collect()
     }
+}
+
+/// Quantity of one `(policy, name)` token held by a single payment-address key (0 if not
+/// held). For resolving a live tile delta's amount from the current snapshot.
+pub fn address_token_qty(
+    holdings: &AssetHoldings,
+    key: &AssetKey,
+    policy: &[u8],
+    name: &[u8],
+) -> u64 {
+    holdings
+        .get(key)
+        .and_then(|held| held.get(policy))
+        .and_then(|names| names.get(name))
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Quantity of one `(policy, name)` token summed across every payment address sharing a
+/// stake credential — the stake-level owned amount.
+pub fn stake_token_qty(holdings: &AssetHoldings, cred: &[u8], policy: &[u8], name: &[u8]) -> u64 {
+    cred_range(holdings, cred)
+        .filter_map(|(_addr, held)| held.get(policy).and_then(|names| names.get(name)).copied())
+        .sum()
 }
 
 /// Total distinct tokens in a subject's [`HeldAssets`] — `Σ` over policies of the
@@ -165,17 +187,23 @@ fn held_asset_count(held: &HeldAssets) -> u32 {
     held.values().map(|names| names.len() as u32).sum()
 }
 
-/// Serialize `(snap, feed_index, magic)` and write it atomically (temp file + rename, so
-/// a crash mid-write leaves the previous snapshot intact). Free fn so it can run on a
-/// `spawn_blocking` thread from owned clones, without the `chain_state` lock or `&self`.
-/// Returns the persisted slot.
+/// On-disk snapshot format version. Bump on any breaking change to a persisted field's
+/// shape/semantics that rmp can't catch (it tolerates int-width changes) — a mismatch is
+/// rejected on load so the state rebuilds from db-sync. v2: `asset_holdings` leaf went
+/// from UTXO count to summed held quantity.
+const SNAPSHOT_FORMAT: u32 = 2;
+
+/// Serialize `(snap, feed_index, magic, format)` and write it atomically (temp file +
+/// rename, so a crash mid-write leaves the previous snapshot intact). Free fn so it can
+/// run on a `spawn_blocking` thread from owned clones, without the `chain_state` lock or
+/// `&self`. Returns the persisted slot.
 pub fn write_snapshot(
     path: &Path,
     snap: &BlockSnapshot,
     feed_index: &FeedIndex,
     network_magic: u64,
 ) -> Result<u64, Box<dyn std::error::Error>> {
-    let data = rmp_serde::to_vec(&(snap, feed_index, network_magic))?;
+    let data = rmp_serde::to_vec(&(snap, feed_index, network_magic, SNAPSHOT_FORMAT))?;
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, &data)?;
     std::fs::rename(&tmp, path)?;
@@ -210,12 +238,13 @@ fn bump_one(
     key: &AssetKey,
     policy: &[u8],
     name: &[u8],
+    qty: u64,
     add: bool,
 ) {
     if add {
         let held = holdings.entry(key.clone()).or_default();
         let names = held.entry(policy.to_vec()).or_default();
-        *names.entry(name.to_vec()).or_insert(0) += 1;
+        *names.entry(name.to_vec()).or_insert(0) += qty;
     } else {
         let Some(held) = holdings.get_mut(key) else {
             return;
@@ -224,7 +253,9 @@ fn bump_one(
             return;
         };
         let Some(c) = names.get_mut(name) else { return };
-        *c -= 1;
+        // produced/consumed amounts balance exactly; saturate as a guard against
+        // any stray underflow rather than panic.
+        *c = c.saturating_sub(qty);
         if *c == 0 {
             names.remove(name);
             if names.is_empty() {
@@ -252,8 +283,8 @@ fn apply_utxo_assets(
     let cred = stake_credential_from_address_bytes(address);
     let key: AssetKey = (cred, address.to_vec());
     for (policy, names) in assets {
-        for (name, _qty) in names {
-            bump_one(holdings, &key, policy, name, add);
+        for (name, qty) in names {
+            bump_one(holdings, &key, policy, name, *qty, add);
         }
     }
 }
@@ -886,7 +917,7 @@ impl State {
                 cur_addr = Some(addr);
             }
             if cur_key.is_some() && count > 0 {
-                held.entry(policy).or_default().insert(name, count as u32);
+                held.entry(policy).or_default().insert(name, count as u64);
             }
         })
         .await?;
@@ -1435,13 +1466,21 @@ impl State {
             }
         };
         tracing::info!("loading snapshot from {}...", path.display());
-        match rmp_serde::from_slice::<(BlockSnapshot, FeedIndex, u64)>(&data) {
-            Ok((snap, fi, magic)) => {
+        match rmp_serde::from_slice::<(BlockSnapshot, FeedIndex, u64, u32)>(&data) {
+            Ok((snap, fi, magic, format)) => {
                 if magic != network_magic {
                     tracing::warn!(
                         "snapshot network mismatch: snapshot={}, expected={}",
                         magic,
                         network_magic
+                    );
+                    return None;
+                }
+                if format != SNAPSHOT_FORMAT {
+                    tracing::warn!(
+                        "snapshot format mismatch: snapshot={}, expected={} — rebuilding from db-sync",
+                        format,
+                        SNAPSHOT_FORMAT
                     );
                     return None;
                 }
@@ -1500,20 +1539,20 @@ mod tests {
         let policy = vec![0xaau8; 28];
         let name = b"TOKEN".to_vec();
 
-        bump_one(&mut holdings, &key, &policy, &name, true);
+        bump_one(&mut holdings, &key, &policy, &name, 1, true);
         assert_eq!(holdings[&key][&policy][&name], 1);
-        bump_one(&mut holdings, &key, &policy, &name, true);
+        bump_one(&mut holdings, &key, &policy, &name, 1, true);
         assert_eq!(holdings[&key][&policy][&name], 2);
-        bump_one(&mut holdings, &key, &policy, &name, false);
+        bump_one(&mut holdings, &key, &policy, &name, 1, false);
         assert_eq!(holdings[&key][&policy][&name], 1);
 
         // Last UTXO spent → name/policy dropped and the (now-empty) address key removed,
         // so the map's keys stay exactly the addresses currently holding ≥1 token.
-        bump_one(&mut holdings, &key, &policy, &name, false);
+        bump_one(&mut holdings, &key, &policy, &name, 1, false);
         assert!(holdings.is_empty());
 
         // Spending a token the map never had is a no-op.
-        bump_one(&mut holdings, &key, &policy, &name, false);
+        bump_one(&mut holdings, &key, &policy, &name, 1, false);
         assert!(holdings.is_empty());
     }
 
@@ -1531,7 +1570,7 @@ mod tests {
         // s0 empty → s1: addr1 gains the token.
         let s0: OrdMap<AssetKey, HeldAssets> = OrdMap::new();
         let mut s1 = s0.clone();
-        bump_one(&mut s1, &key1, &policy, &name, true);
+        bump_one(&mut s1, &key1, &policy, &name, 1, true);
 
         // Address diff: addr1 gains a tile; an untouched address sees nothing.
         assert_eq!(
@@ -1548,17 +1587,17 @@ mod tests {
 
         // s1 → s2: addr2 also gains it. The union already had it (addr1) → no change.
         let mut s2 = s1.clone();
-        bump_one(&mut s2, &key2, &policy, &name, true);
+        bump_one(&mut s2, &key2, &policy, &name, 1, true);
         assert_eq!(stake_tile_diff(&s1, &s2, &cred), (vec![], vec![]));
 
         // s2 → s3: addr1 drops it; addr2 still holds → union unchanged.
         let mut s3 = s2.clone();
-        bump_one(&mut s3, &key1, &policy, &name, false);
+        bump_one(&mut s3, &key1, &policy, &name, 1, false);
         assert_eq!(stake_tile_diff(&s2, &s3, &cred), (vec![], vec![]));
 
         // s3 → s4: addr2 drops it; nobody holds → union loses it.
         let mut s4 = s3.clone();
-        bump_one(&mut s4, &key2, &policy, &name, false);
+        bump_one(&mut s4, &key2, &policy, &name, 1, false);
         assert_eq!(
             stake_tile_diff(&s3, &s4, &cred),
             (vec![], vec![tok.clone()])

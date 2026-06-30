@@ -739,15 +739,16 @@ impl DbSync {
     /// `fetch_all`) so the result never materializes as one giant `Vec`. Counts per
     /// `(address_id, ident)` in a MATERIALIZED CTE on integer keys, then resolves the
     /// text address plus the asset's policy/name (binary — the map keys, fingerprint
-    /// derived on demand).
-    pub async fn asset_holdings_for_each<F: FnMut(String, Vec<u8>, Vec<u8>, i32)>(
+    /// derived on demand). `c` is the summed held quantity (not a UTXO count) — fits
+    /// i64 for any realistic per-address holding (≤ the token's total supply).
+    pub async fn asset_holdings_for_each<F: FnMut(String, Vec<u8>, Vec<u8>, i64)>(
         &self,
         last_tx_id: i64,
         mut f: F,
     ) -> Result<(), sqlx::Error> {
         let mut stream = sqlx::query!(
             r#"WITH held AS MATERIALIZED (
-                SELECT o.address_id, m.ident, COUNT(*)::int AS c
+                SELECT o.address_id, m.ident, SUM(m.quantity)::bigint AS c
                 FROM tx_out o
                 JOIN ma_tx_out m ON m.tx_out_id = o.id
                 WHERE o.tx_id <= $1

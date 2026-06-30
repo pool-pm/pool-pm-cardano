@@ -1615,6 +1615,14 @@ enum SlotAction {
 /// The `AssetDelta` SSE message: a block's watched-asset changes for this connection's
 /// subject. `added` carries ready-to-render tiles (same shape as the grid's HTTP
 /// page); `removed` carries fingerprints. `slot` lets the client revert on rollback.
+/// A removed tile: its `fingerprint` (which tile to drop) and `policy` (which group to
+/// decrement on the owned-assets grid — a fingerprint can't be mapped back to a policy).
+#[derive(serde::Serialize)]
+struct AssetRef {
+    policy: String,
+    fingerprint: String,
+}
+
 #[derive(serde::Serialize)]
 struct AssetDeltaWire<'a> {
     #[serde(rename = "type")]
@@ -1623,7 +1631,7 @@ struct AssetDeltaWire<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     added: Vec<AssetItem>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    removed: Vec<String>,
+    removed: Vec<AssetRef>,
 }
 
 /// Build this connection's `AssetDelta` SSE from the tile changes it derived by diffing
@@ -1633,24 +1641,28 @@ struct AssetDeltaWire<'a> {
 /// each token's policy+name. On rollback this is just the corrective diff — no special
 /// case (the client applies adds/removes the same way).
 fn asset_delta_event(
-    added: Vec<crate::state::Token>,
+    added: Vec<(Vec<u8>, Vec<u8>, u64)>,
     removed: Vec<crate::state::Token>,
     slot: u64,
     nftcdn: &NftcdnConfig,
+    decimals: &imbl::HashMap<String, u8>,
 ) -> Option<Result<SseEvent, Infallible>> {
     if added.is_empty() && removed.is_empty() {
         return None;
     }
     let added: Vec<AssetItem> = added
         .into_iter()
-        .map(|(policy, name)| {
-            let fingerprint = crate::model::asset_fingerprint(&policy, &name);
-            row_to_asset(nftcdn, fingerprint, name)
+        .map(|(policy, name, qty)| {
+            let policy_hex = hex::encode(&policy);
+            build_owned_tile(nftcdn, &policy_hex, &policy, name, qty, decimals)
         })
         .collect();
-    let removed: Vec<String> = removed
+    let removed: Vec<AssetRef> = removed
         .into_iter()
-        .map(|(policy, name)| crate::model::asset_fingerprint(&policy, &name))
+        .map(|(policy, name)| AssetRef {
+            fingerprint: crate::model::asset_fingerprint(&policy, &name),
+            policy: hex::encode(&policy),
+        })
         .collect();
     let json = serde_json::to_string(&AssetDeltaWire {
         kind: "AssetDelta",
@@ -1834,11 +1846,13 @@ fn build_live_stream(
                             | crate::event::Event::Rollback { slot } => *slot,
                             _ => 0,
                         };
-                        let curr = {
+                        let curr_dec = {
                             let guard = chain_state.read().await;
-                            guard.current().map(|s| s.asset_holdings.clone())
+                            guard
+                                .current()
+                                .map(|s| (s.asset_holdings.clone(), s.decimals.clone()))
                         };
-                        if let Some(curr) = curr {
+                        if let Some((curr, decimals)) = curr_dec {
                             if let Some(prev) = &prev_holdings {
                                 let (added, removed) = match &filter {
                                     filter::FeedFilter::Address(addr) => {
@@ -1862,7 +1876,28 @@ fn build_live_stream(
                                     }
                                     _ => (Vec::new(), Vec::new()),
                                 };
-                                if let Some(sse) = asset_delta_event(added, removed, slot, &nftcdn)
+                                // Resolve each added tile's current owned quantity from the
+                                // snapshot (the diff only carries which (policy, name) changed).
+                                let added: Vec<(Vec<u8>, Vec<u8>, u64)> = added
+                                    .into_iter()
+                                    .map(|(policy, name)| {
+                                        let qty = match &filter {
+                                            filter::FeedFilter::Address(addr) => address_bytes(addr)
+                                                .map(|ab| {
+                                                    let cred = crate::pallas::stake_credential_from_address_bytes(&ab);
+                                                    crate::state::address_token_qty(&curr, &(cred, ab), &policy, &name)
+                                                })
+                                                .unwrap_or(0),
+                                            filter::FeedFilter::Stake(payload) => {
+                                                crate::state::stake_token_qty(&curr, &payload[1..], &policy, &name)
+                                            }
+                                            _ => 0,
+                                        };
+                                        (policy, name, qty)
+                                    })
+                                    .collect();
+                                if let Some(sse) =
+                                    asset_delta_event(added, removed, slot, &nftcdn, &decimals)
                                 {
                                     buf.push_back(sse);
                                 }
@@ -2810,6 +2845,12 @@ struct AssetItem {
     fingerprint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    /// Policy id (hex) — lets the owned-assets grid group/route tiles by policy.
+    policy: String,
+    /// Owned quantity, decimals-formatted, present only when it isn't 1 (owned-assets
+    /// tiles only; absent on the policy-browse grid).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quantity: Option<String>,
     src: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     srcset: String,
@@ -2822,6 +2863,29 @@ struct AssetsResponse {
     cursor: Option<i64>,
     has_more: bool,
 }
+
+/// One policy's tile on the owned-assets grid: its held-asset `count` and up to
+/// `GROUP_SAMPLES` sample tiles for the stacked-card thumbnail. A `count` of 1
+/// renders as a plain asset tile on the frontend.
+#[derive(serde::Serialize)]
+struct AssetGroup {
+    policy: String,
+    count: usize,
+    samples: Vec<AssetItem>,
+}
+
+#[derive(serde::Serialize)]
+struct GroupsResponse {
+    groups: Vec<AssetGroup>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cursor: Option<i64>,
+    has_more: bool,
+}
+
+/// Sample thumbnails shown in a multi-asset policy's stacked-card tile.
+const GROUP_SAMPLES: usize = 4;
+/// Policy groups returned per owned-assets page.
+const GROUP_PAGE_SIZE: usize = 512;
 
 /// Assets returned per `/api/policy` page; the frontend keyset-paginates with
 /// `?cursor=<last id>`.
@@ -2877,15 +2941,29 @@ fn build_thumb_urls(nftcdn: &NftcdnConfig, fingerprint: &str) -> (String, String
     (src, srcset)
 }
 
-fn row_to_asset(nftcdn: &NftcdnConfig, fingerprint: String, name_bytes: Vec<u8>) -> AssetItem {
+fn row_to_asset(
+    nftcdn: &NftcdnConfig,
+    policy: &str,
+    fingerprint: String,
+    name_bytes: Vec<u8>,
+) -> AssetItem {
     let name = decode_asset_name(&name_bytes);
     let (src, srcset) = build_thumb_urls(nftcdn, &fingerprint);
     AssetItem {
         fingerprint,
         name,
+        policy: policy.to_string(),
+        quantity: None,
         src,
         srcset,
     }
+}
+
+/// The owned quantity formatted with the asset's decimals, or `None` when it's exactly 1
+/// (NFTs / single units — not worth showing).
+fn fmt_owned_qty(qty: u64, decimals: u8) -> Option<String> {
+    let s = crate::event::format_quantity(qty, decimals);
+    (s != "1").then_some(s)
 }
 
 /// List a policy's assets, most-recently-first-minted first, keyset-paginated on
@@ -2921,7 +2999,9 @@ async fn policy_assets(
 
     let assets = rows
         .into_iter()
-        .map(|(_, fingerprint, name_bytes)| row_to_asset(&state.nftcdn, fingerprint, name_bytes))
+        .map(|(_, fingerprint, name_bytes)| {
+            row_to_asset(&state.nftcdn, &policy_id, fingerprint, name_bytes)
+        })
         .collect();
 
     Ok(axum::Json(AssetsResponse {
@@ -2931,36 +3011,127 @@ async fn policy_assets(
     }))
 }
 
-/// List assets currently owned by a payment address (`addr1…`) or stake
-/// credential (`stake1…`), served **from the in-memory `asset_holdings` map** — no
-/// db scan (the old two-step `unspent_ids` path took tens of seconds for a whale).
-/// Unlike `policy_assets` it does **not** filter CIP-68 reference NFTs — owned
-/// listings show what the wallet actually holds — and it orders by `(policy, name)`
-/// (grouping each policy's tokens) rather than mint recency, with the `cursor` an
-/// integer offset into that stable order. Only `Address` and `Stake` filter kinds
-/// are accepted; pool/drep ids return 400.
+/// Held `(policy, name)` tokens for an address/stake subject, cloned off the
+/// `chain_state` lock (the clone is sync — no await held). Errs 400 for a
+/// non-address/stake filter or an unparseable address, 503 before the first snapshot.
+type HeldList = Vec<(Vec<u8>, Vec<u8>, u64)>;
+
+async fn collect_held(
+    state: &AppState,
+    filter: &filter::FeedFilter,
+) -> Result<(HeldList, imbl::HashMap<String, u8>), StatusCode> {
+    let guard = state.chain_state.read().await;
+    let snap = guard.current().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let held = match filter {
+        filter::FeedFilter::Address(addr) => {
+            let bytes = address_bytes(addr).ok_or(StatusCode::BAD_REQUEST)?;
+            snap.address_held_assets(&bytes)
+        }
+        filter::FeedFilter::Stake(payload) => snap.stake_held_assets(&payload[1..]),
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+    // Clone the (small, non-zero-only) decimals map so quantities can be formatted off
+    // the lock alongside URL signing.
+    Ok((held, snap.decimals.clone()))
+}
+
+/// Build an owned-assets tile: signed thumbnail URLs plus the decimals-formatted owned
+/// quantity (shown only when it isn't 1).
+fn build_owned_tile(
+    nftcdn: &NftcdnConfig,
+    policy_hex: &str,
+    policy: &[u8],
+    name: Vec<u8>,
+    qty: u64,
+    decimals: &imbl::HashMap<String, u8>,
+) -> AssetItem {
+    let fingerprint = crate::model::asset_fingerprint(policy, &name);
+    let dec = decimals.get(&fingerprint).copied().unwrap_or(0);
+    let mut item = row_to_asset(nftcdn, policy_hex, fingerprint, name);
+    item.quantity = fmt_owned_qty(qty, dec);
+    item
+}
+
+/// Assets owned by a payment address (`addr1…`) or stake credential (`stake1…`),
+/// **grouped by policy** — one tile per policy with its held `count` and up to
+/// `GROUP_SAMPLES` sample tiles (the frontend renders a stacked-card thumbnail and
+/// drills into `/{subject}/assets/{policy}`). Served from the in-memory
+/// `asset_holdings` map (no db scan); CIP-68 reference NFTs are *not* filtered — owned
+/// listings show what the wallet actually holds. `cursor` is an integer offset into the
+/// `(policy, name)`-sorted policy list. Only `Address`/`Stake` filters; others 400.
 async fn owned_assets(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Path(feed_id): axum::extract::Path<String>,
     axum::extract::Query(query): axum::extract::Query<PolicyQuery>,
+) -> Result<axum::Json<GroupsResponse>, StatusCode> {
+    let filter = filter::FeedFilter::from_path(&feed_id).ok_or(StatusCode::BAD_REQUEST)?;
+    let (mut held, decimals) = collect_held(&state, &filter).await?;
+    held.sort_unstable();
+
+    // held is sorted by (policy, name), so each policy's tokens are contiguous: count
+    // them all, keeping up to GROUP_SAMPLES (name, quantity) samples for the thumbnail.
+    let mut groups: Vec<(Vec<u8>, usize, Vec<(Vec<u8>, u64)>)> = Vec::new();
+    for (policy, name, qty) in held {
+        if let Some((p, count, samples)) = groups.last_mut() {
+            if *p == policy {
+                *count += 1;
+                if samples.len() < GROUP_SAMPLES {
+                    samples.push((name, qty));
+                }
+                continue;
+            }
+        }
+        groups.push((policy, 1, vec![(name, qty)]));
+    }
+
+    let total = groups.len();
+    let offset = query.cursor.unwrap_or(0).max(0) as usize;
+    let groups: Vec<AssetGroup> = groups
+        .into_iter()
+        .skip(offset)
+        .take(GROUP_PAGE_SIZE)
+        .map(|(policy, count, samples)| {
+            let policy_hex = hex::encode(&policy);
+            let samples = samples
+                .into_iter()
+                .map(|(name, qty)| {
+                    build_owned_tile(&state.nftcdn, &policy_hex, &policy, name, qty, &decimals)
+                })
+                .collect();
+            AssetGroup {
+                policy: policy_hex,
+                count,
+                samples,
+            }
+        })
+        .collect();
+    let next = offset + groups.len();
+    let has_more = next < total;
+    let cursor = has_more.then_some(next as i64);
+
+    Ok(axum::Json(GroupsResponse {
+        groups,
+        cursor,
+        has_more,
+    }))
+}
+
+/// One policy's held assets for a subject — the grouped grid's drill-down
+/// (`/{subject}/assets/{policy}`). Same in-memory source as `owned_assets`, filtered to
+/// the policy and returned flat (one tile per asset), offset-paginated.
+async fn owned_assets_by_policy(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path((feed_id, policy_id)): axum::extract::Path<(String, String)>,
+    axum::extract::Query(query): axum::extract::Query<PolicyQuery>,
 ) -> Result<axum::Json<AssetsResponse>, StatusCode> {
     let filter = filter::FeedFilter::from_path(&feed_id).ok_or(StatusCode::BAD_REQUEST)?;
+    if !is_valid_policy_id(&policy_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let policy = hex::decode(&policy_id).map_err(|_| StatusCode::BAD_REQUEST)?;
 
-    // Collect the held (policy, name) tokens under a brief read lock (a clone, no
-    // await), then sort + paginate + sign URLs off the lock so a page fetch never
-    // queues other readers behind the sink's pending writer.
-    let mut held = {
-        let guard = state.chain_state.read().await;
-        let snap = guard.current().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-        match &filter {
-            filter::FeedFilter::Address(addr) => {
-                let bytes = address_bytes(addr).ok_or(StatusCode::BAD_REQUEST)?;
-                snap.address_held_assets(&bytes)
-            }
-            filter::FeedFilter::Stake(payload) => snap.stake_held_assets(&payload[1..]),
-            _ => return Err(StatusCode::BAD_REQUEST),
-        }
-    };
+    let (mut held, decimals) = collect_held(&state, &filter).await?;
+    held.retain(|(p, _, _)| *p == policy);
     held.sort_unstable();
 
     let total = held.len();
@@ -2969,9 +3140,8 @@ async fn owned_assets(
         .into_iter()
         .skip(offset)
         .take(POLICY_PAGE_SIZE as usize)
-        .map(|(policy, name)| {
-            let fingerprint = crate::model::asset_fingerprint(&policy, &name);
-            row_to_asset(&state.nftcdn, fingerprint, name)
+        .map(|(_, name, qty)| {
+            build_owned_tile(&state.nftcdn, &policy_id, &policy, name, qty, &decimals)
         })
         .collect();
     let next = offset + assets.len();
@@ -3218,6 +3388,10 @@ pub async fn serve(config: ServeConfig) {
         .route("/api/asset/{fingerprint}", get(asset_media))
         .route("/api/policy/{policy_id}", get(policy_assets))
         .route("/api/assets/{feed_id}", get(owned_assets))
+        .route(
+            "/api/assets/{feed_id}/{policy}",
+            get(owned_assets_by_policy),
+        )
         .route("/api/feed/{feed_id}/older", get(older_blocks))
         .route("/api/search", get(search))
         .layer(CorsLayer::permissive())
