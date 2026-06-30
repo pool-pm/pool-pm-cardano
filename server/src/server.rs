@@ -3052,6 +3052,10 @@ fn build_owned_tile(
     item
 }
 
+/// One policy's owned tokens while grouping: `(policy, held count, up to `GROUP_SAMPLES`
+/// `(name, quantity)` sample tiles)`.
+type PolicyGroup = (Vec<u8>, usize, Vec<(Vec<u8>, u128)>);
+
 /// Assets owned by a payment address (`addr1…`) or stake credential (`stake1…`),
 /// **grouped by policy** — one tile per policy with its held `count` and up to
 /// `GROUP_SAMPLES` sample tiles (the frontend renders a stacked-card thumbnail and
@@ -3070,7 +3074,7 @@ async fn owned_assets(
 
     // held is sorted by (policy, name), so each policy's tokens are contiguous: count
     // them all, keeping up to GROUP_SAMPLES (name, quantity) samples for the thumbnail.
-    let mut groups: Vec<(Vec<u8>, usize, Vec<(Vec<u8>, u128)>)> = Vec::new();
+    let mut groups: Vec<PolicyGroup> = Vec::new();
     for (policy, name, qty) in held {
         if let Some((p, count, samples)) = groups.last_mut() {
             if *p == policy {

@@ -952,7 +952,7 @@ impl State {
             if let (Some(key), true) = (&cur_key, qty > 0) {
                 holdings.insert((key.clone(), asset_id(&policy, &name)), Qty(qty));
             }
-            if rows % 1_000_000 == 0 {
+            if rows.is_multiple_of(1_000_000) {
                 tracing::info!(
                     rss_mb = rss_mb(),
                     rows,
