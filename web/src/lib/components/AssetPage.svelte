@@ -38,7 +38,18 @@
 
   // Global on-chain metadata (shown with the first media), minus the media-technical
   // keys — the artwork itself stands in for those.
-  const META_SKIP = new Set(['name', 'ticker', 'image', 'logo', 'mediatype', 'files', 'decimals']);
+  const META_SKIP = new Set([
+    'name',
+    'ticker',
+    'image',
+    'logo',
+    'mediatype',
+    'files',
+    'decimals',
+    'src',
+    'imagesha256hash',
+    'srcsha256hash',
+  ]);
   const globalMeta = $derived.by(() => filterMeta(metadata, META_SKIP));
 
   // The metadata shown with each media: the global metadata for the first, and for the rest
