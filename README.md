@@ -2,30 +2,30 @@
 
 A Cardano blockchain indexer and real-time event server. It follows a Cardano node over
 **node-to-client (N2C)** for chain sync and the mempool, and fetches historical block
-bodies over **node-to-node (N2N)** for feed replay; it maintains versioned in-memory state
+bodies over **node-to-node (N2N)** for feed replay. It maintains versioned in-memory state
 and streams events to web clients over Server-Sent Events (SSE). Historical and aggregate
 data is read from a `cardano-db-sync` PostgreSQL database. The repository also contains the
 `pool.pm` web frontend.
 
 ## Overview
 
-- **Source** — an Oura N2C source streams chain events (blocks / rollbacks) from a local node.
-- **Sink** — maintains versioned state (UTXOs, stakes, rewards, pool/DRep delegations,
+- **Source**: an Oura N2C source streams chain events (blocks / rollbacks) from a local node.
+- **Sink**: maintains versioned state (UTXOs, stakes, rewards, pool/DRep delegations,
   per-address asset holdings, …) in persistent `imbl` structures with structural sharing,
   so each block is an O(1) snapshot and rollbacks are exact.
-- **Mempool** — monitors pending transactions via the LocalTxMonitor mini-protocol.
-- **SSE server** — an axum HTTP server streams per-subject feeds (address, stake, pool,
-  DRep, policy, asset) at `/events` + a small `/api/*` surface; a new connection is first
+- **Mempool**: monitors pending transactions via the LocalTxMonitor mini-protocol.
+- **SSE server**: an axum HTTP server streams per-subject feeds (address, stake, pool,
+  DRep, policy, asset) at `/events` + a small `/api/*` surface. A new connection is first
   replayed its subject's recent blocks (bodies fetched over N2N) before going live.
-- **Snapshot** — state is persisted to disk (msgpack) for fast restart; on a missing or
+- **Snapshot**: state is persisted to disk (msgpack) for fast restart. On a missing or
   incompatible snapshot the indexer rebuilds full state from db-sync.
 
 See `CLAUDE.md` for architecture details.
 
 ## Layout
 
-- `server/` — the Rust indexer + SSE server (Cargo workspace).
-- `web/` — the Svelte 5 + TypeScript frontend (Vite, pnpm).
+- `server/`: the Rust indexer + SSE server (Cargo workspace).
+- `web/`: the Svelte 5 + TypeScript frontend (Vite, pnpm).
 
 ## Dependencies
 
@@ -33,19 +33,19 @@ See `CLAUDE.md` for architecture details.
 
 - **Rust** stable, edition 2021 (built with 1.92).
 - Key crates: [`oura`](https://github.com/txpipe/oura) (N2C source) and
-  [`pallas`](https://github.com/txpipe/pallas) (Cardano primitives) from TxPipe; `gasket`
-  (stream pipeline), `sqlx` (PostgreSQL), `axum` + `tokio` (server), `imbl` (persistent maps).
+  [`pallas`](https://github.com/txpipe/pallas) (Cardano primitives) from TxPipe, plus `gasket`
+  (stream pipeline), `sqlx` (PostgreSQL), `axum` + `tokio` (server), and `imbl` (persistent maps).
 - `sqlx` validates SQL **at compile time** against a live db-sync database, so building
   needs `DATABASE_URL` set (see [Build](#build-1)).
 - Frontend: **Node.js** + **pnpm**, Vite, Svelte 5.
 
 ### Runtime
 
-- A synced **cardano-node** — provides the N2C socket and the N2N block-fetch address.
+- A synced **cardano-node**: provides the N2C socket and the N2N block-fetch address.
 - **cardano-db-sync** and its **PostgreSQL** database for the target network.
-- **NFTCDN** ([nftcdn.io](https://nftcdn.io)) — third-party CDN that serves and signs asset
+- **NFTCDN** ([nftcdn.io](https://nftcdn.io)): third-party CDN that serves and signs asset
   media (thumbnails / metadata). Mainnet requires an account (a subdomain + an HMAC signing
-  key); see [Environment](#environment).
+  key). See [Environment](#environment).
 
 ## Environment
 
@@ -54,13 +54,13 @@ environment.
 
 | Variable | When | Description |
 | --- | --- | --- |
-| `NFTCDN_KEY` | runtime (mainnet) | Base64 HMAC key from your NFTCDN account, used to sign asset-media URLs. **Required on mainnet** (the server panics on start without it). Preprod uses NFTCDN's public test key; preview serves unsigned URLs. The mainnet subdomain is hardcoded to `poolpm.nftcdn.io` in `server/src/nftcdn.rs` — a different deployer must set their own subdomain there alongside their key. |
-| `DATABASE_URL` | build | db-sync connection used by `sqlx` for compile-time query checking (build only; the runtime database is selected with `--db`). |
+| `NFTCDN_KEY` | runtime (mainnet) | Base64 HMAC key from your NFTCDN account, used to sign asset-media URLs. **Required on mainnet** (the server panics on start without it). Preprod uses NFTCDN's public test key, and preview serves unsigned URLs. The mainnet subdomain is hardcoded to `poolpm.nftcdn.io` in `server/src/nftcdn.rs`. A different deployer must set their own subdomain there alongside their key. |
+| `DATABASE_URL` | build | db-sync connection used by `sqlx` for compile-time query checking (build only, the runtime database is selected with `--db`). |
 
 ## Hardware
 
-The indexer keeps full per-address state in memory; on **mainnet** the steady-state
-resident set is roughly **~12 GB** — budget **≥ 16 GB RAM** for the indexer alone. A
+The indexer keeps full per-address state in memory. On **mainnet** the steady-state
+resident set is roughly **~12 GB**, so budget **≥ 16 GB RAM** for the indexer alone. A
 complete node + db-sync stack additionally needs a large PostgreSQL (≈ 1 TB NVMe for
 mainnet), so a single-host deployment realistically wants **64 GB+ RAM** and fast SSD/NVMe
 storage.
@@ -73,15 +73,15 @@ these non-default `insert_options` (in its config YAML):
 ```yaml
 insert_options:
   tx_out:
-    value: consumed          # keep `tx_out.consumed_by_tx_id` — required for all the
+    value: consumed          # keep `tx_out.consumed_by_tx_id`, required for all the
                              # unspent/consumed UTXO queries (balances, holdings, feeds)
-    use_address_table: true  # tx_out references `address(id)` via `address_id`; the
+    use_address_table: true  # tx_out references `address(id)` via `address_id`, and the
                              # indexer joins the `address` table and reads `address.raw`
-  offchain_pool_data: enable # `off_chain_pool_data` — pool tickers
-  offchain_vote_data: enable # `off_chain_vote_data` — DRep names + governance metadata
+  offchain_pool_data: enable # `off_chain_pool_data`: pool tickers
+  offchain_vote_data: enable # `off_chain_vote_data`: DRep names + governance metadata
 ```
 
-Governance and multi-asset inserts must also be on — both are db-sync defaults, so just
+Governance and multi-asset inserts must also be on. Both are db-sync defaults, so just
 don't disable them (the indexer reads `delegation_vote`, `drep_*`, `reward_rest`,
 `multi_asset`, `ma_tx_out`, `ma_tx_mint`). The two `tx_out` settings change the schema, so
 toggling them on an existing database requires a full db-sync resync.
@@ -93,15 +93,15 @@ smaller (these are the space-saving choices, not requirements):
 insert_options:
   tx_out:
     force_tx_in: false   # `tx_in` is unused (with value: consumed it's redundant)
-  pool_stat: disable     # per-epoch pool stats — unused
-  tx_cbor: disable       # raw transaction CBOR — unused
+  pool_stat: disable     # per-epoch pool stats (unused)
+  tx_cbor: disable       # raw transaction CBOR (unused)
 ```
 
 ## PostgreSQL indexes
 
 The indexer needs custom indexes beyond db-sync's defaults for acceptable query latency.
 Create them as the **owner of the db-sync tables** (the role db-sync runs as, e.g.
-`cardano`). `CREATE INDEX CONCURRENTLY` must run **outside a transaction** — execute the
+`cardano`). `CREATE INDEX CONCURRENTLY` must run **outside a transaction**. Execute the
 statements one at a time, not inside a `BEGIN`/`COMMIT` block.
 
 ```sql
@@ -131,7 +131,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_drep_registration_drep_hash_id_id ON
 ## Build
 
 ```bash
-# Server — DATABASE_URL is required for sqlx's compile-time query checks.
+# Server: DATABASE_URL is required for sqlx's compile-time query checks.
 export DATABASE_URL='postgresql:///mainnet?host=/var/run/postgresql'
 cargo build --release          # -> target/release/server
 
@@ -156,17 +156,17 @@ cd web && pnpm install && pnpm build   # -> web/dist
 | `-n, --network <NET>` | `mainnet` | `mainnet`, `preprod`, or `preview` |
 | `-d, --db <URL>` | `postgresql:///NETWORK?host=/var/run/postgresql` | db-sync connection (`NETWORK` is replaced by the network name) |
 | `--n2n <ADDR:PORT>` | `127.0.0.1:3001` | node-to-node address for block-fetch (feed replay) |
-| `-l, --listen <ADDR:PORT>` | _(off)_ | SSE server address; omit to disable the server |
+| `-l, --listen <ADDR:PORT>` | _(off)_ | SSE server address (omit to disable the server) |
 | `-m, --metrics <ADDR:PORT｜default>` | _(off)_ | Prometheus metrics endpoint |
 | `-o, --output <DIR>` | `/tmp/cardano` | snapshot / cursor files |
 | `--snapshot-depth <N>` | `8` | blocks behind tip for the persisted snapshot |
 | `-v, --verbose` | _(off)_ | DEBUG logging |
 
-First start (or a missing/incompatible snapshot) triggers a full rebuild from db-sync — an
-expensive cold start that runs the heavy queries the indexes above support; later restarts
+First start (or a missing/incompatible snapshot) triggers a full rebuild from db-sync, an
+expensive cold start that runs the heavy queries the indexes above support. Later restarts
 resume from the snapshot in `--output`.
 
-Serve `web/dist` with any static web server / reverse proxy; the frontend calls the
+Serve `web/dist` with any static web server / reverse proxy. The frontend calls the
 server's `/events` and `/api/*` endpoints.
 
 ## Development
@@ -191,5 +191,7 @@ cd web && pnpm dev         # frontend dev server (Vite)
 
 ## License
 
-[MIT](LICENSE). Compatible with the project's dependency licenses (Apache-2.0: oura,
-pallas, gasket; MIT / Apache-2.0: tokio, sqlx, axum, …; MPL-2.0: imbl).
+[MIT](LICENSE)
+
+Compatible with the project's dependency licenses: Apache-2.0 (oura, pallas, gasket), MIT or
+Apache-2.0 (tokio, sqlx, axum, …), and MPL-2.0 (imbl).
