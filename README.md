@@ -65,6 +65,38 @@ complete node + db-sync stack additionally needs a large PostgreSQL (≈ 1 TB NV
 mainnet), so a single-host deployment realistically wants **64 GB+ RAM** and fast SSD/NVMe
 storage.
 
+## cardano-db-sync configuration
+
+The indexer is written against a specific db-sync schema variant, so db-sync must run with
+these non-default `insert_options` (in its config YAML):
+
+```yaml
+insert_options:
+  tx_out:
+    value: consumed          # keep `tx_out.consumed_by_tx_id` — required for all the
+                             # unspent/consumed UTXO queries (balances, holdings, feeds)
+    use_address_table: true  # tx_out references `address(id)` via `address_id`; the
+                             # indexer joins the `address` table and reads `address.raw`
+  offchain_pool_data: enable # `off_chain_pool_data` — pool tickers
+  offchain_vote_data: enable # `off_chain_vote_data` — DRep names + governance metadata
+```
+
+Governance and multi-asset inserts must also be on — both are db-sync defaults, so just
+don't disable them (the indexer reads `delegation_vote`, `drep_*`, `reward_rest`,
+`multi_asset`, `ma_tx_out`, `ma_tx_mint`). The two `tx_out` settings change the schema, so
+toggling them on an existing database requires a full db-sync resync.
+
+The indexer doesn't read the following, so they can be left off to keep the database
+smaller (these are the space-saving choices, not requirements):
+
+```yaml
+insert_options:
+  tx_out:
+    force_tx_in: false   # `tx_in` is unused (with value: consumed it's redundant)
+  pool_stat: disable     # per-epoch pool stats — unused
+  tx_cbor: disable       # raw transaction CBOR — unused
+```
+
 ## PostgreSQL indexes
 
 The indexer needs custom indexes beyond db-sync's defaults for acceptable query latency.
