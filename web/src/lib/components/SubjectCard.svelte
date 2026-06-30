@@ -61,11 +61,11 @@
   {@const color = poolColor(stake.stake_address)}
   {@const total = (BigInt(stake.balance ?? '0') + BigInt(stake.rewards ?? '0')).toString()}
   <div class="subject-card" class:landscape style:--subject-color={color}>
+    <span class="stake-address" style:color title={stake.stake_address}>{stake.stake_address}</span>
     <span class="pool-stake">{formatAda(total)}</span>
     {#if stake.rewards && stake.rewards !== '0'}
       <span class="pool-delegators">incl. {formatAda(stake.rewards)} rewards</span>
     {/if}
-    <span class="stake-address" style:color title={stake.stake_address}>{stake.stake_address}</span>
     <div class="pool-params">
       {#if stake.pool_id}
         <div class="pool-param">
@@ -105,30 +105,31 @@
 {:else if address}
   {@const color = poolColor(address.address)}
   <div class="subject-card" class:landscape style:--subject-color={color}>
+    <span class="stake-address" style:color title={address.address}>{address.address}</span>
     {#if address.balance}
       <span class="pool-stake">{formatAda(address.balance)}</span>
     {/if}
     {#if address.handle}
-      <span class="stake-address" style:color>${address.handle}</span>
+      <span class="handle"><span class="handle-dollar">$</span>{address.handle}</span>
     {/if}
-    <span class="stake-address" style:color title={address.address}>{address.address}</span>
     <div class="pool-params">
-      {#if address.stake_address}
-        <div class="pool-param">
-          <span class="pool-param-label">stake</span>
-          <a
-            class="pool-param-value stake-link"
-            style:color
-            href="/{address.stake_address}"
-            title={address.stake_address}>{address.stake_address}</a
-          >
-        </div>
-      {/if}
       {#if address.assets_count > 0}
-        <div class="pool-param">
+        <a class="pool-param pool-param-link" href="/{address.address}/assets">
           <span class="pool-param-label">assets</span>
-          <a class="pool-param-value stake-link" style:color href="/{address.address}/assets">{address.assets_count}</a>
-        </div>
+          <span class="pool-param-value">{address.assets_count}</span>
+        </a>
+      {/if}
+      {#if address.stake_address}
+        <a class="pool-param pool-param-link" href="/{address.stake_address}" title={address.stake_address}>
+          <span class="pool-param-label">stake</span>
+          <span class="pool-param-value">{formatAda(address.stake_value ?? '0')}</span>
+        </a>
+      {/if}
+      {#if address.stake_address && address.stake_assets_count && address.stake_assets_count !== address.assets_count}
+        <a class="pool-param pool-param-link" href="/{address.stake_address}/assets">
+          <span class="pool-param-label">stake assets</span>
+          <span class="pool-param-value">{address.stake_assets_count}</span>
+        </a>
       {/if}
     </div>
   </div>
@@ -184,6 +185,13 @@
     direction: ltr;
   }
 
+  /* Stake / address cards lead with the small address line; pull the content up so
+     it sits nearer the top ridge rather than floating low. (pool/drep/cardano cards
+     have no `.stake-address`, so they keep the default padding.) */
+  .subject-card:has(.stake-address) {
+    padding-top: 10px;
+  }
+
   .pool-name {
     font-weight: 700;
     font-size: 24px;
@@ -207,7 +215,7 @@
   /* Full address stays in the DOM (copyable / select-all), clipped to one line. */
   .stake-address {
     font-weight: 600;
-    font-size: 16px;
+    font-size: 13px;
     line-height: 1.2;
     max-width: 100%;
     white-space: nowrap;
@@ -220,6 +228,24 @@
      inline; ellipsis from .pool-param-value); no underline. */
   .stake-link {
     text-decoration: none;
+  }
+
+  /* ADA Handle under the address balance: white name with a dimmer `$` sigil (not
+     the address accent color). One line, copyable. */
+  .handle {
+    font-weight: 600;
+    font-size: 13px;
+    line-height: 1.2;
+    color: white;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    user-select: all;
+  }
+
+  .handle-dollar {
+    color: rgb(255 255 255 / 0.55);
   }
 
   .pool-stake {
@@ -258,6 +284,22 @@
 
   .pool-params .pool-param + .pool-param {
     border-left: 1px solid rgb(255 255 255 / 0.15);
+  }
+
+  /* A whole param that is itself the link (address feed): the entire container is
+     clickable, not just the value. Neutral colors (the label/value set their own);
+     a faint hover tint signals it's interactive without an accent color. */
+  .pool-param-link {
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .pool-param-link:hover .pool-param-value {
+    color: white;
+  }
+
+  .pool-param-link:hover .pool-param-label {
+    color: var(--text);
   }
 
   .pool-param-label {

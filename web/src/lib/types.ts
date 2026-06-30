@@ -287,6 +287,12 @@ export interface AddressInfo {
   address: string;
   balance?: string;
   stake_address?: string;
+  /** Total live stake (balance + rewards) of this address's stake credential,
+   * lovelace as a string; absent for enterprise/pointer addresses. */
+  stake_value?: string;
+  /** Distinct multi-assets across this address's whole stake credential; absent
+   * for enterprise/pointer addresses. */
+  stake_assets_count?: number;
   handle?: string;
   /** Distinct multi-assets currently held; always present (in-memory),
    * updated live per block. */

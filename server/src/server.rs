@@ -573,6 +573,15 @@ struct AddressEvent<'a> {
     balance: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     stake_address: Option<String>,
+    /// Total live stake of this address's stake credential (`balance + rewards`,
+    /// across all of the credential's addresses), lovelace as a string. `None` for
+    /// enterprise/pointer addresses with no stake part. Snapshot-live like `balance`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stake_value: Option<String>,
+    /// Distinct multi-assets across every address of this address's stake credential
+    /// (the same union the stake feed shows). `None` for addresses with no stake part.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stake_assets_count: Option<u32>,
     /// ADA Handle currently held by this address, if any (without the `$`).
     #[serde(skip_serializing_if = "Option::is_none")]
     handle: Option<String>,
@@ -602,11 +611,30 @@ fn address_sse_event(
         .and_then(|s| s.address_balances.get(addr_bytes).copied())
         .unwrap_or(0);
     let handle = snap.and_then(|s| s.handle_for(address));
+    // Stake-credential-level values, keyed by the reward-address `hash_raw` minus its
+    // 1-byte header. Both summed/unioned across all of the credential's addresses, the
+    // same figures the linked stake feed shows: `stake_value` = balance + rewards;
+    // `stake_assets_count` = distinct multi-assets. Computed only when the address
+    // actually re-emits (its own balance/asset change), not every block.
+    let stake_hash_raw = stake_hash_raw_of(address, mainnet);
+    let stake_value = stake_hash_raw.as_deref().map(|hash_raw| {
+        let cred = &hash_raw[1..];
+        snap.map(|s| {
+            s.stakes.get(cred).copied().unwrap_or(0) + s.rewards.get(cred).copied().unwrap_or(0)
+        })
+        .unwrap_or(0)
+        .to_string()
+    });
+    let stake_assets_count = stake_hash_raw
+        .as_deref()
+        .and_then(|hash_raw| snap.map(|s| s.stake_asset_count(&hash_raw[1..])));
     let json = serde_json::to_string(&AddressEvent {
         kind: "Address",
         address,
         balance: balance.to_string(),
         stake_address: stake_address_of(address, mainnet),
+        stake_value,
+        stake_assets_count,
         handle,
         assets_count,
     })
