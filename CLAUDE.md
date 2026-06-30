@@ -46,10 +46,10 @@ Cardano Node (N2C) → Source Stage (Oura) → Sink Stage → Cursor Stage (JSON
 ```
 
 - **Source**: Oura N2C source connects to a Cardano node and emits `ChainEvent`s (blocks or rollback points).
-- **Sink** (`sink.rs`): Processes chain events, maintains versioned in-memory state using immutable data structures (`im` crate) with structural sharing. On blocks: updates UTXOs, sends `Event::Block`. On rollback: reverts state, sends `Event::Rollback`.
+- **Sink** (`sink.rs`): Processes chain events, maintains versioned in-memory state using immutable data structures (`imbl` crate) with structural sharing. On blocks: updates UTXOs, sends `Event::Block`. On rollback: reverts state, sends `Event::Rollback`.
 - **Mempool** (`mempool.rs`): Monitors the node mempool via LocalTxMonitor mini-protocol. Decodes transactions, resolves input addresses from UTXO state, computes CIP-14 asset fingerprints, and sends `Event::MempoolTx`.
 - **Cursor**: Persists the current chain position to a JSON file on disk (kept for debugging, not used for resume).
-- **Snapshot**: Serializes a `BlockSnapshot` to `{output}/snapshot.bin` using bitcode for fast resume on restart (see Snapshot Persistence below).
+- **Snapshot**: Serializes a `BlockSnapshot` to `{output}/snapshot.bin` using MessagePack (`rmp-serde`) for fast resume on restart (see Snapshot Persistence below).
 - **SSE Server** (`server.rs`): axum HTTP server with `GET /events` endpoint that streams events as JSON via Server-Sent Events.
 - **Daemon** (`daemon.rs`): Orchestrates the full Gasket pipeline with retry policies, optional Prometheus metrics, and SSE server.
 
@@ -57,18 +57,18 @@ Cardano Node (N2C) → Source Stage (Oura) → Sink Stage → Cursor Stage (JSON
 
 - `args.rs` — CLI argument parsing via clap (socket, network, db connection, metrics endpoint, listen address, output dir)
 - `chain.rs` — Cardano network configuration (mainnet/preprod/preview magic numbers via Oura GenesisValues)
-- `dbsync.rs` — Async PostgreSQL queries via sqlx against cardano-db-sync schema (pools, delegations, UTXOs, stakes)
+- `state/dbsync.rs` — Async PostgreSQL queries via sqlx against cardano-db-sync schema (pools, delegations, UTXOs, stakes)
 - `event.rs` — Shared event types: `MempoolTx`, `Block`, `Rollback` (serializable for SSE)
 - `model.rs` — Data structures: `Pool`, `TxOutput`, CIP-14 asset fingerprint computation
-- `state.rs` — Versioned state with `BlockSnapshot` history and structural sharing for O(1) rollbacks
+- `state/mod.rs` — Versioned state with `BlockSnapshot` history and structural sharing for O(1) rollbacks; `state/feed_index.rs` holds the 5-day per-subject feed index
 - `mempool.rs` — Gasket worker stage for mempool monitoring via LocalTxMonitor
 - `sink.rs` — Gasket worker stage that processes chain events into indexed state
 - `server.rs` — axum SSE server for streaming events to web clients
 
 ### Key Patterns
 
-- **Immutable data structures**: State is held in `im::HashMap`/`im::HashSet` for safe structural sharing and efficient rollbacks.
-- **Versioned state**: `State` maintains a `Vec<BlockSnapshot>` history; each snapshot shares structure with the previous via `im` crate O(1) clone. Always store new per-block data in `BlockSnapshot` so rollbacks are handled automatically by history truncation — never maintain separate delta/rollback logic.
+- **Immutable data structures**: State is held in `imbl::OrdMap`/`imbl::HashMap`/`imbl::HashSet` for safe structural sharing and efficient rollbacks.
+- **Versioned state**: `State` maintains a `Vec<BlockSnapshot>` history; each snapshot shares structure with the previous via `imbl` crate O(1) clone. Always store new per-block data in `BlockSnapshot` so rollbacks are handled automatically by history truncation — never maintain separate delta/rollback logic.
 - **Rollback correctness is critical**: Every new feature that tracks or derives data from blocks must handle rollbacks correctly. A `Rollback { slot }` event removes all blocks with `slot > rollback_slot` from the event bus, state history, and frontend sections. If a feature maintains counters, caches, or derived state from block data, it must revert cleanly on rollback — do not add features that only increment/accumulate without a rollback path.
 - **Event broadcasting**: `tokio::sync::broadcast` channel fans out events from pipeline stages to multiple SSE clients.
 - **Gasket error handling**: Worker methods return `gasket::error::Error` with `or_panic()` / `or_retry()` combinators.
@@ -127,6 +127,26 @@ assuming feasible *or* infeasible):
 
 The per-block arithmetic is isolated in `pre_block_stake` and unit-tested; keep new
 variants equally testable (pure function over the event lists).
+
+### Per-address asset holdings (flat composite-key map)
+
+`asset_holdings` (`state/mod.rs`) tracks every UTXO-held token in a single flat
+`imbl::OrdMap<HeldKey, Qty>`, keyed by the composite `((cred, addr), policy++name)`. A
+single large map keeps `imbl`'s fixed-capacity node chunks densely packed. Any change here
+must preserve these properties:
+
+- **Reads are prefix range scans** over the sorted composite key: an address's tokens are
+  the contiguous `((cred, addr), …)` range (`addr_range`); a stake credential's are the
+  `(Some(cred), …)` range (`cred_range`), deduping/summing the same asset across the
+  credential's addresses. No per-address sub-map to index into.
+- **Whale-safe mutation & diffs**: a block only moves a few tokens, so `bump_one` is an
+  O(log n) point op (prune the entry at qty 0), and live grid deltas walk `prev.diff(curr)`
+  (O(block changes), structural) filtered by the subject's key prefix — never an
+  O(total holdings) scan per block.
+- **Exact quantities**: the leaf `Qty` is a `u128` with variable-length serde (1 byte for
+  small values, a `(lo, hi)` pair above `u64`) — no clamping.
+- **Rollback is automatic** (the map lives in `BlockSnapshot` history); bump
+  `SNAPSHOT_FORMAT` on any persisted-shape change so old snapshots rebuild from db-sync.
 
 ## Runtime Configuration
 

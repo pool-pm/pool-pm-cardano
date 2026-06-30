@@ -59,10 +59,10 @@ environment.
 
 ## Hardware
 
-The indexer keeps full per-address state in memory; on **mainnet** this is tens of GB
-(currently ≈ 20 GB+) — budget **≥ 32 GB RAM** for the indexer. A complete node + db-sync
-stack additionally needs a large PostgreSQL (≈ 1 TB NVMe for mainnet), so a single-host
-deployment realistically wants **64 GB+ RAM** and fast SSD/NVMe storage.
+The indexer keeps full per-address state in memory; on **mainnet** the resident set is on
+the order of **~10 GB** — budget **≥ 16 GB RAM** for the indexer alone. A complete node +
+db-sync stack additionally needs a large PostgreSQL (≈ 1 TB NVMe for mainnet), so a
+single-host deployment realistically wants **64 GB+ RAM** and fast SSD/NVMe storage.
 
 ## PostgreSQL indexes
 
