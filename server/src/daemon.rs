@@ -113,7 +113,14 @@ pub fn run(args: Args) -> Result<(), Error> {
     // that would otherwise OOM with no log line in between.
     std::thread::spawn(|| loop {
         std::thread::sleep(std::time::Duration::from_secs(3));
-        tracing::info!(rss_mb = crate::state::rss_mb(), "mem watchdog");
+        let (allocated, resident, retained) = crate::state::alloc_stats_mb();
+        tracing::info!(
+            rss_mb = crate::state::rss_mb(),
+            je_alloc_mb = allocated,
+            je_resident_mb = resident,
+            je_retained_mb = retained,
+            "mem watchdog"
+        );
     });
 
     let nftcdn = NftcdnConfig::new(&args.network);
