@@ -272,3 +272,92 @@ impl FeedIndex {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bref(slot: u64) -> BlockRef {
+        BlockRef {
+            slot,
+            hash: format!("h{slot}"),
+            number: slot,
+        }
+    }
+
+    fn deleg(
+        slot: u64,
+        cred: &[u8],
+        from: Option<Vec<u8>>,
+        to: Option<Vec<u8>>,
+    ) -> DelegationEntry {
+        DelegationEntry {
+            slot,
+            block_hash: format!("b{slot}"),
+            block_no: slot,
+            tx_hash: format!("t{slot}"),
+            cred: cred.to_vec(),
+            live_stake: 1000,
+            from,
+            to,
+        }
+    }
+
+    /// Rollback drops every event with `slot > rollback_slot` (the reorg case) and prune
+    /// drops every event with `slot < boundary` (the 5-day window). Both must keep the
+    /// per-target/per-cred indexes consistent after truncation.
+    #[test]
+    fn rollback_drops_after_slot_and_prune_drops_before_boundary() {
+        let pool = vec![0x01u8; 28];
+        let other_pool = vec![0x02u8; 28];
+        let cred = vec![0xaau8; 28];
+        let drep = [&[0x00u8][..], &[0xd1u8; 28]].concat();
+
+        let mut fi = FeedIndex::new();
+        fi.add_pool_minted(pool.clone(), bref(100));
+        fi.add_pool_minted(pool.clone(), bref(200));
+        fi.add_pool_minted(pool.clone(), bref(300));
+        fi.add_delegation_event(deleg(
+            150,
+            &cred,
+            Some(pool.clone()),
+            Some(other_pool.clone()),
+        ));
+        fi.add_delegation_event(deleg(250, &cred, Some(pool.clone()), None));
+        let mut dreps = HashSet::new();
+        dreps.insert(drep.clone());
+        fi.add_drep_stake_changes(dreps, bref(220));
+        fi.add_drep_delegation_event(deleg(180, &cred, None, Some(drep.clone())));
+
+        // Initial state.
+        assert_eq!(fi.pool_minted_blocks(&pool).len(), 3);
+        assert_eq!(fi.pool_delegation_entries(&pool).len(), 2); // both events reference `pool`
+        assert_eq!(fi.delegation_entries_by_cred(&cred).0.len(), 2);
+        assert_eq!(fi.drep_stake_change_blocks(&drep).len(), 1);
+        assert_eq!(fi.drep_delegation_entries(&drep).len(), 1);
+
+        // Rollback to 200: drop slot > 200.
+        fi.rollback(200);
+        let minted: Vec<u64> = fi
+            .pool_minted_blocks(&pool)
+            .iter()
+            .map(|r| r.slot)
+            .collect();
+        assert_eq!(minted, vec![100, 200]); // 300 dropped
+        assert_eq!(fi.pool_delegation_entries(&pool).len(), 1); // 250 dropped, 150 kept
+        assert_eq!(fi.delegation_entries_by_cred(&cred).0.len(), 1);
+        assert_eq!(fi.drep_stake_change_blocks(&drep).len(), 0); // 220 dropped, emptied key removed
+        assert_eq!(fi.drep_delegation_entries(&drep).len(), 1); // 180 kept
+
+        // Prune to boundary 150: drop slot < 150 (slot == boundary is kept).
+        fi.prune(150);
+        let minted: Vec<u64> = fi
+            .pool_minted_blocks(&pool)
+            .iter()
+            .map(|r| r.slot)
+            .collect();
+        assert_eq!(minted, vec![200]); // 100 dropped
+        assert_eq!(fi.delegation_entries_by_cred(&cred).0.len(), 1); // slot 150 kept
+        assert_eq!(fi.drep_delegation_entries(&drep).len(), 1); // slot 180 kept
+    }
+}

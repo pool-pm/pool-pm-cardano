@@ -381,4 +381,45 @@ mod tests {
         let lines = metadata_lines(&[(CIP20_MESSAGE, &opaque())]);
         assert_eq!(lines, vec!["metadata 674"]);
     }
+
+    #[test]
+    fn stake_credential_extraction_by_address_type() {
+        let cred = vec![0x42u8; 28];
+        // Base address (type 0): 1 header + 28 payment + 28 stake.
+        let base = [&[0x01u8][..], &[0x11; 28], &cred].concat();
+        assert_eq!(
+            stake_credential_from_address_bytes(&base),
+            Some(cred.clone())
+        );
+        // Reward address (type 14, header 0xe1): 1 header + 28 stake.
+        let reward = [&[0xe1u8][..], &cred].concat();
+        assert_eq!(
+            stake_credential_from_address_bytes(&reward),
+            Some(cred.clone())
+        );
+        // Enterprise address (type 6, header 0x61): no stake part.
+        let enterprise = [&[0x61u8][..], &[0x11; 28]].concat();
+        assert_eq!(stake_credential_from_address_bytes(&enterprise), None);
+        // Empty / too short.
+        assert_eq!(stake_credential_from_address_bytes(&[]), None);
+        assert_eq!(stake_credential_from_address_bytes(&[0x01, 0x02]), None);
+    }
+
+    #[test]
+    fn stake_address_from_cred_bytes_roundtrips() {
+        let cred = vec![0x42u8; 28];
+
+        let mainnet = stake_address_from_cred_bytes(&cred, true);
+        assert!(mainnet.starts_with("stake1"));
+        let (hrp, data) = bech32::decode(&mainnet).unwrap();
+        assert_eq!(hrp.as_str(), "stake");
+        assert_eq!(data[0], 0xe1); // key-cred mainnet reward-address header
+        assert_eq!(&data[1..], cred.as_slice());
+
+        let testnet = stake_address_from_cred_bytes(&cred, false);
+        assert!(testnet.starts_with("stake_test"));
+        let (_, data) = bech32::decode(&testnet).unwrap();
+        assert_eq!(data[0], 0xe0);
+        assert_eq!(&data[1..], cred.as_slice());
+    }
 }

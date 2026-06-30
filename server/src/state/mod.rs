@@ -2016,4 +2016,171 @@ mod tests {
             "rollback did not restore the initial snapshot exactly"
         );
     }
+
+    /// `write_snapshot` → `load_snapshot` round-trips the whole snapshot (including a
+    /// holding above `u64`, exercising the variable-length `Qty` serde), and load rejects
+    /// a wrong network magic or an incompatible `SNAPSHOT_FORMAT`.
+    #[test]
+    fn snapshot_roundtrips_and_gates_on_magic_and_format() {
+        use rust_decimal::Decimal;
+
+        let mut snap = BlockSnapshot {
+            slot: 4242,
+            block_hash: Some("deadbeef".into()),
+            last_epoch: Some(7),
+            total_staked: 9_999,
+            address_balances_populated: true,
+            asset_holdings_populated: true,
+            ..BlockSnapshot::default()
+        };
+        snap.stakes.insert(vec![0xaa; 28], 123);
+        snap.rewards.insert(vec![0xaa; 28], 45);
+        snap.address_balances.insert(vec![0x01; 57], 7_000_000);
+        snap.utxos.insert(
+            (vec![0xf1; 32], 0),
+            TxOutput {
+                lovelaces: Decimal::from(7_000_000u64),
+                address: vec![0x01; 57],
+                assets: vec![],
+            },
+        );
+        // A holding above u64 — the variable-length Qty path must survive serialization.
+        let big = u128::from(u64::MAX) + 1000;
+        let hkey = (
+            (Some(vec![0xcc; 28]), vec![0x01; 57]),
+            asset_id(&[0x11; 28], b"BIG"),
+        );
+        snap.asset_holdings.insert(hkey.clone(), Qty(big));
+        let mut poolp = Pool::from_registration(vec![0x01; 28], 1, 2, 3, 100);
+        poolp.ticker = Some("TICK".into());
+        poolp.blocks = 9;
+        snap.pools.insert(hex::encode([0x01u8; 28]), poolp);
+        snap.dreps.insert(
+            [&[0x00u8][..], &[0xd1u8; 28]].concat(),
+            DRep {
+                hash_bytes: vec![0xd1; 28],
+                given_name: Some("D".into()),
+                active_until: Some(40),
+            },
+        );
+        snap.decimals.insert("fp".into(), 6);
+
+        let mut fi = FeedIndex::new();
+        fi.add_pool_minted(
+            vec![0x01; 28],
+            crate::state::feed_index::BlockRef {
+                slot: 4240,
+                hash: "h".into(),
+                number: 1,
+            },
+        );
+
+        let magic = 764_824_073u64;
+        let path = std::env::temp_dir().join("poolpm_snapshot_roundtrip_test.bin");
+        write_snapshot(&path, &snap, &fi, magic).unwrap();
+
+        // Wrong network magic → rejected.
+        assert!(State::load_snapshot(&path, magic + 1).is_none());
+
+        // Correct magic → the entire snapshot round-trips, including the >u64 holding.
+        let (loaded, loaded_fi) = State::load_snapshot(&path, magic).unwrap();
+        assert!(loaded == snap, "snapshot did not round-trip exactly");
+        assert_eq!(loaded.asset_holdings.get(&hkey).unwrap().0, big);
+        assert_eq!(loaded_fi.pool_minted_blocks(&[0x01; 28]).len(), 1);
+
+        // A snapshot tagged with a different SNAPSHOT_FORMAT → rejected (forces rebuild).
+        let bytes = rmp_serde::to_vec(&(&snap, &fi, magic, SNAPSHOT_FORMAT + 1)).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(State::load_snapshot(&path, magic).is_none());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// In-memory asset-holding accessors (the replacements for the old db `COUNT(DISTINCT)`
+    /// / `SUM`): a stake credential's count is the *union* over its addresses (same asset on
+    /// two addresses counts once) and its held amounts are *summed*; enterprise (no-stake)
+    /// addresses are excluded from the credential's view.
+    #[test]
+    fn asset_holdings_stake_level_accessors_dedup_and_sum() {
+        let cred = vec![0xcc; 28];
+        let addr_x = [&[0x01u8][..], &[0x71; 28], &cred].concat(); // base, stake = cred
+        let addr_y = [&[0x01u8][..], &[0x72; 28], &cred].concat(); // same stake cred
+        let addr_e = [&[0x61u8][..], &[0x7e; 28]].concat(); // enterprise, no stake
+        let pa = vec![0x11u8; 28];
+        let pb = vec![0x22u8; 28];
+        let na = b"A".to_vec();
+        let nb = b"B".to_vec();
+
+        let mut snap = BlockSnapshot::default();
+        // addr_x: pa/na x10, pb/nb x5 ; addr_y: pa/na x3 (shared) ; addr_e: pa/na x100 (excluded).
+        apply_utxo_assets(
+            &addr_x,
+            &vec![
+                (pa.clone(), vec![(na.clone(), 10)]),
+                (pb.clone(), vec![(nb.clone(), 5)]),
+            ],
+            true,
+            &mut snap.asset_holdings,
+        );
+        apply_utxo_assets(
+            &addr_y,
+            &vec![(pa.clone(), vec![(na.clone(), 3)])],
+            true,
+            &mut snap.asset_holdings,
+        );
+        apply_utxo_assets(
+            &addr_e,
+            &vec![(pa.clone(), vec![(na.clone(), 100)])],
+            true,
+            &mut snap.asset_holdings,
+        );
+
+        // Per-address counts.
+        assert_eq!(snap.address_asset_count(&addr_x), 2);
+        assert_eq!(snap.address_asset_count(&addr_y), 1);
+
+        // Stake-level: pa/na appears on both addresses → counted once; total distinct = 2.
+        assert_eq!(snap.stake_asset_count(&cred), 2);
+
+        // Stake-level held amounts: pa/na summed across addresses (10 + 3 = 13), pb/nb = 5.
+        let mut held = snap.stake_held_assets(&cred);
+        held.sort();
+        assert_eq!(
+            held,
+            vec![
+                (pa.clone(), na.clone(), 13u128),
+                (pb.clone(), nb.clone(), 5u128)
+            ]
+        );
+
+        // Token-quantity lookups.
+        assert_eq!(stake_token_qty(&snap.asset_holdings, &cred, &pa, &na), 13);
+        assert_eq!(stake_token_qty(&snap.asset_holdings, &cred, &pb, &nb), 5);
+        let key_x: AssetKey = (Some(cred.clone()), addr_x.clone());
+        let key_y: AssetKey = (Some(cred.clone()), addr_y.clone());
+        assert_eq!(
+            address_token_qty(&snap.asset_holdings, &key_x, &pa, &na),
+            10
+        );
+        assert_eq!(address_token_qty(&snap.asset_holdings, &key_y, &pa, &na), 3);
+        assert_eq!(address_token_qty(&snap.asset_holdings, &key_x, &pb, &nb), 5);
+
+        // The enterprise address's 100 of pa/na is not attributed to the credential.
+        assert_eq!(stake_token_qty(&snap.asset_holdings, &cred, &pa, &na), 13);
+    }
+
+    #[test]
+    fn epoch_for_slot_preprod_and_preview() {
+        // Preview: Shelley from genesis (epoch 0), 1-day epochs (86_400 one-second slots).
+        let preview = GenesisValues::preview();
+        assert_eq!(State::epoch_for_slot(0, &preview), 0);
+        assert_eq!(State::epoch_for_slot(86_400, &preview), 1);
+        assert_eq!(State::epoch_for_slot(86_400 * 50, &preview), 50);
+
+        // Pre-prod: Shelley started at epoch 4 (slot 86_400), 5-day epochs (432_000 slots).
+        let preprod = GenesisValues::preprod();
+        assert_eq!(State::epoch_for_slot(86_400, &preprod), 4);
+        assert_eq!(State::epoch_for_slot(86_400 + 432_000, &preprod), 5);
+        assert_eq!(State::epoch_for_slot(86_400 + 432_000 * 200, &preprod), 204);
+    }
 }

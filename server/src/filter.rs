@@ -304,3 +304,87 @@ pub fn stake_credential(addr: &str) -> Option<Vec<u8>> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pallas::stake_address_from_cred_bytes;
+
+    fn encode(hrp: &str, data: &[u8]) -> String {
+        bech32::encode::<bech32::Bech32>(bech32::Hrp::parse(hrp).unwrap(), data).unwrap()
+    }
+
+    /// Every subject kind parses from its bech32/path form into the right `FeedFilter`
+    /// variant, and `feed_id` is the exact inverse (so request routing round-trips).
+    #[test]
+    fn from_path_and_feed_id_roundtrip() {
+        // Pool.
+        let pool_hash = vec![0xaau8; 28];
+        let pool_id = pool_bech32_id(&pool_hash);
+        assert!(
+            matches!(FeedFilter::from_path(&pool_id), Some(FeedFilter::Pool(ref h)) if *h == pool_hash)
+        );
+        assert_eq!(FeedFilter::from_path(&pool_id).unwrap().feed_id(), pool_id);
+
+        // DRep (key) and DRep (script).
+        let drep_key = [&[0x00u8][..], &[0xd1u8; 28]].concat();
+        let drep_id = drep_bech32_id(&drep_key);
+        assert!(
+            matches!(FeedFilter::from_path(&drep_id), Some(FeedFilter::DRep(ref b)) if *b == drep_key)
+        );
+        assert_eq!(FeedFilter::from_path(&drep_id).unwrap().feed_id(), drep_id);
+        let drep_script = [&[0x01u8][..], &[0xd1u8; 28]].concat();
+        let ds_id = drep_bech32_id(&drep_script);
+        assert!(
+            matches!(FeedFilter::from_path(&ds_id), Some(FeedFilter::DRep(ref b)) if *b == drep_script)
+        );
+        assert_eq!(FeedFilter::from_path(&ds_id).unwrap().feed_id(), ds_id);
+
+        // Predefined DReps (no bech32).
+        assert!(
+            matches!(FeedFilter::from_path("drep_always_abstain"), Some(FeedFilter::DRep(ref b)) if *b == vec![0x02])
+        );
+        assert!(
+            matches!(FeedFilter::from_path("drep_always_no_confidence"), Some(FeedFilter::DRep(ref b)) if *b == vec![0x03])
+        );
+
+        // Stake (mainnet + testnet) via the reward-address bech32.
+        let cred = vec![0x42u8; 28];
+        let stake_mainnet = stake_address_from_cred_bytes(&cred, true);
+        match FeedFilter::from_path(&stake_mainnet) {
+            Some(FeedFilter::Stake(p)) => {
+                assert_eq!(p.len(), 29);
+                assert_eq!(&p[1..], cred.as_slice());
+            }
+            _ => panic!("stake1 did not parse"),
+        }
+        assert_eq!(
+            FeedFilter::from_path(&stake_mainnet).unwrap().feed_id(),
+            stake_mainnet
+        );
+        let stake_test = stake_address_from_cred_bytes(&cred, false);
+        assert_eq!(
+            FeedFilter::from_path(&stake_test).unwrap().feed_id(),
+            stake_test
+        );
+
+        // Payment address: kept verbatim.
+        let addr = encode("addr", &[&[0x01u8][..], &[0x33u8; 56]].concat());
+        assert!(
+            matches!(FeedFilter::from_path(&addr), Some(FeedFilter::Address(ref a)) if *a == addr)
+        );
+        assert_eq!(FeedFilter::from_path(&addr).unwrap().feed_id(), addr);
+    }
+
+    #[test]
+    fn from_path_rejects_garbage_and_wrong_shapes() {
+        assert!(FeedFilter::from_path("not bech32!").is_none());
+        assert!(FeedFilter::from_path("").is_none());
+        // Valid bech32 but unknown hrp.
+        assert!(FeedFilter::from_path(&encode("xyz", &[0u8; 10])).is_none());
+        // Right hrp, wrong payload length.
+        assert!(FeedFilter::from_path(&encode("pool", &[0u8; 27])).is_none());
+        assert!(FeedFilter::from_path(&encode("stake", &[0xe1u8; 28])).is_none());
+        // 28, needs 29
+    }
+}

@@ -357,3 +357,50 @@ mod handle_tests {
         assert!(parse_virtual_handle_address(&[]).is_none());
     }
 }
+
+#[cfg(test)]
+mod codec_tests {
+    use super::*;
+
+    fn hexd(s: &str) -> Vec<u8> {
+        hex::decode(s).unwrap()
+    }
+
+    /// CIP-14 asset fingerprint, checked against the spec's official test vectors.
+    #[test]
+    fn cip14_asset_fingerprint_known_vectors() {
+        let p1 = hexd("7eae28af2208be856f7a119668ae52a49b73725e326dc16579dcc373");
+        assert_eq!(
+            asset_fingerprint(&p1, b""),
+            "asset1rjklcrnsdzqp65wjgrg55sy9723kw09mlgvlc3"
+        );
+        assert_eq!(
+            asset_fingerprint(&p1, &hexd("504154415445")),
+            "asset13n25uv0yaf5kus35fm2k86cqy60z58d9xmde92"
+        );
+        let p2 = hexd("1e349c9bdea19fd6c147626a5260bc44b71635f398b67c59881df209");
+        assert_eq!(
+            asset_fingerprint(&p2, b""),
+            "asset1uyuxku60yqe57nusqzjx38aan3f2wq6s93f6ea"
+        );
+    }
+
+    #[test]
+    fn pool_and_drep_bech32_ids() {
+        // Pool: bech32 `pool1…` round-tripping the 28-byte hash.
+        let hash = vec![0xabu8; 28];
+        let pool = pool_bech32_id(&hash);
+        assert!(pool.starts_with("pool1"));
+        let (hrp, data) = bech32::decode(&pool).unwrap();
+        assert_eq!(hrp.as_str(), "pool");
+        assert_eq!(data, hash);
+
+        // DRep: tag 0x00 → `drep1…`, tag 0x01 → `drep_script1…`, plus the predefined ones.
+        let key_drep = [&[0x00u8][..], &[0xd1u8; 28]].concat();
+        assert!(drep_bech32_id(&key_drep).starts_with("drep1"));
+        let script_drep = [&[0x01u8][..], &[0xd1u8; 28]].concat();
+        assert!(drep_bech32_id(&script_drep).starts_with("drep_script1"));
+        assert_eq!(drep_bech32_id(&[0x02]), "drep_always_abstain");
+        assert_eq!(drep_bech32_id(&[0x03]), "drep_always_no_confidence");
+    }
+}
