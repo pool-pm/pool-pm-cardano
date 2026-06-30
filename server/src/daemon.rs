@@ -151,18 +151,6 @@ pub fn run(args: Args) -> Result<(), Error> {
         if let Some((snapshot, fi)) = State::load_snapshot(&snapshot_path, args.network.magic()) {
             let snap_slot = snapshot.slot;
             let snap_hash = snapshot.block_hash.clone().unwrap_or_default();
-            let mut snapshot = snapshot;
-            if args.clear_utxos {
-                let count = snapshot.utxos.len();
-                snapshot.utxos = Default::default();
-                info!(cleared = count, "cleared cached UTXOs from snapshot");
-            }
-            if args.refresh_handles {
-                let count = snapshot.address_by_handle.len();
-                snapshot.handle_by_address = Default::default();
-                snapshot.address_by_handle = Default::default();
-                info!(cleared = count, "cleared ADA Handle cache from snapshot");
-            }
             state.restore_from_snapshot(snapshot);
             state.feed_index = fi;
             {

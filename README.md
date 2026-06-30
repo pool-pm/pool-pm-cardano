@@ -127,8 +127,6 @@ cd web && pnpm install && pnpm build   # -> web/dist
 | `-m, --metrics <ADDR:PORT｜default>` | _(off)_ | Prometheus metrics endpoint |
 | `-o, --output <DIR>` | `/tmp/cardano` | snapshot / cursor files |
 | `--snapshot-depth <N>` | `8` | blocks behind tip for the persisted snapshot |
-| `--clear-utxos` | _(off)_ | drop cached UTXOs from the snapshot on startup |
-| `--refresh-handles` | _(off)_ | refresh the ADA Handle cache on startup |
 | `-v, --verbose` | _(off)_ | DEBUG logging |
 
 First start (or a missing/incompatible snapshot) triggers a full rebuild from db-sync — an
