@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ph.hash_raw, ocpd.ticker_name AS \"ticker_name!\", ocpd.id\n            FROM off_chain_pool_data ocpd\n            JOIN pool_hash ph ON ph.id = ocpd.pool_id\n            WHERE ocpd.id > $1\n            ORDER BY ocpd.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hash_raw",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "ticker_name!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4ac7585352d93d2a1e9cf1c775b0e0e0d2fd42b45f1bcdd77dfb102a7709bb98"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT reserves::bigint AS \"reserves!\",\n                      (utxo + rewards + fees)::bigint AS \"stakeable!\"\n               FROM ada_pots ORDER BY id DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reserves!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "stakeable!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "7a382ee3273330e4d629f0c179999ea5a7c6add1cff1bb035e1a4ff5969106fd"
+}

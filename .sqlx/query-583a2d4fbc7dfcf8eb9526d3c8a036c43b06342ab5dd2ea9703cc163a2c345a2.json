@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tx_out_id, ident, quantity AS \"quantity!\" FROM ma_tx_out WHERE tx_out_id = ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tx_out_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "ident",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "quantity!",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "583a2d4fbc7dfcf8eb9526d3c8a036c43b06342ab5dd2ea9703cc163a2c345a2"
+}

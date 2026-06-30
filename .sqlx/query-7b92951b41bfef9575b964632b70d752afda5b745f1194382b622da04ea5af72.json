@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT dh.raw AS drep_raw,\n                      dh.has_script AS drep_has_script,\n                      dd.given_name,\n                      (SELECT ddist.active_until::bigint FROM drep_distr ddist\n                       WHERE ddist.hash_id = dh.id\n                         AND ddist.epoch_no = (SELECT MAX(epoch_no) FROM drep_distr)\n                      ) AS active_until\n            FROM drep_registration dr\n            JOIN drep_hash dh ON dh.id = dr.drep_hash_id\n            JOIN off_chain_vote_data ovd ON ovd.voting_anchor_id = dr.voting_anchor_id\n            JOIN off_chain_vote_drep_data dd ON dd.off_chain_vote_data_id = ovd.id\n            WHERE dr.tx_id <= $1\n              AND dh.raw IS NOT NULL\n              -- Incremental cursor: only DReps whose off-chain metadata row is newer than\n              -- `since_id` (0 = all, at reset). Rollbacks never reuse ids, so > is safe.\n              AND dd.id > $2\n              -- Latest registration that carried an anchor: a deregistration (and the\n              -- initial register cert) has voting_anchor_id NULL, so picking the plain\n              -- MAX(id) would drop the name of a deregistered/updated DRep whose\n              -- metadata is still in db-sync.\n              AND dr.id = (\n                  SELECT MAX(dr2.id) FROM drep_registration dr2\n                  WHERE dr2.drep_hash_id = dr.drep_hash_id AND dr2.tx_id <= $1\n                    AND dr2.voting_anchor_id IS NOT NULL\n              )",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "drep_raw",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "drep_has_script",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "given_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "active_until",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "7b92951b41bfef9575b964632b70d752afda5b745f1194382b622da04ea5af72"
+}

@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT stake_address.hash_raw as stake_address,\n                drep_hash.raw as drep_raw,\n                drep_hash.has_script as drep_has_script,\n                drep_hash.view as drep_view\n            FROM\n                (SELECT DISTINCT ON (addr_id) *\n                    FROM delegation_vote dv\n                    WHERE dv.tx_id <= $1\n                    AND NOT EXISTS\n                        (SELECT TRUE\n                            FROM stake_deregistration sd\n                            WHERE sd.tx_id <= $1\n                            AND sd.addr_id = dv.addr_id\n                            AND sd.tx_id >= dv.tx_id\n                        )\n                    ORDER BY addr_id, id DESC\n                ) dv\n            JOIN stake_address ON stake_address.id = dv.addr_id\n            JOIN drep_hash ON drep_hash.id = dv.drep_hash_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stake_address",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "drep_raw",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "drep_has_script",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "drep_view",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "a92c803cab2eb5de9c2012118011673b015971b161edeae8e37af1835a154b5a"
+}

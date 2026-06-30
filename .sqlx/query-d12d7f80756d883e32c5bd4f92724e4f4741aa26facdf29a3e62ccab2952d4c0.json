@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT stake_address.hash_raw as stake_address, pool_hash.hash_raw as pool_id FROM\n                (SELECT DISTINCT ON (addr_id) *\n                    FROM delegation d\n                    WHERE d.tx_id <= $1\n                    AND NOT EXISTS\n                        (SELECT TRUE\n                            FROM stake_deregistration sd\n                            WHERE sd.tx_id <= $1\n                            AND sd.addr_id = d.addr_id\n                            AND sd.tx_id >= d.tx_id\n                        )\n                    ORDER BY addr_id, id DESC\n            ) delegation\n            JOIN stake_address ON stake_address.id = delegation.addr_id\n            JOIN pool_hash ON pool_hash.id = delegation.pool_hash_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stake_address",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "pool_id",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d12d7f80756d883e32c5bd4f92724e4f4741aa26facdf29a3e62ccab2952d4c0"
+}

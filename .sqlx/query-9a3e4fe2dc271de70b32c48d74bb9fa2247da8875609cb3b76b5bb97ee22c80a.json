@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT dh.raw AS \"raw!\", dh.has_script AS \"has_script!\",\n                      dd.active_until::bigint AS \"active_until!\"\n               FROM drep_distr dd\n               JOIN drep_hash dh ON dh.id = dd.hash_id\n               WHERE dd.epoch_no = (SELECT MAX(epoch_no) FROM drep_distr)\n                 AND dd.active_until IS NOT NULL\n                 AND dh.raw IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "raw!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "has_script!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "active_until!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "9a3e4fe2dc271de70b32c48d74bb9fa2247da8875609cb3b76b5bb97ee22c80a"
+}

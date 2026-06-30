@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT encode(tx.hash, 'hex') AS \"tx_hash!\",\n                    gap.index AS \"index!\",\n                    gap.type AS \"type!: String\",\n                    ovgad.title AS \"title?\"\n            FROM gov_action_proposal gap\n            JOIN tx ON tx.id = gap.tx_id\n            LEFT JOIN voting_anchor va ON va.id = gap.voting_anchor_id\n            LEFT JOIN off_chain_vote_data ovd ON ovd.voting_anchor_id = va.id\n            LEFT JOIN off_chain_vote_gov_action_data ovgad ON ovgad.off_chain_vote_data_id = ovd.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tx_hash!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "index!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "type!: String",
+        "type_info": {
+          "Custom": {
+            "name": "govactiontype",
+            "kind": {
+              "Enum": [
+                "ParameterChange",
+                "HardForkInitiation",
+                "TreasuryWithdrawals",
+                "NoConfidence",
+                "NewCommittee",
+                "NewConstitution",
+                "InfoAction"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "title?",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "4706c40121aaede8a8540687bc098bcda062a32d67654a595e9b2099a8eb90ef"
+}

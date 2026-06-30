@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ph.hash_raw AS \"hash_raw!\", COUNT(*) AS \"count!\"\n               FROM block b\n               JOIN slot_leader sl ON sl.id = b.slot_leader_id\n               JOIN pool_hash ph ON ph.id = sl.pool_hash_id\n               WHERE b.slot_no <= $1\n               GROUP BY ph.hash_raw",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hash_raw!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "b48d5a804fc42522afa1401e0c263682d1536b88c2b37801c239efedf1fa8510"
+}

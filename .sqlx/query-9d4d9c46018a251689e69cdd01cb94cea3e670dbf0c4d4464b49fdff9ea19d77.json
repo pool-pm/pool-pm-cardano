@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT encode(tx_hash, 'hex') AS \"tx_hash!\",\n                      to_raw, to_script, to_view,\n                      lag(to_raw) OVER w AS from_raw,\n                      lag(to_script) OVER w AS from_script,\n                      lag(to_view) OVER w AS from_view\n            FROM (\n                SELECT t.hash AS tx_hash, dv.tx_id, dv.cert_index,\n                       dh.raw AS to_raw, dh.has_script AS to_script, dh.view AS to_view\n                FROM delegation_vote dv\n                JOIN tx t ON t.id = dv.tx_id\n                JOIN drep_hash dh ON dh.id = dv.drep_hash_id\n                WHERE dv.addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)\n                UNION ALL\n                SELECT t.hash, sd.tx_id, sd.cert_index, NULL::bytea, NULL::boolean, NULL::varchar\n                FROM stake_deregistration sd\n                JOIN tx t ON t.id = sd.tx_id\n                WHERE sd.addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)\n            ) e\n            WINDOW w AS (ORDER BY tx_id, cert_index)\n            ORDER BY tx_id, cert_index",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tx_hash!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "to_raw",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "to_script",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "to_view",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "from_raw",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "from_script",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "from_view",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "9d4d9c46018a251689e69cdd01cb94cea3e670dbf0c4d4464b49fdff9ea19d77"
+}

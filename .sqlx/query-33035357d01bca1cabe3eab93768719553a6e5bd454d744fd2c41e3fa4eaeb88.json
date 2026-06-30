@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT sa.hash_raw AS stake_address, t.net AS \"net!\"\n            FROM (\n                SELECT addr_id, SUM(amount)::bigint AS net\n                FROM (\n                    SELECT addr_id, amount FROM reward WHERE spendable_epoch <= $1\n                    UNION ALL\n                    SELECT addr_id, amount FROM reward_rest WHERE spendable_epoch <= $1\n                    UNION ALL\n                    SELECT addr_id, -amount FROM withdrawal WHERE tx_id <= $2\n                ) u\n                GROUP BY addr_id\n            ) t\n            JOIN stake_address sa ON sa.id = t.addr_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stake_address",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "net!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "33035357d01bca1cabe3eab93768719553a6e5bd454d744fd2c41e3fa4eaeb88"
+}

@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH bnd AS MATERIALIZED (\n                SELECT COALESCE(MIN(t.id), 9223372036854775807) AS max_tx_id\n                FROM tx t\n                WHERE t.block_id =\n                    (SELECT id FROM block WHERE slot_no >= $2 ORDER BY slot_no ASC LIMIT 1)\n            )\n            SELECT b.slot_no AS \"slot_no!\", b.hash, b.block_no AS \"block_no!\",\n                   b.epoch_no AS \"epoch_no!\"\n            FROM (\n                (SELECT tx_id FROM tx_out\n                   WHERE address_id = $1 AND tx_id < (SELECT max_tx_id FROM bnd)\n                   ORDER BY tx_id DESC LIMIT $3)\n                UNION\n                (SELECT consumed_by_tx_id AS tx_id FROM tx_out\n                   WHERE address_id = $1 AND consumed_by_tx_id IS NOT NULL\n                     AND consumed_by_tx_id < (SELECT max_tx_id FROM bnd)\n                   ORDER BY consumed_by_tx_id DESC LIMIT $3)\n            ) t\n            JOIN tx ON tx.id = t.tx_id\n            JOIN block b ON b.id = tx.block_id\n            GROUP BY b.id, b.slot_no, b.hash, b.block_no, b.epoch_no\n            ORDER BY b.slot_no DESC\n            LIMIT $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "slot_no!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "hash",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "block_no!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "epoch_no!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "e32307a82cc9d99b459c6992bd1f0f33a11083a89a5d28a84831881a4e3c0b1d"
+}

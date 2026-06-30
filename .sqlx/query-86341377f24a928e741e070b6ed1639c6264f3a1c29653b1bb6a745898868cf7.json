@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT epoch AS \"epoch!\", label AS \"label!\",\n                      pool_hash, amount AS \"amount!\"\n            FROM (\n                SELECT r.spendable_epoch AS epoch, r.type::text AS label,\n                       ph.hash_raw AS pool_hash, SUM(r.amount)::bigint AS amount\n                FROM reward r\n                JOIN pool_hash ph ON ph.id = r.pool_id\n                WHERE r.addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)\n                  AND r.spendable_epoch > $2 AND r.spendable_epoch <= $3\n                GROUP BY r.spendable_epoch, r.type, ph.hash_raw\n                UNION ALL\n                SELECT rr.spendable_epoch, rr.type::text,\n                       NULL::bytea, SUM(rr.amount)::bigint\n                FROM reward_rest rr\n                WHERE rr.addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)\n                  AND rr.spendable_epoch > $2 AND rr.spendable_epoch <= $3\n                GROUP BY rr.spendable_epoch, rr.type\n            ) t\n            ORDER BY epoch",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "epoch!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "label!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "pool_hash",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "86341377f24a928e741e070b6ed1639c6264f3a1c29653b1bb6a745898868cf7"
+}

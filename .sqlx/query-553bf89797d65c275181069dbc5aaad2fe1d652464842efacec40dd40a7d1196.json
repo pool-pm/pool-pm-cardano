@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH bnd AS MATERIALIZED (\n                SELECT COALESCE(MIN(t.id), 9223372036854775807) AS min_tx_id\n                FROM tx t\n                WHERE t.block_id =\n                    (SELECT id FROM block WHERE slot_no >= $2 ORDER BY slot_no ASC LIMIT 1)\n            )\n            SELECT b.slot_no AS \"slot!\", w.amount::bigint AS \"amount!\"\n            FROM withdrawal w\n            JOIN tx ON tx.id = w.tx_id\n            JOIN block b ON b.id = tx.block_id\n            WHERE w.addr_id = (SELECT id FROM stake_address WHERE hash_raw = $1)\n              AND w.tx_id >= (SELECT min_tx_id FROM bnd)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "slot!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      null
+    ]
+  },
+  "hash": "553bf89797d65c275181069dbc5aaad2fe1d652464842efacec40dd40a7d1196"
+}

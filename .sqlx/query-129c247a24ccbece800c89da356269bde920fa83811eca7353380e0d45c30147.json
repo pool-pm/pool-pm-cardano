@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tx_out.id, a.address, tx_out.value\n            FROM tx_out\n            JOIN tx ON tx.id = tx_out.tx_id\n            JOIN address a ON a.id = tx_out.address_id\n            WHERE tx.hash = $1 AND tx_out.index = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "address",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "value",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "129c247a24ccbece800c89da356269bde920fa83811eca7353380e0d45c30147"
+}

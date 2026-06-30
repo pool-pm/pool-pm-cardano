@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT ON (ph.hash_raw)\n                      ph.hash_raw AS \"hash_raw!\", pr.retiring_epoch::bigint AS \"retiring_epoch!\"\n               FROM pool_retire pr\n               JOIN pool_hash ph ON ph.id = pr.hash_id\n               WHERE pr.announced_tx_id <= $1\n                 AND pr.announced_tx_id > (\n                     SELECT COALESCE(MAX(pu.registered_tx_id), 0) FROM pool_update pu\n                     WHERE pu.hash_id = pr.hash_id AND pu.registered_tx_id <= $1\n                 )\n               ORDER BY ph.hash_raw, pr.announced_tx_id DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hash_raw!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "retiring_epoch!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "ea46a5a3356b470ab2b9d8c54252ab6b14f5481bbcad144264c33ead76203640"
+}

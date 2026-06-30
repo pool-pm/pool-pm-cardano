@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT slot_no AS \"slot!\", encode(hash, 'hex') AS \"hash!\"\n            FROM block WHERE slot_no <= $1 ORDER BY slot_no DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "slot!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "hash!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      null
+    ]
+  },
+  "hash": "13e552616aa9ab321f4b3b281b1387d1ed60a2bfd3409a8d8353f34cafad4df0"
+}

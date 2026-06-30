@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.address AS \"address!\", b.balance AS \"balance!\"\n            FROM (\n                SELECT address_id, SUM(value)::bigint AS balance\n                FROM tx_out\n                WHERE tx_id <= $1\n                  AND (consumed_by_tx_id IS NULL OR consumed_by_tx_id > $1)\n                GROUP BY address_id\n            ) b\n            JOIN address a ON a.id = b.address_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "address!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "balance!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "5d258d89886192bbc763e97e1c59c50887f14241d2436e9983ff062dde5607e5"
+}

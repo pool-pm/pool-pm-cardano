@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH filtered AS MATERIALIZED (\n                SELECT id, fingerprint AS \"fingerprint!\", name AS \"name!\"\n                FROM multi_asset\n                WHERE policy = $1 AND ($2::bigint IS NULL OR id < $2)\n                -- Hide CIP-68 reference NFTs (CIP-67 label 100); the (222)\n                -- user token renders the same image, so they'd otherwise show\n                -- as duplicates.\n                AND substring(name from 1 for 4) != '\\x000643b0'\n            )\n            SELECT id, \"fingerprint!\", \"name!\" FROM filtered\n            ORDER BY id DESC\n            LIMIT $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "fingerprint!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "name!",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "af7095d40fd7b0197dbe80095c67b55342ebe8147a3ffc02c689b04f1bc68a04"
+}

@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ma.policy AS \"policy!\", ma.name AS \"name!\", agg.supply, agg.first_mint, agg.last_mint\n               FROM multi_asset ma\n               LEFT JOIN LATERAL (\n                   SELECT SUM(m.quantity)::text AS supply,\n                          EXTRACT(EPOCH FROM MIN(b.time))::bigint AS first_mint,\n                          EXTRACT(EPOCH FROM MAX(b.time))::bigint AS last_mint\n                   FROM ma_tx_mint m\n                   JOIN tx t ON t.id = m.tx_id\n                   JOIN block b ON b.id = t.block_id\n                   WHERE m.ident = ma.id\n               ) agg ON true\n               WHERE ma.fingerprint = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "policy!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "name!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "supply",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "first_mint",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_mint",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "964f8badaeb7080097df6272aed883b0d00a2b7bca255ce843c7d1952d0423cb"
+}

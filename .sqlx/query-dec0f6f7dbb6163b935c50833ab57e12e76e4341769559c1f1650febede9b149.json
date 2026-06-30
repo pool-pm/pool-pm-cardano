@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tx.id, block.hash FROM tx\n            JOIN block ON block.id=tx.block_id\n            WHERE block.slot_no <= $1\n            ORDER BY tx.id DESC\n            LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "hash",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "dec0f6f7dbb6163b935c50833ab57e12e76e4341769559c1f1650febede9b149"
+}

@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tx.hash, tx_out.index AS \"index!: i16\", tx_out.id,\n                    a.address, tx_out.value, tx_out.consumed_by_tx_id\n            FROM tx_out\n            JOIN tx ON tx.id = tx_out.tx_id\n            JOIN address a ON a.id = tx_out.address_id\n            WHERE (tx.hash, tx_out.index) IN (SELECT * FROM UNNEST($1::bytea[], $2::smallint[]))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hash",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "index!: i16",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 2,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "address",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "value",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 5,
+        "name": "consumed_by_tx_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "ByteaArray",
+        "Int2Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "eacf1c190f3813bc2b490d4b961a0d366525575b6aa947ee3041369b8475bcc6"
+}

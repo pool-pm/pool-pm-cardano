@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ma.name AS \"name!\", a.address AS \"address!\",\n                    d.bytes AS \"datum?\"\n                FROM tx_out\n                JOIN ma_tx_out ON ma_tx_out.tx_out_id = tx_out.id\n                JOIN multi_asset ma ON ma.id = ma_tx_out.ident\n                JOIN address a ON a.id = tx_out.address_id\n                LEFT JOIN datum d ON d.id = tx_out.inline_datum_id\n                WHERE ma.policy = $1\n                AND tx_out.consumed_by_tx_id IS NULL\n                AND ma.name != '' AND ma.name IS NOT NULL\n                AND substring(ma.name from 1 for 4) != '\\x000643b0'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "address!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "datum?",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7783666373695d821c843711ac54fcd84e4914b53a8ad92050c00bf6763667df"
+}

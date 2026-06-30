@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT ON (hash_raw)\n            hash_raw, pledge, margin, fixed_cost,\n            (SELECT ticker_name FROM off_chain_pool_data WHERE pool_id = pool_hash.id ORDER BY id DESC LIMIT 1) as ticker,\n            -- Pending retirement: latest retire announced *after* this (latest)\n            -- registration — a re-registration cancels it — else NULL (active).\n            (SELECT pr.retiring_epoch::bigint FROM pool_retire pr\n             WHERE pr.hash_id = pool_hash.id\n               AND pr.announced_tx_id > pool_update.registered_tx_id\n               AND pr.announced_tx_id <= $1\n             ORDER BY pr.announced_tx_id DESC LIMIT 1) as retiring_epoch,\n            -- Lifetime blocks minted as of the reset slot (one grouped pass).\n            COALESCE(bc.cnt, 0)::bigint AS \"blocks!\"\n            FROM pool_update\n            JOIN pool_hash ON pool_hash.id=hash_id\n            LEFT JOIN (\n                SELECT sl.pool_hash_id, COUNT(*) AS cnt\n                FROM block b JOIN slot_leader sl ON sl.id = b.slot_leader_id\n                WHERE b.slot_no <= $2 AND sl.pool_hash_id IS NOT NULL\n                GROUP BY sl.pool_hash_id\n            ) bc ON bc.pool_hash_id = pool_hash.id\n            WHERE registered_tx_id <= $1\n            GROUP BY hash_raw, pool_update.id, pool_hash.id, bc.cnt\n            ORDER BY hash_raw, pool_update.id DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hash_raw",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "pledge",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 2,
+        "name": "margin",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 3,
+        "name": "fixed_cost",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 4,
+        "name": "ticker",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "retiring_epoch",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "blocks!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "195603a4f78f995900c6ffa05715614edd4921b7ed039c6ce1d520c6a3b224b9"
+}

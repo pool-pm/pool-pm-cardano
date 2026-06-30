@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH held AS MATERIALIZED (\n                SELECT o.address_id, m.ident, SUM(m.quantity)::text AS c\n                FROM tx_out o\n                JOIN ma_tx_out m ON m.tx_out_id = o.id\n                WHERE o.tx_id <= $1\n                  AND (o.consumed_by_tx_id IS NULL OR o.consumed_by_tx_id > $1)\n                GROUP BY o.address_id, m.ident\n            )\n            SELECT a.address AS \"address!\", ma.policy AS \"policy!\", ma.name AS \"name!\", held.c AS \"count!\"\n            FROM held\n            JOIN address a ON a.id = held.address_id\n            JOIN multi_asset ma ON ma.id = held.ident\n            ORDER BY held.address_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "address!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "policy!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "name!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "count!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "27c107b492a1a6c42256e6bad1d0028b38be782f8232e03d8aabbdc80ec058ec"
+}

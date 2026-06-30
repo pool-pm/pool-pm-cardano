@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT sa.hash_raw AS stake_address,\n                      SUM(t.amount)::bigint AS \"delta!\"\n            FROM (\n                SELECT addr_id, amount FROM reward WHERE spendable_epoch = $1\n                UNION ALL\n                SELECT addr_id, amount FROM reward_rest WHERE spendable_epoch = $1\n            ) t\n            JOIN stake_address sa ON sa.id = t.addr_id\n            GROUP BY sa.hash_raw",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stake_address",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "delta!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "870975011949269ab74117e1ba43a1ebbfcbf4bcd798c954d025c34089c956a6"
+}

@@ -35,8 +35,10 @@ See `CLAUDE.md` for architecture details.
 - Key crates: [`oura`](https://github.com/txpipe/oura) (N2C source) and
   [`pallas`](https://github.com/txpipe/pallas) (Cardano primitives) from TxPipe, plus `gasket`
   (stream pipeline), `sqlx` (PostgreSQL), `axum` + `tokio` (server), and `imbl` (persistent maps).
-- `sqlx` validates SQL **at compile time** against a live db-sync database, so building
-  needs `DATABASE_URL` set (see [Build](#build-1)).
+- `sqlx` checks SQL **at compile time**. The repo ships a `.sqlx/` offline query cache, so a
+  normal build needs **no database**. Set `DATABASE_URL` (to a db-sync instance) only to
+  check queries against a live schema, or to regenerate the cache after changing a query
+  (see [Build](#build-1)).
 - Frontend: **Node.js** + **pnpm**, Vite, Svelte 5.
 
 ### Runtime
@@ -55,7 +57,7 @@ environment.
 | Variable | When | Description |
 | --- | --- | --- |
 | `NFTCDN_KEY` | runtime (mainnet) | Base64 HMAC key from your NFTCDN account, used to sign asset-media URLs. **Required on mainnet** (the server panics on start without it). Preprod uses NFTCDN's public test key, and preview serves unsigned URLs. The mainnet subdomain is hardcoded to `poolpm.nftcdn.io` in `server/src/nftcdn.rs`. A different deployer must set their own subdomain there alongside their key. |
-| `DATABASE_URL` | build | db-sync connection used by `sqlx` for compile-time query checking (build only, the runtime database is selected with `--db`). |
+| `DATABASE_URL` | build (optional) | db-sync connection for `sqlx`'s compile-time query checking. Optional: builds use the committed `.sqlx/` cache when unset. Set it to verify against a live schema or to run `cargo sqlx prepare`. Build-only, the runtime database is selected with `--db`. |
 
 ## Hardware
 
@@ -131,12 +133,19 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_drep_registration_drep_hash_id_id ON
 ## Build
 
 ```bash
-# Server: DATABASE_URL is required for sqlx's compile-time query checks.
-export DATABASE_URL='postgresql:///mainnet?host=/var/run/postgresql'
+# Server: builds offline from the committed .sqlx/ query cache (no database needed).
 cargo build --release          # -> target/release/server
 
 # Frontend
 cd web && pnpm install && pnpm build   # -> web/dist
+```
+
+After changing or adding a SQL query, regenerate the `.sqlx/` cache against a live db-sync
+and commit it:
+
+```bash
+cargo install sqlx-cli --no-default-features --features rustls,postgres
+DATABASE_URL='postgresql:///mainnet?host=/var/run/postgresql' cargo sqlx prepare --workspace
 ```
 
 ## Run

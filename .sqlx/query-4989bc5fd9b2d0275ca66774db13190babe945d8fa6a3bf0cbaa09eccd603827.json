@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COUNT(*)::bigint AS \"count!\"\n               FROM drep_distr dd\n               WHERE dd.epoch_no = (SELECT MAX(epoch_no) FROM drep_distr)\n                 AND dd.active_until IS NOT NULL\n                 AND dd.active_until >= $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4989bc5fd9b2d0275ca66774db13190babe945d8fa6a3bf0cbaa09eccd603827"
+}
