@@ -236,30 +236,6 @@ pub fn rss_mb() -> u64 {
         .map_or(0, |pages| pages * 4096 / (1024 * 1024))
 }
 
-/// jemalloc `(allocated, resident, retained)` in MB, after refreshing the cached stats
-/// epoch. `allocated` is the app's genuine live bytes; `resident` is the physical memory
-/// jemalloc holds (live + not-yet-decayed dirty/muzzy pages) and tracks RSS; `retained` is
-/// address space already handed back to the OS (not resident). The `resident − allocated`
-/// gap is reclaimable allocator slack — if it's large, tune decay/`narenas` via
-/// `_RJEM_MALLOC_CONF`; if it's small, the floor is real live data. `(0, 0, 0)` when
-/// jemalloc isn't the allocator.
-#[cfg(not(target_env = "msvc"))]
-pub fn alloc_stats_mb() -> (u64, u64, u64) {
-    use tikv_jemalloc_ctl::{epoch, stats};
-    let _ = epoch::advance();
-    let mb = |b: usize| (b / (1024 * 1024)) as u64;
-    (
-        stats::allocated::read().map(mb).unwrap_or(0),
-        stats::resident::read().map(mb).unwrap_or(0),
-        stats::retained::read().map(mb).unwrap_or(0),
-    )
-}
-
-#[cfg(target_env = "msvc")]
-pub fn alloc_stats_mb() -> (u64, u64, u64) {
-    (0, 0, 0)
-}
-
 impl BlockSnapshot {
     /// Log the entry count of every in-memory map plus current RSS. O(addresses) — skips
     /// the ~15M asset-holdings leaf walk (its leaf count is logged at build time). A rough

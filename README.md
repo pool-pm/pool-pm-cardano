@@ -32,12 +32,9 @@ See `CLAUDE.md` for architecture details.
 ### Build
 
 - **Rust** stable, edition 2021 (built with 1.92).
-- A **C toolchain** (`cc`, `make`) — `tikv-jemalloc-sys` builds a vendored jemalloc from
-  source at compile time.
 - Key crates: [`oura`](https://github.com/txpipe/oura) (N2C source) and
   [`pallas`](https://github.com/txpipe/pallas) (Cardano primitives) from TxPipe; `gasket`
-  (stream pipeline), `sqlx` (PostgreSQL), `axum` + `tokio` (server), `imbl` (persistent
-  maps), `tikv-jemallocator` (global allocator).
+  (stream pipeline), `sqlx` (PostgreSQL), `axum` + `tokio` (server), `imbl` (persistent maps).
 - `sqlx` validates SQL **at compile time** against a live db-sync database, so building
   needs `DATABASE_URL` set (see [Build](#build-1)).
 - Frontend: **Node.js** + **pnpm**, Vite, Svelte 5.
@@ -59,7 +56,6 @@ environment.
 | --- | --- | --- |
 | `NFTCDN_KEY` | runtime (mainnet) | Base64 HMAC key from your NFTCDN account, used to sign asset-media URLs. **Required on mainnet** (the server panics on start without it). Preprod uses NFTCDN's public test key; preview serves unsigned URLs. The mainnet subdomain is hardcoded to `poolpm.nftcdn.io` in `server/src/nftcdn.rs` — a different deployer must set their own subdomain there alongside their key. |
 | `DATABASE_URL` | build | db-sync connection used by `sqlx` for compile-time query checking (build only; the runtime database is selected with `--db`). |
-| `_RJEM_MALLOC_CONF` | runtime (optional) | jemalloc tuning, overrides the built-in config without a rebuild. Background purge threads are enabled in-process; tune the decay timers here, e.g. `dirty_decay_ms:2000,muzzy_decay_ms:2000` to return freed pages to the OS faster. |
 
 ## Hardware
 
