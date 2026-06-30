@@ -51,6 +51,19 @@
   const quantityLabel = $derived(quantity ? quantity.replace(/\B(?=(\d{3})+(?!\d))/g, ',') : null);
   const policyShort = $derived(policy ? `${policy.slice(0, 6)}…${policy.slice(-4)}` : null);
 
+  // While the metadata is open, a click anywhere outside the panel closes it (same as
+  // the ×). Capture phase so it fires even if the media player stops the click; the
+  // listener is only attached once the panel is open, so the click that opened it (the
+  // (i) button) isn't caught.
+  $effect(() => {
+    if (!metaOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!(e.target as Element)?.closest?.('.meta-panel')) metaOpen = false;
+    };
+    document.addEventListener('click', onDocClick, true);
+    return () => document.removeEventListener('click', onDocClick, true);
+  });
+
   onMount(async () => {
     // Lazy-load the gallery display font — only when an asset page is viewed.
     if (!document.getElementById('gallery-font')) {
@@ -309,7 +322,6 @@
        opacity) so it's almost-black-but-not-quite over dark art and almost transparent
        over light/busy art. A faint border + text-shadow keep it legible. */
     background: rgba(48, 48, 56, 0.2);
-    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 6px;
     padding: 10px 12px;
     text-shadow:
@@ -353,7 +365,12 @@
     z-index: 2;
     width: 26px;
     height: 26px;
-    border: 1px solid rgba(255, 255, 255, 0.35);
+    /* Transparent, with the "i" and circle in the muted metadata-key color. The ring
+       is a box-shadow rather than a border — it tends to anti-alias the curve more
+       smoothly than a thin faint 1px border (which can look pixelated at 1× DPI). */
+    background: transparent;
+    color: rgba(255, 255, 255, 0.4);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4);
     border-radius: 50%;
     font-size: 14px;
     font-style: italic;
