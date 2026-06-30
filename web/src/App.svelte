@@ -13,7 +13,10 @@
   // `/policy/<28-byte hex>` renders the policy asset grid; `/<bech32>/assets`
   // renders the owned-assets grid for a payment address or stake credential;
   // everything else is a feed (root, pool id, drep id, addr, stake, …).
-  const assetFingerprint = /^asset1[a-z0-9]+$/.test(path) ? path : null;
+  // A bare CIP-14 fingerprint, optionally `/files/N` to deep-link a specific media.
+  const assetMatch = /^(asset1[a-z0-9]+)(?:\/files\/(\d+))?$/.exec(path);
+  const assetFingerprint = assetMatch?.[1] ?? null;
+  const assetFileIndex = Number(assetMatch?.[2] ?? 0);
   const policyId = /^policy\/([0-9a-f]{56})$/.exec(path)?.[1] ?? null;
   const ownedAssetsSubject = /^((addr|stake)(_test)?1[a-z0-9]+)\/assets$/.exec(path)?.[1] ?? null;
 
@@ -93,13 +96,7 @@
   });
 </script>
 
-<a
-  class="home-logo"
-  class:search-hidden={searchOpen}
-  class:idle-hidden={!uiVisible && !searchOpen}
-  href="/"
-  aria-label="pool.pm home"
->
+<a class="home-logo" class:idle-hidden={!uiVisible && !searchOpen} href="/" aria-label="pool.pm home">
   <img src="/pool.pm.svg" alt="pool.pm" />
 </a>
 
@@ -107,7 +104,7 @@
 
 <main>
   {#if assetFingerprint}
-    <AssetPage fingerprint={assetFingerprint} {uiVisible} />
+    <AssetPage fingerprint={assetFingerprint} initialIndex={assetFileIndex} />
   {:else if policyId}
     <AssetsGrid endpoint={`/api/policy/${policyId}`} title={`${policyId.slice(0, 12)}…`} mode="hide-broken" />
   {:else if ownedAssetsSubject}
@@ -125,8 +122,9 @@
   .home-logo {
     position: fixed;
     top: 12px;
-    left: 12px;
-    z-index: 101; /* above the search bar, which expands over this spot */
+    /* Top-right corner; clears the feed's scrollbar, same as the search bar. */
+    right: calc(12px + var(--scrollbar-width, 0px));
+    z-index: 101;
     display: block;
     opacity: 1;
     transition: opacity 0.15s ease; /* fast fade-in on interaction */
@@ -136,12 +134,6 @@
     opacity: 0;
     pointer-events: none;
     transition: opacity 1.5s ease;
-  }
-  /* Quicker fade-out (matching the bar's expand) while the search is open. */
-  .home-logo.search-hidden {
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.25s ease;
   }
   .home-logo img {
     width: 48px;

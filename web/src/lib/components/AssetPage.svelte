@@ -4,9 +4,8 @@
   import '@nftcdn/media-player/nftcdn-media-player.js';
   import type { AssetMedia, AssetMediaResponse } from '../types';
 
-  // `uiVisible` is App's idle signal (false a few seconds after the last interaction);
-  // the (i) button fades with the corner chrome.
-  let { fingerprint, uiVisible = true }: { fingerprint: string; uiVisible?: boolean } = $props();
+  // `initialIndex` comes from the URL (`/asset1…/files/N`); 0 is the bare asset page.
+  let { fingerprint, initialIndex = 0 }: { fingerprint: string; initialIndex?: number } = $props();
 
   let media = $state<AssetMedia[]>([]);
   let name = $state<string | null>(null);
@@ -17,18 +16,39 @@
   let metadata = $state<Record<string, unknown> | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let metaOpen = $state(true); // bottom-left metadata panel; collapses to an (i) button
-  let placardHeight = $state(0); // measured, so the media reserves room above it
+  let placardHeight = $state(0); // measured, so the media reserves room above the placard
+  let metaHeight = $state(0); // measured, so the media reserves room below the metadata
+  let current = $state(0); // which media is on screen (one at a time); onMount applies initialIndex
+  let metaOpen = $state(true); // the top-left metadata; a click toggles it (media reclaims the space)
 
-  // The on-chain metadata to display, minus the media-technical keys (the artwork
-  // itself stands in for those).
-  const META_SKIP = new Set(['name', 'ticker', 'image', 'logo', 'mediatype', 'files', 'decimals']);
-  const metaShown = $derived.by(() => {
-    const m = metadata;
-    if (!m || typeof m !== 'object' || Array.isArray(m)) return null;
+  // Reserved gaps so the media never touches the chrome around it.
+  const MEDIA_TOP_GAP = 14; // below the top band (corner icons / metadata)
+  const MEDIA_BOTTOM_GAP = 24; // above the bottom-right placard
+  const ICONS_BOTTOM = 76; // the pool.pm logo ends ~76px down (top:12 + ~64px tall)
+  const META_INSET = 12; // the metadata panel's top/left offset
+  const NAV_COOLDOWN_MS = 350; // min time between wheel/swipe steps
+
+  // Drop the skipped keys (case-insensitive); null unless something remains to show.
+  function filterMeta(obj: unknown, skip: Set<string>): Record<string, unknown> | null {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(m)) if (!META_SKIP.has(k.toLowerCase())) out[k] = v;
+    for (const [k, v] of Object.entries(obj)) if (!skip.has(k.toLowerCase())) out[k] = v;
     return Object.keys(out).length ? out : null;
+  }
+
+  // Global on-chain metadata (shown with the first media), minus the media-technical
+  // keys — the artwork itself stands in for those.
+  const META_SKIP = new Set(['name', 'ticker', 'image', 'logo', 'mediatype', 'files', 'decimals']);
+  const globalMeta = $derived.by(() => filterMeta(metadata, META_SKIP));
+
+  // The metadata shown with each media: the global metadata for the first, and for the rest
+  // each one's `files[]` entry (the server builds media[i] 1:1 from files[i]) minus its
+  // media-technical src/mediaType. Null entries show no metadata.
+  const FILE_SKIP = new Set(['src', 'mediatype']);
+  const mediaMeta = $derived.by(() => {
+    const filesVal = metadata?.files;
+    const files: unknown[] = Array.isArray(filesVal) ? filesVal : [];
+    return media.map((_, i) => (i === 0 ? globalMeta : filterMeta(files[i], FILE_SKIP)));
   });
 
   function fmtDate(epoch: number): string {
@@ -51,17 +71,79 @@
   const quantityLabel = $derived(quantity ? quantity.replace(/\B(?=(\d{3})+(?!\d))/g, ',') : null);
   const policyShort = $derived(policy ? `${policy.slice(0, 6)}…${policy.slice(-4)}` : null);
 
-  // While the metadata is open, a click anywhere outside the panel closes it (same as
-  // the ×). Capture phase so it fires even if the media player stops the click; the
-  // listener is only attached once the panel is open, so the click that opened it (the
-  // (i) button) isn't caught.
+  // Step between media (clamped); each media is effectively its own page.
+  function go(delta: number) {
+    const n = media.length;
+    if (n) current = Math.max(0, Math.min(n - 1, current + delta));
+  }
+
+  // Reflect the current media in the URL (asset1…/files/N; N=0 → the bare asset), without
+  // adding history entries.
   $effect(() => {
-    if (!metaOpen) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (!(e.target as Element)?.closest?.('.meta-panel')) metaOpen = false;
+    if (!media.length) return;
+    const url = current === 0 ? `/${fingerprint}` : `/${fingerprint}/files/${current}`;
+    history.replaceState(history.state, '', url);
+  });
+
+  // Navigate with the wheel, arrow keys, or a vertical swipe. The wheel defers to a
+  // scrollable metadata panel until it reaches its edge.
+  $effect(() => {
+    let lastNav = 0;
+    function step(delta: number) {
+      const now = performance.now();
+      if (now - lastNav < NAV_COOLDOWN_MS) return;
+      lastNav = now;
+      go(delta);
+    }
+    function onKey(e: KeyboardEvent) {
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.closest?.('.search'))) return;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowRight') step(1);
+      else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') step(-1);
+      else return;
+      e.preventDefault();
+    }
+    function onWheel(e: WheelEvent) {
+      if (Math.abs(e.deltaY) < 8) return;
+      const panel = (e.target as Element | null)?.closest?.('.meta-panel') as HTMLElement | null;
+      if (panel && panel.scrollHeight > panel.clientHeight) {
+        const atTop = panel.scrollTop <= 0;
+        const atBottom = panel.scrollTop + panel.clientHeight >= panel.scrollHeight - 1;
+        if ((e.deltaY < 0 && !atTop) || (e.deltaY > 0 && !atBottom)) return; // let the panel scroll
+      }
+      step(e.deltaY > 0 ? 1 : -1);
+    }
+    let touchY = 0;
+    function onTouchStart(e: TouchEvent) {
+      touchY = e.touches[0]?.clientY ?? 0;
+    }
+    function onTouchEnd(e: TouchEvent) {
+      const dy = touchY - (e.changedTouches[0]?.clientY ?? touchY);
+      if (Math.abs(dy) > 40) step(dy > 0 ? 1 : -1); // swipe up → next
+    }
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('wheel', onWheel, { passive: true });
+    window.addEventListener('touchstart', onTouchStart, { passive: true });
+    window.addEventListener('touchend', onTouchEnd, { passive: true });
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('wheel', onWheel);
+      window.removeEventListener('touchstart', onTouchStart);
+      window.removeEventListener('touchend', onTouchEnd);
     };
-    document.addEventListener('click', onDocClick, true);
-    return () => document.removeEventListener('click', onDocClick, true);
+  });
+
+  // A click toggles this media's metadata (hidden → the media reclaims the space). Clicks
+  // inside the metadata are left alone so its text stays selectable; the logo/search keep
+  // their own clicks. Capture phase so the media player can't swallow it.
+  $effect(() => {
+    function onClick(e: MouseEvent) {
+      const t = e.target as Element | null;
+      if (t?.closest?.('.home-logo') || t?.closest?.('.search') || t?.closest?.('.meta-panel')) return;
+      metaOpen = !metaOpen;
+    }
+    document.addEventListener('click', onClick, true);
+    return () => document.removeEventListener('click', onClick, true);
   });
 
   onMount(async () => {
@@ -84,6 +166,7 @@
       firstMint = data.first_mint ?? null;
       lastMint = data.last_mint ?? null;
       metadata = data.metadata ?? null;
+      current = Math.max(0, Math.min(initialIndex, media.length - 1)); // clamp a deep-linked index
       document.title = data.name ?? fingerprint;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -101,11 +184,30 @@
   {:else if media.length === 0}
     <div class="status">No media for this asset.</div>
   {:else}
-    {#each media as m (m.src)}
-      <div class="media-item" style:padding-bottom={placardHeight ? `${placardHeight + 24}px` : undefined}>
-        <nftcdn-media-player src={m.src} type={m.type} name={m.name}></nftcdn-media-player>
+    <!-- One media at a time. It reserves the top band for the icons / metadata and the
+         bottom band for the placard, so neither overlaps it. -->
+    <div
+      class="media-item"
+      style:padding-top={`${Math.max(ICONS_BOTTOM, metaOpen && mediaMeta[current] ? META_INSET + metaHeight : 0) + MEDIA_TOP_GAP}px`}
+      style:padding-bottom={`${placardHeight + MEDIA_BOTTOM_GAP}px`}
+    >
+      {#key current}
+        <nftcdn-media-player src={media[current].src} type={media[current].type} name={media[current].name}
+        ></nftcdn-media-player>
+      {/key}
+    </div>
+
+    {#if mediaMeta[current] && metaOpen}
+      <!-- This media's metadata, top-left. A click outside it hides it (and the media
+           expands); a click inside selects text without hiding. -->
+      <div class="meta-panel" bind:clientHeight={metaHeight} transition:fade={{ duration: 150 }}>
+        {@render jsonNode(mediaMeta[current])}
       </div>
-    {/each}
+    {/if}
+
+    {#if media.length > 1}
+      <div class="pager">{current + 1} / {media.length}</div>
+    {/if}
   {/if}
 
   {#if !loading && !error && (name || policyShort || quantityLabel || mintLabel)}
@@ -132,25 +234,6 @@
       </dl>
       {#if name}<div class="name">{name}</div>{/if}
     </div>
-  {/if}
-
-  {#if !loading && !error && metaShown}
-    {#if metaOpen}
-      <div class="meta-panel" transition:fade={{ duration: 200 }}>
-        <button class="meta-close" type="button" onclick={() => (metaOpen = false)} aria-label="Hide metadata">✕</button
-        >
-        {@render jsonNode(metaShown)}
-      </div>
-    {:else}
-      <button
-        class="meta-info"
-        class:idle-hidden={!uiVisible}
-        type="button"
-        onclick={() => (metaOpen = true)}
-        aria-label="Show metadata"
-        transition:fade={{ duration: 200 }}>i</button
-      >
-    {/if}
   {/if}
 </div>
 
@@ -183,23 +266,22 @@
   .asset-page {
     width: 100%;
     height: 100%;
-    overflow-y: auto;
+    overflow: hidden; /* one media per screen — navigate, don't scroll */
     background: var(--bg);
     position: relative;
   }
 
-  /* Each media gets the full window, minus a uniform margin. */
+  /* The current media fills the window minus the reserved bands (inline padding). */
   .media-item {
     width: 100%;
     height: 100dvh;
     box-sizing: border-box;
-    /* The media zone sits between the top corner icons (48px @ 12px) and the
-       bottom-right placard (its measured height is reserved inline), with a small
-       side margin. The bottom-left metadata may overlay this. */
-    padding: 72px var(--asset-margin, 16px) var(--asset-margin, 16px);
+    padding-left: var(--asset-margin, 16px);
+    padding-right: var(--asset-margin, 16px);
     display: flex;
     align-items: center;
     justify-content: center;
+    transition: padding 0.3s ease; /* smooth as the reserved bands change between media */
   }
 
   nftcdn-media-player {
@@ -208,9 +290,8 @@
     outline: none;
   }
 
-  /* Keep aspect ratio: fit media inside its full-window container. The `outline:
-     none` suppresses the browser's native focus ring around the media (it appears
-     after the element is fullscreened/focused). */
+  /* Keep aspect ratio: fit media inside its container. The `outline: none` suppresses the
+     browser's native focus ring around the media (it appears after fullscreen/focus). */
   nftcdn-media-player::part(img),
   nftcdn-media-player::part(video),
   nftcdn-media-player::part(iframe),
@@ -234,7 +315,8 @@
   /* Gallery placard: clean text in the bottom-right corner over the piece. */
   .placard {
     position: fixed;
-    right: 12px;
+    /* Clear the feed's vertical scrollbar when present (width measured in App). */
+    right: calc(12px + var(--scrollbar-width, 0px));
     bottom: 12px;
     margin: 0;
     z-index: 2;
@@ -300,94 +382,41 @@
     text-decoration: underline;
   }
 
-  /* Bottom-left: the on-chain metadata, formatted — same type/treatment as the
-     right placard but left-aligned and scrollable. */
+  /* This media's metadata, top-left — full width up to the top-right corner icons. */
   .meta-panel {
     position: fixed;
     left: 12px;
-    bottom: 12px;
+    top: 12px;
     z-index: 2;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 5px;
-    max-width: min(46vw, 400px);
+    max-width: calc(100vw - 160px - var(--scrollbar-width, 0px));
     max-height: 62dvh;
     overflow-y: auto;
     font-family: Inter, sans-serif;
     font-size: 12px;
     color: rgba(255, 255, 255, 0.62);
     scrollbar-width: thin;
-    /* Very transparent: a *gray* tint (not pure black, which is 0 over black at any
-       opacity) so it's almost-black-but-not-quite over dark art and almost transparent
-       over light/busy art. A faint border + text-shadow keep it legible. */
-    background: rgba(48, 48, 56, 0.2);
-    border-radius: 6px;
-    padding: 10px 12px;
+    /* No background; a text-shadow keeps it legible over the artwork's letterbox. */
     text-shadow:
       0 1px 6px rgba(0, 0, 0, 0.6),
       0 0 2px rgba(0, 0, 0, 0.45);
   }
 
-  /* Close (×) in the panel's top-right; (i) button when the panel is hidden. */
-  .meta-close,
-  .meta-info {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    pointer-events: auto;
-    cursor: pointer;
-    background: rgba(40, 40, 48, 0.72);
-    color: rgba(255, 255, 255, 0.7);
-    font-family: Inter, sans-serif;
-    line-height: 1;
-    padding: 0;
-    transition:
-      color 0.15s ease,
-      opacity 0.15s ease;
-  }
-
-  .meta-close {
-    align-self: flex-end;
-    width: 20px;
-    height: 20px;
-    border: none;
-    background: transparent;
-    /* Dimmer — the muted metadata-label color. */
-    color: rgba(255, 255, 255, 0.4);
-    font-size: 13px;
-  }
-
-  .meta-info {
+  /* Page indicator (only with several media), bottom-centre. */
+  .pager {
     position: fixed;
-    left: 12px;
-    bottom: 12px;
+    left: 50%;
+    bottom: 14px;
+    transform: translateX(-50%);
     z-index: 2;
-    width: 26px;
-    height: 26px;
-    /* Transparent, with the "i" and circle in the muted metadata-key color. The ring
-       is a box-shadow rather than a border — it tends to anti-alias the curve more
-       smoothly than a thin faint 1px border (which can look pixelated at 1× DPI). */
-    background: transparent;
-    color: rgba(255, 255, 255, 0.4);
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4);
-    border-radius: 50%;
-    font-size: 14px;
-    font-style: italic;
+    font-family: Inter, sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: rgba(255, 255, 255, 0.5);
     text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
-  }
-
-  .meta-close:hover,
-  .meta-info:hover {
-    color: #fff;
-    border-color: rgba(255, 255, 255, 0.7);
-  }
-
-  /* Fade out with the corner chrome when idle (slow out, quick back on interaction). */
-  .meta-info.idle-hidden {
-    opacity: 0;
     pointer-events: none;
-    transition: opacity 1.5s ease;
   }
 
   .kv {

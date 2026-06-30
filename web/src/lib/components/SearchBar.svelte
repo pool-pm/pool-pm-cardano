@@ -135,8 +135,9 @@
   .search {
     position: fixed;
     top: 12px;
-    /* Sit left of the feed's vertical scrollbar (width measured in App). */
-    right: calc(12px + var(--scrollbar-width, 0px));
+    /* Sit just left of the pool.pm logo (48px) in the top-right, clearing the feed's
+       vertical scrollbar (measured in App): 12 margin + 48 logo + 8 gap = 68. */
+    right: calc(68px + var(--scrollbar-width, 0px));
     z-index: 100;
     opacity: 1;
     transition: opacity 0.15s ease;
@@ -244,9 +245,9 @@
       padding 0.25s ease;
   }
   .search.open .search-input {
-    /* Extend to the top-left margin: viewport minus left margin (12) + this bar's
-       icon (48) + right margin (12) + scrollbar. */
-    width: calc(100vw - 72px - var(--scrollbar-width, 0px));
+    /* Extend to the top-left margin: viewport minus the left margin (12) + this bar's
+       icon (48) + the right side now taken by the logo (12 + 48 + 8 gap = 68) + scrollbar. */
+    width: calc(100vw - 128px - var(--scrollbar-width, 0px));
     padding: 0 8px 0 16px;
   }
 
