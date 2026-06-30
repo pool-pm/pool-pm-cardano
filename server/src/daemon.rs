@@ -108,11 +108,11 @@ fn start_from_boundary(db_url: &Url, tip_slot: u64) -> (IntersectConfig, Option<
 pub fn run(args: Args) -> Result<(), Error> {
     setup_tracing(args.verbose);
 
-    // Memory watchdog on a plain OS thread (independent of any async runtime), so RSS is
-    // sampled continuously even during a long single step like the asset-holdings build
-    // that would otherwise OOM with no log line in between.
+    // Memory watchdog on a plain OS thread (independent of any async runtime): a periodic
+    // RSS heartbeat for long-run monitoring.
+    const MEM_WATCHDOG_INTERVAL: Duration = Duration::from_secs(300);
     std::thread::spawn(|| loop {
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        std::thread::sleep(MEM_WATCHDOG_INTERVAL);
         tracing::info!(rss_mb = crate::state::rss_mb(), "mem watchdog");
     });
 
