@@ -36,7 +36,10 @@
   const CELL = 128;
   const GAP = 8;
   const ROW = CELL + GAP;
-  const CARD = 100; // stacked-card sample thumbnail size — slightly smaller than the cell
+  // Fixed offset between stacked cards: each card behind peeks by exactly this much
+  // regardless of how many are stacked (the card *size* shrinks to fit instead). Front
+  // card fills to the cell edge, so card size = CELL - (n-1)*STACK_STEP.
+  const STACK_STEP = 16;
   const GROUP_SAMPLES = 4; // max sample cards in a stack — must match the server
   const BUFFER_ROWS = 4; // extra rows rendered above/below the viewport
   const PREFETCH_ROWS = 6; // fetch the next page once the buffer gets this close to the end
@@ -271,7 +274,7 @@
                 {@render assetCell(g.samples[0])}
               {:else}
                 {@const n = g.samples.length}
-                {@const step = n > 1 ? (CELL - CARD) / (n - 1) : 0}
+                {@const card = CELL - (n - 1) * STACK_STEP}
                 <!-- Stacked cards: back card top-left, front card bottom-right; the
                      badge shows the true asset count. Drills into the policy. -->
                 <a
@@ -281,7 +284,10 @@
                   title={`${g.count} assets`}
                 >
                   {#each g.samples as s, i (s.fingerprint)}
-                    <span class="stack-card" style="left:{i * step}px; top:{i * step}px">
+                    <span
+                      class="stack-card"
+                      style="left:{i * STACK_STEP}px; top:{i * STACK_STEP}px; width:{card}px; height:{card}px"
+                    >
                       {#if (!suppressImages || loaded.has(s.fingerprint)) && !broken.has(s.fingerprint)}
                         <img
                           class="card-img"
@@ -393,10 +399,10 @@
 
   /* A multi-asset policy: overlapping cards stepping from top-left (back) to
      bottom-right (front), clipped to the cell (inherits .cell's overflow: hidden). */
+  /* Size (width/height) is set inline: it shrinks with the number of stacked cards
+     so the fixed STACK_STEP offset leaves a constant peek for each card behind. */
   .stack-card {
     position: absolute;
-    width: 100px;
-    height: 100px;
     border-radius: 3px;
     background: #161616;
     /* A page-coloured matte separates overlapping cards into a visible stack. */
@@ -415,7 +421,7 @@
 
   .badge {
     position: absolute;
-    bottom: 4px;
+    bottom: 0;
     left: 50%;
     transform: translateX(-50%);
     z-index: 1;

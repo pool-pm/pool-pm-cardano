@@ -62,7 +62,7 @@
   {@const total = (BigInt(stake.balance ?? '0') + BigInt(stake.rewards ?? '0')).toString()}
   <div class="subject-card" class:landscape style:--subject-color={color}>
     <span class="stake-address" style:color title={stake.stake_address}>{stake.stake_address}</span>
-    <span class="pool-stake">{formatAda(total)}</span>
+    <a class="pool-stake" href="/{stake.stake_address}">{formatAda(total)}</a>
     {#if stake.rewards && stake.rewards !== '0'}
       <span class="pool-delegators">incl. {formatAda(stake.rewards)} rewards</span>
     {/if}
@@ -107,7 +107,7 @@
   <div class="subject-card" class:landscape style:--subject-color={color}>
     <span class="stake-address" style:color title={address.address}>{address.address}</span>
     {#if address.balance}
-      <span class="pool-stake">{formatAda(address.balance)}</span>
+      <a class="pool-stake" href="/{address.address}">{formatAda(address.balance)}</a>
     {/if}
     {#if address.handle}
       <span class="handle"><span class="handle-dollar">$</span>{address.handle}</span>
@@ -118,6 +118,11 @@
           <span class="pool-param-label">assets</span>
           <span class="pool-param-value">{address.assets_count}</span>
         </a>
+      {:else}
+        <div class="pool-param">
+          <span class="pool-param-label">assets</span>
+          <span class="pool-param-value">{address.assets_count}</span>
+        </div>
       {/if}
       {#if address.stake_address}
         <a class="pool-param pool-param-link" href="/{address.stake_address}" title={address.stake_address}>
@@ -253,6 +258,13 @@
     font-size: 24px;
     color: var(--text);
     line-height: 1;
+    text-decoration: none;
+  }
+
+  /* The ADA value links back to the subject's feed (a:href set only on the
+     address/stake cards); dim slightly on hover to hint it's clickable. */
+  a.pool-stake:hover {
+    opacity: 0.8;
   }
 
   .pool-delegators {
