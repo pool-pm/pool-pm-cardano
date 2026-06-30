@@ -52,7 +52,12 @@
   let { tx, compact = false }: { tx: FeedTx; compact?: boolean } = $props();
   let failedAssets = $state<Record<number, number>>({});
 
+  // Above this rendered thumbnail size the art is already legible, so the hover
+  // preview only kicks in for small (densely packed) thumbnails.
+  const PREVIEW_MAX_THUMB = 64;
+
   function showPreview(e: MouseEvent) {
+    if (thumbSize > PREVIEW_MAX_THUMB) return;
     const thumb = e.target as HTMLImageElement;
     let preview = document.getElementById('asset-preview') as HTMLImageElement;
     if (!preview) {
