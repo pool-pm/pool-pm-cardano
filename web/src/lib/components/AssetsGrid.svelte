@@ -445,10 +445,12 @@
     width: 100%;
     text-align: center;
     color: rgb(255 255 255 / 0.5);
-    font-family: system-ui, sans-serif;
+    /* Inter (the app font) with tabular, slashed-zero figures — even-width digits for
+       the numeric quantity. */
+    font-family: Inter, sans-serif;
     font-size: 11px;
     line-height: 1.3;
-    font-variant-numeric: tabular-nums;
+    font-variant-numeric: tabular-nums slashed-zero;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -502,7 +504,7 @@
   .name-text {
     text-align: center;
     color: #fff;
-    font-family: system-ui, sans-serif;
+    font-family: Inter, sans-serif;
     font-size: 12px;
     line-height: 1.25;
     display: -webkit-box;
