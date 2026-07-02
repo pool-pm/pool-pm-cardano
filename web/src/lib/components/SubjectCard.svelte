@@ -1,6 +1,15 @@
 <script lang="ts">
   import type { PoolInfo, DRepInfo, StakeInfo, AddressInfo, CardanoInfo } from '../types';
   import { poolColor, formatTicker, formatAda } from '../layout';
+  import { config } from '../stores';
+
+  // Network magic numbers (Pallas GenesisValues) → homepage card name. Mainnet keeps
+  // "CARDANO"; the testnets show their name so it's obvious which chain is loaded.
+  const PREPROD_MAGIC = 1;
+  const PREVIEW_MAGIC = 2;
+  const networkName = $derived(
+    $config?.magic === PREPROD_MAGIC ? 'PREPROD' : $config?.magic === PREVIEW_MAGIC ? 'PREVIEW' : 'CARDANO',
+  );
 
   // The subject header card, shared by the feed pages and the assets page. Exactly
   // one of pool/drep/stake/address/cardano is set (the page's subject); the card
@@ -140,7 +149,7 @@
   </div>
 {:else if cardano}
   <div class="subject-card" class:landscape style:--subject-color={'white'}>
-    <span class="pool-name" style:color="white">CARDANO</span>
+    <span class="pool-name" style:color="white">{networkName}</span>
     <span class="pool-stake">{formatAda(cardano.circulation)}</span>
     <div class="pool-params pool-stats">
       <div class="pool-param">
