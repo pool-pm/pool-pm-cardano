@@ -434,8 +434,8 @@
       >
         {#if section.reward}
           <div class="block-header">
-            <span class="block-meta">{formatDate(section.reward.timestamp)}</span>
-            <span class="block-meta">
+            <span class="block-meta block-when">{formatDate(section.reward.timestamp)}</span>
+            <span class="block-meta block-when">
               {#if i === 1}{timeAgo(section.reward.timestamp)}{:else}{formatTime(section.reward.timestamp)}{/if}
             </span>
           </div>
@@ -462,8 +462,8 @@
               <span class="block-meta">Epoch {ei.epoch}</span>
               <span class="block-meta">{formatTimeLeft(ei.epochEnd)}</span>
             {:else if section.block}
-              <span class="block-meta">{formatDate(section.block.timestamp)}</span>
-              <span class="block-meta">
+              <span class="block-meta block-when">{formatDate(section.block.timestamp)}</span>
+              <span class="block-meta block-when">
                 {#if i === 1}{timeAgo(section.block.timestamp)}{:else}{formatTime(section.block.timestamp)}{/if}
               </span>
             {/if}
@@ -615,6 +615,11 @@
   .block-meta {
     color: var(--meta-color, rgb(0 0 0 / 0.5));
     font-size: 10px;
+  }
+
+  /* The block date and time read a touch heavier than the rest of the meta line. */
+  .block-when {
+    font-weight: 500;
   }
 
   .block-hash {
