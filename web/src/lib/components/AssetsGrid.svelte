@@ -31,15 +31,20 @@
     policyFilter?: string;
   } = $props();
 
-  // Uniform-grid geometry (px). The fixed cell size is what makes windowing
+  // Uniform-grid geometry (px). A fixed cell size per render is what makes windowing
   // trivial: a row's top is exactly its index * ROW, so no measurement is needed.
-  const CELL = 128;
-  const GAP = 8;
-  const ROW = CELL + GAP;
+  // TILE_TARGET is the *desired* tile width; the actual CELL is derived per render so
+  // a whole number of columns fills the container width (a gallery wall, not a
+  // left-packed sheet). CELL is still constant within a render, so the row math holds.
+  const TILE_TARGET = 168; // desired tile edge (px); actual CELL flexes around it
+  const GAP = 16;
+  // Mat inset: the framed border of empty space around each artwork. The art box is
+  // CELL - 2*MAT, and stacked cards size within that inner box.
+  const MAT = 10;
   // Fixed offset between stacked cards: each card behind peeks by exactly this much
   // regardless of how many are stacked (the card *size* shrinks to fit instead). Front
-  // card fills to the cell edge, so card size = CELL - (n-1)*STACK_STEP.
-  const STACK_STEP = 16;
+  // card fills the inner art box, so card size = (CELL - 2*MAT) - (n-1)*STACK_STEP.
+  const STACK_STEP = 20;
   const GROUP_SAMPLES = 4; // max sample cards in a stack — must match the server
   const BUFFER_ROWS = 4; // extra rows rendered above/below the viewport
   const PREFETCH_ROWS = 6; // fetch the next page once the buffer gets this close to the end
@@ -88,7 +93,12 @@
   const items: PolicyAsset[] | AssetGroup[] = $derived(grouped ? groups : visible);
   const empty = $derived((grouped ? groups.length : assets.length) === 0);
 
-  const cols = $derived(Math.max(1, Math.floor((containerW + GAP) / ROW)));
+  // Pick the column count that lands each tile nearest TILE_TARGET, then size the
+  // square CELL to fill the row (floored so the row never overflows the container).
+  // CELL/ROW are constant within a render, so the windowing math below stays exact.
+  const cols = $derived(Math.max(1, Math.round((containerW + GAP) / (TILE_TARGET + GAP))));
+  const CELL = $derived(containerW > 0 ? Math.floor((containerW - (cols - 1) * GAP) / cols) : TILE_TARGET);
+  const ROW = $derived(CELL + GAP);
   // Exact width of one full row of `cols` cells. Pinning the flex container to
   // this (rather than the full container width) makes it wrap at exactly `cols`
   // per row — matching the slice math deterministically, instead of letting
@@ -227,29 +237,33 @@
   }
 </script>
 
-<!-- One asset tile (also used for a single-asset policy group). -->
+<!-- One framed asset tile (also used for a single-asset policy group): a matted
+     frame around the artwork, with the name on a caption revealed on hover/focus. -->
 {#snippet assetCell(a: PolicyAsset)}
   {@const label = a.name ?? a.fingerprint}
-  <a class="cell" href={'/' + a.fingerprint} aria-label={label} title={label}>
-    {#if mode === 'text-fallback' && broken.has(a.fingerprint)}
-      <!-- Only when the image 404s: the name/fingerprint stands in for the missing art. -->
-      <span class="cell-text">{label}</span>
-    {/if}
-    {#if (!suppressImages || loaded.has(a.fingerprint)) && !broken.has(a.fingerprint)}
-      <img
-        class="thumb"
-        src={a.src}
-        srcset={a.srcset}
-        decoding="async"
-        alt=""
-        onload={() => loaded.add(a.fingerprint)}
-        onerror={() => broken.add(a.fingerprint)}
-      />
-    {/if}
+  {@const isText = mode === 'text-fallback' && broken.has(a.fingerprint)}
+  <a class="frame" class:text={isText} href={'/' + a.fingerprint} aria-label={label} title={label}>
+    <span class="art">
+      {#if isText}
+        <!-- Image 404'd: the name/fingerprint stands in for the missing art as a placard. -->
+        <span class="cell-text">{label}</span>
+      {:else if !suppressImages || loaded.has(a.fingerprint)}
+        <img
+          class="thumb"
+          src={a.src}
+          srcset={a.srcset}
+          decoding="async"
+          alt=""
+          onload={() => loaded.add(a.fingerprint)}
+          onerror={() => broken.add(a.fingerprint)}
+        />
+      {/if}
+    </span>
     {#if a.quantity}
       <!-- Owned amount (decimals-applied); the server omits it when it's 1. -->
-      <span class="badge">{a.quantity}</span>
+      <span class="qty">{a.quantity}</span>
     {/if}
+    <span class="cap">{label}</span>
   </a>
 {/snippet}
 
@@ -266,7 +280,10 @@
       <!-- clientWidth is bound here (not on .scroll): .scroll carries the horizontal
            padding, so the spacer's content-box width is what the column math needs. -->
       <div class="spacer" bind:clientWidth={containerW} style="height:{spacerHeight}px">
-        <div class="window" style="transform:translateY({offsetY}px); width:{rowWidth}px">
+        <div
+          class="window"
+          style="transform:translateY({offsetY}px); width:{rowWidth}px; --cell:{CELL}px; --mat:{MAT}px; --gap:{GAP}px"
+        >
           {#each slice as item (grouped ? (item as AssetGroup).policy : (item as PolicyAsset).fingerprint)}
             {#if grouped}
               {@const g = item as AssetGroup}
@@ -274,34 +291,38 @@
                 {@render assetCell(g.samples[0])}
               {:else}
                 {@const n = g.samples.length}
-                {@const card = CELL - (n - 1) * STACK_STEP}
-                <!-- Stacked cards: back card top-left, front card bottom-right; the
-                     badge shows the true asset count. Drills into the policy. -->
+                {@const inner = CELL - 2 * MAT}
+                {@const card = inner - (n - 1) * STACK_STEP}
+                <!-- Stacked cards inside the mat: back card top-left, front card
+                     bottom-right; the chip shows the true asset count. Drills into the policy. -->
                 <a
-                  class="cell stack"
+                  class="frame stack"
                   href={`/${subject}/assets/${g.policy}`}
                   aria-label={`${g.count} assets`}
                   title={`${g.count} assets`}
                 >
-                  {#each g.samples as s, i (s.fingerprint)}
-                    <span
-                      class="stack-card"
-                      style="left:{i * STACK_STEP}px; top:{i * STACK_STEP}px; width:{card}px; height:{card}px"
-                    >
-                      {#if (!suppressImages || loaded.has(s.fingerprint)) && !broken.has(s.fingerprint)}
-                        <img
-                          class="card-img"
-                          src={s.src}
-                          srcset={s.srcset}
-                          decoding="async"
-                          alt=""
-                          onload={() => loaded.add(s.fingerprint)}
-                          onerror={() => broken.add(s.fingerprint)}
-                        />
-                      {/if}
-                    </span>
-                  {/each}
-                  <span class="badge">{g.count}</span>
+                  <span class="art">
+                    {#each g.samples as s, i (s.fingerprint)}
+                      <span
+                        class="stack-card"
+                        style="left:{i * STACK_STEP}px; top:{i * STACK_STEP}px; width:{card}px; height:{card}px"
+                      >
+                        {#if (!suppressImages || loaded.has(s.fingerprint)) && !broken.has(s.fingerprint)}
+                          <img
+                            class="card-img"
+                            src={s.src}
+                            srcset={s.srcset}
+                            decoding="async"
+                            alt=""
+                            onload={() => loaded.add(s.fingerprint)}
+                            onerror={() => broken.add(s.fingerprint)}
+                          />
+                        {/if}
+                      </span>
+                    {/each}
+                  </span>
+                  <span class="qty">{g.count}</span>
+                  <span class="cap">{g.count} assets</span>
                 </a>
               {/if}
             {:else}
@@ -316,6 +337,9 @@
 
 <style>
   .page {
+    /* Mat colour: a shade lifted off the black wall, so a framed tile reads as a
+       matted print and `contain` letterboxing blends into the frame (no black bars). */
+    --mat-bg: #0e0e11;
     display: flex;
     flex-direction: column;
     height: 100dvh;
@@ -348,7 +372,8 @@
   /* flex-wrap (not grid) so the partial last row is centered too, not left-packed.
      Width is pinned (inline) to exactly `cols` cells and the box is centered via
      auto margins; that makes it wrap at exactly `cols`/row (no sub-pixel drift)
-     while justify-content:center centers the partial last row. */
+     while justify-content:center centers the partial last row. --cell/--gap/--mat
+     are set inline from the JS geometry so those consts stay the single source. */
   .window {
     position: absolute;
     top: 0;
@@ -357,29 +382,63 @@
     margin-inline: auto;
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: var(--gap);
     justify-content: center;
   }
 
-  .cell {
+  /* A matted, framed tile: the artwork sits inset by the mat inside a panel lifted
+     off the black wall, with a hairline border and soft shadow — a print on a wall. */
+  .frame {
     flex: none;
-    width: 128px;
-    height: 128px;
+    width: var(--cell);
+    height: var(--cell);
+    box-sizing: border-box;
     display: block;
-    position: relative; /* so .cell-text and .thumb can stack via position:absolute */
-    background: var(--bg);
-    border-radius: 3px;
+    position: relative;
+    border-radius: 10px;
+    background: var(--mat-bg);
+    border: 1px solid rgb(255 255 255 / 0.07);
+    box-shadow:
+      0 1px 2px rgb(0 0 0 / 0.6),
+      0 6px 18px -8px rgb(0 0 0 / 0.8);
     overflow: hidden;
+    transition:
+      transform 0.18s ease,
+      border-color 0.18s ease,
+      box-shadow 0.18s ease;
+    -webkit-tap-highlight-color: transparent;
   }
 
-  /* Shown only when the image 404s: the name/fingerprint centered in the cell. */
-  .cell-text {
+  /* The artwork window inside the mat. Its background is the mat colour so a
+     `contain`-letterboxed image blends into the frame instead of showing black bars. */
+  .art {
+    position: absolute;
+    inset: var(--mat);
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--mat-bg);
+    display: block;
+  }
+
+  .thumb {
     position: absolute;
     inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    transition: transform 0.25s ease;
+  }
+
+  /* Non-image token (image 404'd): the name/fingerprint as a centered placard. */
+  .frame.text .art {
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 4px;
+    background: radial-gradient(120% 120% at 50% 0%, #17171b, #0b0b0d);
+  }
+  .cell-text {
+    padding: 8px;
     color: var(--text-muted, #9c9c9c);
     font-family: system-ui, sans-serif;
     font-size: 11px;
@@ -388,27 +447,87 @@
     overflow: hidden;
   }
 
-  .thumb {
+  /* Quantity / asset-count chip, tucked in the top-right out of the caption's way. */
+  .qty {
     position: absolute;
-    inset: 0;
-    width: 128px;
-    height: 128px;
-    object-fit: contain;
-    border-radius: 3px;
+    top: 8px;
+    right: 8px;
+    z-index: 2;
+    padding: 2px 7px;
+    border-radius: 7px;
+    background: rgb(0 0 0 / 0.66);
+    box-shadow: 0 0 0 1px rgb(255 255 255 / 0.08);
+    color: #fff;
+    font-family: system-ui, sans-serif;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.4;
+    max-width: calc(100% - 16px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The asset name on a caption strip, revealed on hover/focus (a gallery placard). */
+  .cap {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 2;
+    padding: 18px 10px 8px;
+    background: linear-gradient(to top, rgb(0 0 0 / 0.85), rgb(0 0 0 / 0));
+    color: #fff;
+    font-family: system-ui, sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(6px);
+    transition:
+      opacity 0.18s ease,
+      transform 0.18s ease;
+  }
+
+  /* Hover/focus: the frame lifts and brightens with a neutral light ring (no subject
+     colour), the art zooms slightly, and the name caption slides up. */
+  .frame:hover,
+  .frame:focus-visible {
+    transform: translateY(-3px);
+    border-color: rgb(255 255 255 / 0.42);
+    box-shadow:
+      0 0 0 1px rgb(255 255 255 / 0.22),
+      0 12px 28px -10px rgb(0 0 0 / 0.9);
+    outline: none;
+  }
+  .frame:hover .thumb,
+  .frame:focus-visible .thumb {
+    transform: scale(1.04);
+  }
+  .frame:hover .cap,
+  .frame:focus-visible .cap {
+    opacity: 1;
+    transform: none;
   }
 
   /* A multi-asset policy: overlapping cards stepping from top-left (back) to
-     bottom-right (front), clipped to the cell (inherits .cell's overflow: hidden). */
-  /* Size (width/height) is set inline: it shrinks with the number of stacked cards
-     so the fixed STACK_STEP offset leaves a constant peek for each card behind. */
+     bottom-right (front), inside the mat (inherits .art's overflow: hidden). Size is
+     set inline: it shrinks with the number of stacked cards so the fixed STACK_STEP
+     offset leaves a constant peek for each card behind. */
+  .frame.stack .art {
+    background: transparent;
+  }
   .stack-card {
     position: absolute;
     border-radius: 3px;
     background: #161616;
-    /* A page-coloured matte separates overlapping cards into a visible stack. */
+    /* A mat-coloured matte separates overlapping cards into a visible stack. */
     box-shadow:
-      0 0 0 2px var(--bg),
-      0 1px 4px rgba(0, 0, 0, 0.55);
+      0 0 0 2px var(--mat-bg),
+      0 1px 4px rgb(0 0 0 / 0.55);
     overflow: hidden;
   }
 
@@ -419,24 +538,24 @@
     display: block;
   }
 
-  .badge {
-    position: absolute;
-    bottom: 0;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 1;
-    padding: 1px 7px;
-    border-radius: 9px;
-    background: rgba(0, 0, 0, 0.72);
-    color: #fff;
-    font-family: system-ui, sans-serif;
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-    line-height: 1.4;
-    max-width: calc(100% - 8px);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  @media (prefers-reduced-motion: reduce) {
+    .frame,
+    .thumb,
+    .cap {
+      transition: none;
+    }
+    .frame:hover,
+    .frame:focus-visible {
+      transform: none;
+    }
+    .frame:hover .thumb,
+    .frame:focus-visible .thumb {
+      transform: none;
+    }
+    .frame:hover .cap,
+    .frame:focus-visible .cap {
+      transform: none;
+    }
   }
 
   .status {
