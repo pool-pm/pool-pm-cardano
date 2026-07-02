@@ -351,9 +351,11 @@
 
 <style>
   .page {
-    /* Mat colour: a shade lifted off the black wall, so a framed tile reads as a
-       matted print and `contain` letterboxing blends into the frame (no black bars). */
+    /* Matte behind the stacked-card thumbnails. */
     --mat-bg: #0e0e11;
+    /* The area behind the cards is lifted a hair above pure black so each card's soft
+       bottom shadow is actually visible (a black shadow on #000 shows nothing). */
+    --surface: #09090b;
     display: flex;
     flex-direction: column;
     height: 100dvh;
@@ -361,7 +363,7 @@
        The card centers itself (margin-inline auto) and clears the corner chrome. */
     padding-top: 16px;
     box-sizing: border-box;
-    background: var(--bg);
+    background: var(--surface);
   }
 
   .scroll {
@@ -373,7 +375,7 @@
        this padding shrinks the usable width the column math sees. */
     padding-inline: 20px;
     box-sizing: border-box;
-    background: var(--bg);
+    background: var(--surface);
   }
 
   /* Reserves the full scroll height of all loaded rows; the window is absolutely
@@ -422,13 +424,16 @@
     height: var(--tile-h);
     box-sizing: border-box;
     position: relative;
-    /* Square corners; a slight top-to-bottom gradient (lighter top, darker bottom). */
+    /* A dark painting canvas, lit from above: square corners, a slight lighter-top →
+       darker-bottom gradient, a faint light catch on the top edge and shadow on the
+       bottom edge, and a soft drop shadow — so it sits slightly proud. Kept subtle. */
     border-radius: 0;
-    background: linear-gradient(180deg, #17171c 0%, #0a0a0c 100%);
-    border: 1px solid rgb(255 255 255 / 0.07);
+    background: linear-gradient(180deg, #16161b 0%, #0d0d10 100%);
+    border: 1px solid rgb(255 255 255 / 0.05);
     box-shadow:
-      0 1px 2px rgb(0 0 0 / 0.6),
-      0 6px 18px -8px rgb(0 0 0 / 0.8);
+      0 4px 10px -4px rgb(0 0 0 / 0.6),
+      inset 0 1px 0 rgb(255 255 255 / 0.07),
+      inset 0 -1px 0 rgb(0 0 0 / 0.35);
     overflow: hidden;
     transition:
       transform 0.18s ease,
@@ -520,10 +525,11 @@
   .tile:hover .frame,
   .tile:focus-visible .frame {
     transform: translateY(-3px);
-    border-color: rgb(255 255 255 / 0.42);
+    border-color: rgb(255 255 255 / 0.1);
     box-shadow:
-      0 0 0 1px rgb(255 255 255 / 0.22),
-      0 12px 28px -10px rgb(0 0 0 / 0.9);
+      0 10px 22px -6px rgb(0 0 0 / 0.7),
+      inset 0 1px 0 rgb(255 255 255 / 0.1),
+      inset 0 -1px 0 rgb(0 0 0 / 0.4);
   }
   .tile:hover .thumb,
   .tile:focus-visible .thumb {
