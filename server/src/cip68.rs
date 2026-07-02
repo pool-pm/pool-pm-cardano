@@ -14,8 +14,17 @@ use crate::model::asset_fingerprint;
 
 /// CIP-67 label prefixes (4 bytes each)
 pub const LABEL_100: [u8; 4] = [0x00, 0x06, 0x43, 0xb0]; // Reference NFT
+pub const LABEL_222: [u8; 4] = [0x00, 0x0d, 0xe1, 0x40]; // User NFT
 pub const LABEL_333: [u8; 4] = [0x00, 0x14, 0xdf, 0x10]; // User FT
 pub const LABEL_444: [u8; 4] = [0x00, 0x1b, 0xc2, 0x80]; // User RFT
+
+/// The four standard CIP-68 asset-name label prefixes.
+const CIP68_LABELS: [[u8; 4]; 4] = [LABEL_100, LABEL_222, LABEL_333, LABEL_444];
+
+/// True if the asset name begins with a standard CIP-68 (CIP-67) label prefix.
+pub fn has_cip68_label(asset_name: &[u8]) -> bool {
+    asset_name.len() >= 4 && CIP68_LABELS.iter().any(|l| asset_name[..4] == *l)
+}
 
 /// "decimals" as UTF-8 bytes
 const DECIMALS_KEY: &[u8] = b"decimals";
@@ -25,9 +34,12 @@ pub fn is_reference_token(asset_name: &[u8]) -> bool {
     asset_name.len() >= 4 && asset_name[..4] == LABEL_100
 }
 
-/// Extract the base name (without the 4-byte label prefix).
+/// Extract the base name, stripping the 4-byte CIP-68 label prefix **only when one is
+/// actually present**. A plain asset name that merely happens to be ≥4 bytes (e.g.
+/// `unsig01037`) is returned unchanged — previously the first 4 bytes were always
+/// dropped, mangling every non-CIP-68 name (`unsig01037` → `g01037`).
 pub fn base_name(asset_name: &[u8]) -> &[u8] {
-    if asset_name.len() >= 4 {
+    if has_cip68_label(asset_name) {
         &asset_name[4..]
     } else {
         asset_name
@@ -183,7 +195,19 @@ mod tests {
     #[test]
     fn test_label_constants() {
         assert_eq!(LABEL_100, [0x00, 0x06, 0x43, 0xb0]);
+        assert_eq!(LABEL_222, [0x00, 0x0d, 0xe1, 0x40]);
         assert_eq!(LABEL_333, [0x00, 0x14, 0xdf, 0x10]);
         assert_eq!(LABEL_444, [0x00, 0x1b, 0xc2, 0x80]);
+    }
+
+    #[test]
+    fn base_name_strips_only_labeled() {
+        // A CIP-68 label prefix (here user NFT 222 and reference 100) is stripped.
+        assert_eq!(base_name(&[0x00, 0x0d, 0xe1, 0x40, b'A', b'B']), b"AB");
+        assert_eq!(base_name(&[0x00, 0x06, 0x43, 0xb0, b'X']), b"X");
+        // A plain (non-CIP-68) name is returned unchanged — regression for `unsig01037`,
+        // which used to render as `g01037` when the first 4 bytes were always dropped.
+        assert_eq!(base_name(b"unsig01037"), b"unsig01037");
+        assert_eq!(base_name(b"abc"), b"abc");
     }
 }
