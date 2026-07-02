@@ -41,8 +41,10 @@
   // Each tile is one container holding, top to bottom: a quantity band, the square
   // media, and a name band — so the text never sits on top of the artwork. The media
   // is CELL tall, giving a container CELL + QTY_H + NAME_H tall.
-  const QTY_H = 18; // top quantity band
-  const NAME_H = 34; // bottom name band (fits up to two lines)
+  // Bands sized to hold EDGE (the symmetric gap to the container edge, in CSS) plus the
+  // text: one line for the quantity, up to two for the name.
+  const QTY_H = 24; // top quantity band
+  const NAME_H = 40; // bottom name band (fits up to two lines)
   // Mat inset: the margin the stacked-card thumbnail keeps from the media-area edges.
   const MAT = 10;
   // Fixed offset between stacked cards: each card behind peeks by exactly this much
@@ -271,7 +273,7 @@
           />
         {/if}
       </span>
-      <span class="name">{label}</span>
+      <span class="name"><span class="name-text">{label}</span></span>
     </span>
   </a>
 {/snippet}
@@ -333,7 +335,7 @@
                         {/each}
                       </span>
                     </span>
-                    <span class="name">{g.count} assets</span>
+                    <span class="name"><span class="name-text">{g.count} assets</span></span>
                   </span>
                 </a>
               {/if}
@@ -434,15 +436,18 @@
   }
 
   /* Owned amount above the media — no background, half opacity. The band is always
-     present (blank for single NFTs) so the media lines up across tiles. */
+     present (blank for single NFTs) so the media lines up across tiles. EDGE (8px) is
+     the gap to the top edge; the name uses the same gap to the bottom edge. */
   .qty {
     height: var(--qty-h);
-    line-height: var(--qty-h);
+    box-sizing: border-box;
+    padding-top: 8px;
     width: 100%;
     text-align: center;
     color: rgb(255 255 255 / 0.5);
     font-family: system-ui, sans-serif;
     font-size: 11px;
+    line-height: 1.3;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
     overflow: hidden;
@@ -483,12 +488,18 @@
     overflow: hidden;
   }
 
-  /* Asset name below the media, inside the container; up to two lines, then ellipsis. */
+  /* Asset name below the media, inside the container; bottom-aligned with the same 8px
+     edge gap as the quantity. Up to two lines, then ellipsis. */
   .name {
     height: var(--name-h);
     box-sizing: border-box;
     width: 100%;
-    padding: 3px 8px 0;
+    padding: 0 8px 8px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+  }
+  .name-text {
     text-align: center;
     color: #fff;
     font-family: system-ui, sans-serif;
