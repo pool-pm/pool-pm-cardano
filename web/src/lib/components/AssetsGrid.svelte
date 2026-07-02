@@ -424,16 +424,17 @@
     height: var(--tile-h);
     box-sizing: border-box;
     position: relative;
-    /* A dark painting canvas, lit from above: square corners, a slight lighter-top →
-       darker-bottom gradient, a faint light catch on the top edge and shadow on the
-       bottom edge, and a soft drop shadow — so it sits slightly proud. Kept subtle. */
+    /* A dark *stretched* canvas (gallery wrap) lit from above — no frame border: the
+       depth is carried by a light catch on the top edge, the underside in shadow on the
+       bottom, a slight lighter-top → darker-bottom gradient, and a soft drop shadow so
+       the panel sits proud of the wall. Kept subtle. */
     border-radius: 0;
-    background: linear-gradient(180deg, #16161b 0%, #0d0d10 100%);
-    border: 1px solid rgb(255 255 255 / 0.05);
+    background: linear-gradient(180deg, #17171c 0%, #0c0c0f 100%);
+    border: none;
     box-shadow:
-      0 4px 10px -4px rgb(0 0 0 / 0.6),
-      inset 0 1px 0 rgb(255 255 255 / 0.07),
-      inset 0 -1px 0 rgb(0 0 0 / 0.35);
+      0 6px 14px -5px rgb(0 0 0 / 0.6),
+      inset 0 1px 0 rgb(255 255 255 / 0.08),
+      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
     overflow: hidden;
     transition:
       transform 0.18s ease,
@@ -525,11 +526,10 @@
   .tile:hover .frame,
   .tile:focus-visible .frame {
     transform: translateY(-3px);
-    border-color: rgb(255 255 255 / 0.1);
     box-shadow:
-      0 10px 22px -6px rgb(0 0 0 / 0.7),
-      inset 0 1px 0 rgb(255 255 255 / 0.1),
-      inset 0 -1px 0 rgb(0 0 0 / 0.4);
+      0 12px 26px -7px rgb(0 0 0 / 0.7),
+      inset 0 1px 0 rgb(255 255 255 / 0.11),
+      inset 0 -2px 3px -1px rgb(0 0 0 / 0.5);
   }
   .tile:hover .thumb,
   .tile:focus-visible .thumb {
