@@ -458,7 +458,7 @@
     box-sizing: border-box;
     padding: 8px 8px 0;
     width: 100%;
-    text-align: left;
+    text-align: center;
     color: rgb(255 255 255 / 0.5);
     /* Inter (the app font) with tabular, slashed-zero figures — even-width digits for
        the numeric quantity. */
@@ -514,10 +514,10 @@
     padding: 0 8px 8px;
     display: flex;
     align-items: flex-end;
-    justify-content: flex-end;
+    justify-content: center;
   }
   .name-text {
-    text-align: right;
+    text-align: center;
     /* Same grey as the quantity, in the Outfit display font. */
     color: rgb(255 255 255 / 0.5);
     font-family: 'Outfit', Inter, sans-serif;
