@@ -36,8 +36,11 @@
   // TILE_TARGET is the *desired* tile width; the actual CELL is derived per render so
   // a whole number of columns fills the container width (a gallery wall, not a
   // left-packed sheet). CELL is still constant within a render, so the row math holds.
-  const TILE_TARGET = 168; // desired tile edge (px); actual CELL flexes around it
+  const TILE_TARGET = 168; // desired tile *width* (px); actual CELL flexes around it
   const GAP = 16;
+  // Each tile is rectangular: a square CELL-sized media frame with a name plate of
+  // LABEL_H below it, so the tile is CELL wide and CELL + LABEL_H tall.
+  const LABEL_H = 34;
   // Mat inset: the framed border of empty space around each artwork. The art box is
   // CELL - 2*MAT, and stacked cards size within that inner box.
   const MAT = 10;
@@ -97,17 +100,19 @@
   // square CELL to fill the row (floored so the row never overflows the container).
   // CELL/ROW are constant within a render, so the windowing math below stays exact.
   const cols = $derived(Math.max(1, Math.round((containerW + GAP) / (TILE_TARGET + GAP))));
+  // CELL is the square media width; the tile is CELL + LABEL_H tall (media + name plate).
   const CELL = $derived(containerW > 0 ? Math.floor((containerW - (cols - 1) * GAP) / cols) : TILE_TARGET);
-  const ROW = $derived(CELL + GAP);
+  const TILE_H = $derived(CELL + LABEL_H);
+  const ROW = $derived(TILE_H + GAP);
   // Exact width of one full row of `cols` cells. Pinning the flex container to
   // this (rather than the full container width) makes it wrap at exactly `cols`
   // per row — matching the slice math deterministically, instead of letting
   // sub-pixel rounding drift to cols-1 and unmount on-screen rows (black gaps).
   const rowWidth = $derived(cols * CELL + (cols - 1) * GAP);
   const loadedRows = $derived(Math.ceil(items.length / cols));
-  // Content height: rows are ROW apart, the last row adds only its cell height;
+  // Content height: rows are ROW apart, the last row adds only its tile height;
   // VPAD is reserved above the first row and below the last.
-  const totalHeight = $derived(loadedRows > 0 ? (loadedRows - 1) * ROW + CELL : 0);
+  const totalHeight = $derived(loadedRows > 0 ? (loadedRows - 1) * ROW + TILE_H : 0);
   const spacerHeight = $derived(totalHeight + VPAD * 2);
 
   // Rows live at y = VPAD + row*ROW, so the scroll math offsets by VPAD too.
@@ -237,33 +242,35 @@
   }
 </script>
 
-<!-- One framed asset tile (also used for a single-asset policy group): a matted
-     frame around the artwork, with the name on a caption revealed on hover/focus. -->
+<!-- One rectangular asset tile (also used for a single-asset policy group): a matted
+     square media frame with the asset name on a plate below it. -->
 {#snippet assetCell(a: PolicyAsset)}
   {@const label = a.name ?? a.fingerprint}
   {@const isText = mode === 'text-fallback' && broken.has(a.fingerprint)}
-  <a class="frame" class:text={isText} href={'/' + a.fingerprint} aria-label={label} title={label}>
-    <span class="art">
-      {#if isText}
-        <!-- Image 404'd: the name/fingerprint stands in for the missing art as a placard. -->
-        <span class="cell-text">{label}</span>
-      {:else if !suppressImages || loaded.has(a.fingerprint)}
-        <img
-          class="thumb"
-          src={a.src}
-          srcset={a.srcset}
-          decoding="async"
-          alt=""
-          onload={() => loaded.add(a.fingerprint)}
-          onerror={() => broken.add(a.fingerprint)}
-        />
+  <a class="tile" href={'/' + a.fingerprint} aria-label={label} title={label}>
+    <span class="frame" class:text={isText}>
+      <span class="art">
+        {#if isText}
+          <!-- Image 404'd: the name/fingerprint stands in for the missing art as a placard. -->
+          <span class="cell-text">{label}</span>
+        {:else if !suppressImages || loaded.has(a.fingerprint)}
+          <img
+            class="thumb"
+            src={a.src}
+            srcset={a.srcset}
+            decoding="async"
+            alt=""
+            onload={() => loaded.add(a.fingerprint)}
+            onerror={() => broken.add(a.fingerprint)}
+          />
+        {/if}
+      </span>
+      {#if a.quantity}
+        <!-- Owned amount (decimals-applied); the server omits it when it's 1. -->
+        <span class="qty">{a.quantity}</span>
       {/if}
     </span>
-    {#if a.quantity}
-      <!-- Owned amount (decimals-applied); the server omits it when it's 1. -->
-      <span class="qty">{a.quantity}</span>
-    {/if}
-    <span class="cap">{label}</span>
+    <span class="label">{label}</span>
   </a>
 {/snippet}
 
@@ -282,7 +289,7 @@
       <div class="spacer" bind:clientWidth={containerW} style="height:{spacerHeight}px">
         <div
           class="window"
-          style="transform:translateY({offsetY}px); width:{rowWidth}px; --cell:{CELL}px; --mat:{MAT}px; --gap:{GAP}px"
+          style="transform:translateY({offsetY}px); width:{rowWidth}px; --cell:{CELL}px; --mat:{MAT}px; --gap:{GAP}px; --label:{LABEL_H}px"
         >
           {#each slice as item (grouped ? (item as AssetGroup).policy : (item as PolicyAsset).fingerprint)}
             {#if grouped}
@@ -294,35 +301,36 @@
                 {@const inner = CELL - 2 * MAT}
                 {@const card = inner - (n - 1) * STACK_STEP}
                 <!-- Stacked cards inside the mat: back card top-left, front card
-                     bottom-right; the chip shows the true asset count. Drills into the policy. -->
+                     bottom-right; the plate below names the count. Drills into the policy. -->
                 <a
-                  class="frame stack"
+                  class="tile"
                   href={`/${subject}/assets/${g.policy}`}
                   aria-label={`${g.count} assets`}
                   title={`${g.count} assets`}
                 >
-                  <span class="art">
-                    {#each g.samples as s, i (s.fingerprint)}
-                      <span
-                        class="stack-card"
-                        style="left:{i * STACK_STEP}px; top:{i * STACK_STEP}px; width:{card}px; height:{card}px"
-                      >
-                        {#if (!suppressImages || loaded.has(s.fingerprint)) && !broken.has(s.fingerprint)}
-                          <img
-                            class="card-img"
-                            src={s.src}
-                            srcset={s.srcset}
-                            decoding="async"
-                            alt=""
-                            onload={() => loaded.add(s.fingerprint)}
-                            onerror={() => broken.add(s.fingerprint)}
-                          />
-                        {/if}
-                      </span>
-                    {/each}
+                  <span class="frame stack">
+                    <span class="art">
+                      {#each g.samples as s, i (s.fingerprint)}
+                        <span
+                          class="stack-card"
+                          style="left:{i * STACK_STEP}px; top:{i * STACK_STEP}px; width:{card}px; height:{card}px"
+                        >
+                          {#if (!suppressImages || loaded.has(s.fingerprint)) && !broken.has(s.fingerprint)}
+                            <img
+                              class="card-img"
+                              src={s.src}
+                              srcset={s.srcset}
+                              decoding="async"
+                              alt=""
+                              onload={() => loaded.add(s.fingerprint)}
+                              onerror={() => broken.add(s.fingerprint)}
+                            />
+                          {/if}
+                        </span>
+                      {/each}
+                    </span>
                   </span>
-                  <span class="qty">{g.count}</span>
-                  <span class="cap">{g.count} assets</span>
+                  <span class="label">{g.count} assets</span>
                 </a>
               {/if}
             {:else}
@@ -386,14 +394,26 @@
     justify-content: center;
   }
 
-  /* A matted, framed tile: the artwork sits inset by the mat inside a panel lifted
-     off the black wall, with a hairline border and soft shadow — a print on a wall. */
-  .frame {
+  /* A rectangular tile: a square media frame with a name plate below it. */
+  .tile {
     flex: none;
     width: var(--cell);
+    display: flex;
+    flex-direction: column;
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .tile:focus-visible {
+    outline: none;
+  }
+
+  /* The matted, framed artwork: it sits inset by the mat inside a panel lifted off
+     the black wall, with a hairline border and soft shadow — a print on a wall. */
+  .frame {
+    display: block;
+    width: 100%;
     height: var(--cell);
     box-sizing: border-box;
-    display: block;
     position: relative;
     border-radius: 10px;
     background: var(--mat-bg);
@@ -406,7 +426,6 @@
       transform 0.18s ease,
       border-color 0.18s ease,
       box-shadow 0.18s ease;
-    -webkit-tap-highlight-color: transparent;
   }
 
   /* The artwork window inside the mat. Its background is the mat colour so a
@@ -468,49 +487,40 @@
     white-space: nowrap;
   }
 
-  /* The asset name on a caption strip, revealed on hover/focus (a gallery placard). */
-  .cap {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 2;
-    padding: 18px 10px 8px;
-    background: linear-gradient(to top, rgb(0 0 0 / 0.85), rgb(0 0 0 / 0));
-    color: #fff;
+  /* The asset name on a plate below the media (a gallery placard); always visible,
+     one line, ellipsized. Brightens on hover/focus. */
+  .label {
+    height: var(--label);
+    box-sizing: border-box;
+    padding: 7px 6px 0;
+    color: var(--text-muted);
     font-family: system-ui, sans-serif;
-    font-size: 11px;
-    letter-spacing: 0.02em;
+    font-size: 12px;
+    line-height: 1.3;
+    text-align: center;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    pointer-events: none;
-    opacity: 0;
-    transform: translateY(6px);
-    transition:
-      opacity 0.18s ease,
-      transform 0.18s ease;
+    transition: color 0.18s ease;
   }
 
   /* Hover/focus: the frame lifts and brightens with a neutral light ring (no subject
-     colour), the art zooms slightly, and the name caption slides up. */
-  .frame:hover,
-  .frame:focus-visible {
+     colour), the art zooms slightly, and the name plate brightens. */
+  .tile:hover .frame,
+  .tile:focus-visible .frame {
     transform: translateY(-3px);
     border-color: rgb(255 255 255 / 0.42);
     box-shadow:
       0 0 0 1px rgb(255 255 255 / 0.22),
       0 12px 28px -10px rgb(0 0 0 / 0.9);
-    outline: none;
   }
-  .frame:hover .thumb,
-  .frame:focus-visible .thumb {
+  .tile:hover .thumb,
+  .tile:focus-visible .thumb {
     transform: scale(1.04);
   }
-  .frame:hover .cap,
-  .frame:focus-visible .cap {
-    opacity: 1;
-    transform: none;
+  .tile:hover .label,
+  .tile:focus-visible .label {
+    color: var(--text);
   }
 
   /* A multi-asset policy: overlapping cards stepping from top-left (back) to
@@ -541,19 +551,15 @@
   @media (prefers-reduced-motion: reduce) {
     .frame,
     .thumb,
-    .cap {
+    .label {
       transition: none;
     }
-    .frame:hover,
-    .frame:focus-visible {
+    .tile:hover .frame,
+    .tile:focus-visible .frame {
       transform: none;
     }
-    .frame:hover .thumb,
-    .frame:focus-visible .thumb {
-      transform: none;
-    }
-    .frame:hover .cap,
-    .frame:focus-visible .cap {
+    .tile:hover .thumb,
+    .tile:focus-visible .thumb {
       transform: none;
     }
   }
