@@ -106,11 +106,11 @@
   {@const color = poolColor(address.address)}
   <div class="subject-card" class:landscape style:--subject-color={color}>
     <span class="stake-address" style:color title={address.address}>{address.address}</span>
-    {#if address.balance}
-      <a class="pool-stake" href="/{address.address}">{formatAda(address.balance)}</a>
-    {/if}
     {#if address.handle}
       <span class="handle"><span class="handle-dollar">$</span>{address.handle}</span>
+    {/if}
+    {#if address.balance}
+      <a class="pool-stake" href="/{address.address}">{formatAda(address.balance)}</a>
     {/if}
     <div class="pool-params">
       {#if address.assets_count > 0}
@@ -124,16 +124,16 @@
           <span class="pool-param-value">{address.assets_count}</span>
         </div>
       {/if}
-      {#if address.stake_address}
-        <a class="pool-param pool-param-link" href="/{address.stake_address}" title={address.stake_address}>
-          <span class="pool-param-label">stake</span>
-          <span class="pool-param-value">{formatAda(address.stake_value ?? '0')}</span>
-        </a>
-      {/if}
       {#if address.stake_address && address.stake_assets_count && address.stake_assets_count !== address.assets_count}
         <a class="pool-param pool-param-link" href="/{address.stake_address}/assets">
           <span class="pool-param-label">stake assets</span>
           <span class="pool-param-value">{address.stake_assets_count}</span>
+        </a>
+      {/if}
+      {#if address.stake_address}
+        <a class="pool-param pool-param-link" href="/{address.stake_address}" title={address.stake_address}>
+          <span class="pool-param-label">stake</span>
+          <span class="pool-param-value">{formatAda(address.stake_value ?? '0')}</span>
         </a>
       {/if}
     </div>
@@ -319,6 +319,7 @@
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-muted);
+    white-space: nowrap;
   }
 
   .pool-param-value {
