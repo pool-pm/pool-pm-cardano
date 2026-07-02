@@ -422,8 +422,9 @@
     height: var(--tile-h);
     box-sizing: border-box;
     position: relative;
-    border-radius: 10px;
-    background: var(--mat-bg);
+    /* Square corners; a slight top-to-bottom gradient (lighter top, darker bottom). */
+    border-radius: 0;
+    background: linear-gradient(180deg, #17171c 0%, #0a0a0c 100%);
     border: 1px solid rgb(255 255 255 / 0.07);
     box-shadow:
       0 1px 2px rgb(0 0 0 / 0.6),
