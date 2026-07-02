@@ -4,6 +4,7 @@
   import type { PolicyAsset, AssetGroup, AssetsResponse, GroupsResponse, AssetDelta } from '../types';
   import { stake, address } from '../stores';
   import { onAssetLive } from '../sse';
+  import { commonNamePrefix } from '../assetName';
   import SubjectCard from './SubjectCard.svelte';
 
   // `endpoint` is the paginated API URL (cursor is appended as `?cursor=`); `title`
@@ -313,15 +314,17 @@
                 {@const n = g.samples.length}
                 {@const card = artBox - (n - 1) * STACK_STEP}
                 <!-- A multi-asset policy: stacked sample cards centered in the media area,
-                     the name band counting them. Drills into the policy. -->
+                     the held count on top (like a single asset's quantity) and a collection
+                     label — the samples' common name prefix — below. Drills into the policy. -->
+                {@const stackLabel = commonNamePrefix(g.samples.map((s) => s.name)) || `${g.count} assets`}
                 <a
                   class="tile"
                   href={`/${subject}/assets/${g.policy}`}
-                  aria-label={`${g.count} assets`}
-                  title={`${g.count} assets`}
+                  aria-label={`${g.count} × ${stackLabel}`}
+                  title={`${g.count} × ${stackLabel}`}
                 >
                   <span class="frame stack">
-                    <span class="qty"></span>
+                    <span class="qty">{g.count.toLocaleString()}</span>
                     <span class="art">
                       <span class="stackbox" style="width:{artBox}px; height:{artBox}px">
                         {#each g.samples as s, i (s.fingerprint)}
@@ -344,7 +347,7 @@
                         {/each}
                       </span>
                     </span>
-                    <span class="name"><span class="name-text">{g.count} assets</span></span>
+                    <span class="name"><span class="name-text">{stackLabel}</span></span>
                   </span>
                 </a>
               {/if}
