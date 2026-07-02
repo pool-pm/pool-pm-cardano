@@ -316,13 +316,9 @@
                 <!-- A multi-asset policy: stacked sample cards centered in the media area,
                      the held count on top (like a single asset's quantity) and a collection
                      label — the samples' common name prefix — below. Drills into the policy. -->
-                {@const stackLabel = commonNamePrefix(g.samples.map((s) => s.name)) || `${g.count} assets`}
-                <a
-                  class="tile"
-                  href={`/${subject}/assets/${g.policy}`}
-                  aria-label={`${g.count} × ${stackLabel}`}
-                  title={`${g.count} × ${stackLabel}`}
-                >
+                {@const stackLabel = commonNamePrefix(g.samples.map((s) => s.name))}
+                {@const stackTitle = stackLabel ? `${g.count} × ${stackLabel}` : `${g.count} assets`}
+                <a class="tile" href={`/${subject}/assets/${g.policy}`} aria-label={stackTitle} title={stackTitle}>
                   <span class="frame stack">
                     <span class="qty">{g.count.toLocaleString()}</span>
                     <span class="art">
@@ -460,9 +456,9 @@
   .qty {
     height: var(--qty-h);
     box-sizing: border-box;
-    padding-top: 8px;
+    padding: 8px 8px 0;
     width: 100%;
-    text-align: center;
+    text-align: left;
     color: rgb(255 255 255 / 0.5);
     /* Inter (the app font) with tabular, slashed-zero figures — even-width digits for
        the numeric quantity. */
@@ -518,10 +514,10 @@
     padding: 0 8px 8px;
     display: flex;
     align-items: flex-end;
-    justify-content: center;
+    justify-content: flex-end;
   }
   .name-text {
-    text-align: center;
+    text-align: right;
     /* Very light grey (not pure white) in the Outfit display font. */
     color: rgb(255 255 255 / 0.78);
     font-family: 'Outfit', Inter, sans-serif;
