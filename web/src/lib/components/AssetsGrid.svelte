@@ -518,8 +518,8 @@
   }
   .name-text {
     text-align: right;
-    /* Very light grey (not pure white) in the Outfit display font. */
-    color: rgb(255 255 255 / 0.78);
+    /* Same grey as the quantity, in the Outfit display font. */
+    color: rgb(255 255 255 / 0.5);
     font-family: 'Outfit', Inter, sans-serif;
     font-weight: 300;
     font-size: 13px;
