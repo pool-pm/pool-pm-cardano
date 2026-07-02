@@ -225,6 +225,15 @@
 
   onMount(() => {
     document.title = title;
+    // Lazy-load the display font (Outfit) used for the asset name — the same face the
+    // single-asset page uses; shared #gallery-font id so it's injected at most once.
+    if (!document.getElementById('gallery-font')) {
+      const link = document.createElement('link');
+      link.id = 'gallery-font';
+      link.rel = 'stylesheet';
+      link.href = 'https://fonts.googleapis.com/css2?family=Outfit:wght@300&display=swap';
+      document.head.appendChild(link);
+    }
     const offLive = onAssetLive(handleLive);
     return () => {
       offLive();
@@ -510,9 +519,11 @@
   }
   .name-text {
     text-align: center;
-    color: #fff;
-    font-family: Inter, sans-serif;
-    font-size: 12px;
+    /* Very light grey (not pure white) in the Outfit display font. */
+    color: rgb(255 255 255 / 0.78);
+    font-family: 'Outfit', Inter, sans-serif;
+    font-weight: 300;
+    font-size: 13px;
     line-height: 1.25;
     display: -webkit-box;
     -webkit-line-clamp: 2;
