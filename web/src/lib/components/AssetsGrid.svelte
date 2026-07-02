@@ -47,8 +47,8 @@
   // Fixed offset between stacked cards: each card behind peeks by exactly this much
   // regardless of how many are stacked (the card *size* shrinks to fit instead). Front
   // card fills the inner art box, so card size = (CELL - 2*MAT) - (n-1)*STACK_STEP.
-  const STACK_STEP = 20;
-  const GROUP_SAMPLES = 4; // max sample cards in a stack — must match the server
+  const STACK_STEP = 12;
+  const GROUP_SAMPLES = 5; // max sample cards in a stack — must match the server
   const BUFFER_ROWS = 4; // extra rows rendered above/below the viewport
   const PREFETCH_ROWS = 6; // fetch the next page once the buffer gets this close to the end
   const VPAD = 16; // breathing room above the first row / below the last

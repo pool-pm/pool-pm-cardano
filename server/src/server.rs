@@ -2911,7 +2911,8 @@ struct GroupsResponse {
 }
 
 /// Sample thumbnails shown in a multi-asset policy's stacked-card tile.
-const GROUP_SAMPLES: usize = 4;
+/// Must match `GROUP_SAMPLES` in the frontend `AssetsGrid.svelte`.
+const GROUP_SAMPLES: usize = 5;
 /// Policy groups returned per owned-assets page.
 const GROUP_PAGE_SIZE: usize = 512;
 
