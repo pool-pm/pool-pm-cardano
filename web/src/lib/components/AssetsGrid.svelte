@@ -38,11 +38,12 @@
   // left-packed sheet). CELL is still constant within a render, so the row math holds.
   const TILE_TARGET = 168; // desired tile *width* (px); actual CELL flexes around it
   const GAP = 16;
-  // Each tile is rectangular: a square CELL-sized media frame with a name plate of
-  // LABEL_H below it, so the tile is CELL wide and CELL + LABEL_H tall.
-  const LABEL_H = 34;
-  // Mat inset: the framed border of empty space around each artwork. The art box is
-  // CELL - 2*MAT, and stacked cards size within that inner box.
+  // Each tile is one container holding, top to bottom: a quantity band, the square
+  // media, and a name band — so the text never sits on top of the artwork. The media
+  // is CELL tall, giving a container CELL + QTY_H + NAME_H tall.
+  const QTY_H = 18; // top quantity band
+  const NAME_H = 34; // bottom name band (fits up to two lines)
+  // Mat inset: the margin the stacked-card thumbnail keeps from the media-area edges.
   const MAT = 10;
   // Fixed offset between stacked cards: each card behind peeks by exactly this much
   // regardless of how many are stacked (the card *size* shrinks to fit instead). Front
@@ -100,10 +101,12 @@
   // square CELL to fill the row (floored so the row never overflows the container).
   // CELL/ROW are constant within a render, so the windowing math below stays exact.
   const cols = $derived(Math.max(1, Math.round((containerW + GAP) / (TILE_TARGET + GAP))));
-  // CELL is the square media width; the tile is CELL + LABEL_H tall (media + name plate).
+  // CELL is the (square) media width/height; the container adds the two text bands.
   const CELL = $derived(containerW > 0 ? Math.floor((containerW - (cols - 1) * GAP) / cols) : TILE_TARGET);
-  const TILE_H = $derived(CELL + LABEL_H);
+  const TILE_H = $derived(CELL + QTY_H + NAME_H);
   const ROW = $derived(TILE_H + GAP);
+  // The square the stacked-card thumbnail fills inside the media area.
+  const artBox = $derived(CELL - 2 * MAT);
   // Exact width of one full row of `cols` cells. Pinning the flex container to
   // this (rather than the full container width) makes it wrap at exactly `cols`
   // per row — matching the slice math deterministically, instead of letting
@@ -249,6 +252,9 @@
   {@const isText = mode === 'text-fallback' && broken.has(a.fingerprint)}
   <a class="tile" href={'/' + a.fingerprint} aria-label={label} title={label}>
     <span class="frame" class:text={isText}>
+      <!-- Owned amount (decimals-applied); the server omits it when it's 1. The band is
+           always present (blank for single NFTs) so the media lines up across tiles. -->
+      <span class="qty">{a.quantity ?? ''}</span>
       <span class="art">
         {#if isText}
           <!-- Image 404'd: the name/fingerprint stands in for the missing art as a placard. -->
@@ -265,12 +271,8 @@
           />
         {/if}
       </span>
-      {#if a.quantity}
-        <!-- Owned amount (decimals-applied); the server omits it when it's 1. -->
-        <span class="qty">{a.quantity}</span>
-      {/if}
+      <span class="name">{label}</span>
     </span>
-    <span class="label">{label}</span>
   </a>
 {/snippet}
 
@@ -289,7 +291,7 @@
       <div class="spacer" bind:clientWidth={containerW} style="height:{spacerHeight}px">
         <div
           class="window"
-          style="transform:translateY({offsetY}px); width:{rowWidth}px; --cell:{CELL}px; --mat:{MAT}px; --gap:{GAP}px; --label:{LABEL_H}px"
+          style="transform:translateY({offsetY}px); width:{rowWidth}px; --cell:{CELL}px; --tile-h:{TILE_H}px; --qty-h:{QTY_H}px; --name-h:{NAME_H}px; --gap:{GAP}px"
         >
           {#each slice as item (grouped ? (item as AssetGroup).policy : (item as PolicyAsset).fingerprint)}
             {#if grouped}
@@ -298,10 +300,9 @@
                 {@render assetCell(g.samples[0])}
               {:else}
                 {@const n = g.samples.length}
-                {@const inner = CELL - 2 * MAT}
-                {@const card = inner - (n - 1) * STACK_STEP}
-                <!-- Stacked cards inside the mat: back card top-left, front card
-                     bottom-right; the plate below names the count. Drills into the policy. -->
+                {@const card = artBox - (n - 1) * STACK_STEP}
+                <!-- A multi-asset policy: stacked sample cards centered in the media area,
+                     the name band counting them. Drills into the policy. -->
                 <a
                   class="tile"
                   href={`/${subject}/assets/${g.policy}`}
@@ -309,28 +310,31 @@
                   title={`${g.count} assets`}
                 >
                   <span class="frame stack">
+                    <span class="qty"></span>
                     <span class="art">
-                      {#each g.samples as s, i (s.fingerprint)}
-                        <span
-                          class="stack-card"
-                          style="left:{i * STACK_STEP}px; top:{i * STACK_STEP}px; width:{card}px; height:{card}px"
-                        >
-                          {#if (!suppressImages || loaded.has(s.fingerprint)) && !broken.has(s.fingerprint)}
-                            <img
-                              class="card-img"
-                              src={s.src}
-                              srcset={s.srcset}
-                              decoding="async"
-                              alt=""
-                              onload={() => loaded.add(s.fingerprint)}
-                              onerror={() => broken.add(s.fingerprint)}
-                            />
-                          {/if}
-                        </span>
-                      {/each}
+                      <span class="stackbox" style="width:{artBox}px; height:{artBox}px">
+                        {#each g.samples as s, i (s.fingerprint)}
+                          <span
+                            class="stack-card"
+                            style="left:{i * STACK_STEP}px; top:{i * STACK_STEP}px; width:{card}px; height:{card}px"
+                          >
+                            {#if (!suppressImages || loaded.has(s.fingerprint)) && !broken.has(s.fingerprint)}
+                              <img
+                                class="card-img"
+                                src={s.src}
+                                srcset={s.srcset}
+                                decoding="async"
+                                alt=""
+                                onload={() => loaded.add(s.fingerprint)}
+                                onerror={() => broken.add(s.fingerprint)}
+                              />
+                            {/if}
+                          </span>
+                        {/each}
+                      </span>
                     </span>
+                    <span class="name">{g.count} assets</span>
                   </span>
-                  <span class="label">{g.count} assets</span>
                 </a>
               {/if}
             {:else}
@@ -407,12 +411,13 @@
     outline: none;
   }
 
-  /* The matted, framed artwork: it sits inset by the mat inside a panel lifted off
-     the black wall, with a hairline border and soft shadow — a print on a wall. */
+  /* The container: a panel lifted off the black wall (hairline border + soft shadow)
+     stacking the quantity band, the media, and the name band top-to-bottom. */
   .frame {
-    display: block;
+    display: flex;
+    flex-direction: column;
     width: 100%;
-    height: var(--cell);
+    height: var(--tile-h);
     box-sizing: border-box;
     position: relative;
     border-radius: 10px;
@@ -428,32 +433,44 @@
       box-shadow 0.18s ease;
   }
 
-  /* The artwork window inside the mat. Its background is the mat colour so a
-     `contain`-letterboxed image blends into the frame instead of showing black bars. */
-  .art {
-    position: absolute;
-    inset: var(--mat);
-    border-radius: 4px;
+  /* Owned amount above the media — no background, half opacity. The band is always
+     present (blank for single NFTs) so the media lines up across tiles. */
+  .qty {
+    height: var(--qty-h);
+    line-height: var(--qty-h);
+    width: 100%;
+    text-align: center;
+    color: rgb(255 255 255 / 0.5);
+    font-family: system-ui, sans-serif;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
     overflow: hidden;
-    background: var(--mat-bg);
-    display: block;
+    text-overflow: ellipsis;
+  }
+
+  /* The media area between the two bands; the artwork is contained within it. */
+  .art {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
   }
 
   .thumb {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
+    max-width: 100%;
+    max-height: 100%;
     object-fit: contain;
     display: block;
     transition: transform 0.25s ease;
   }
 
-  /* Non-image token (image 404'd): the name/fingerprint as a centered placard. */
+  /* Non-image token (image 404'd): the name/fingerprint stands in for the missing art. */
   .frame.text .art {
-    display: flex;
-    align-items: center;
-    justify-content: center;
     background: radial-gradient(120% 120% at 50% 0%, #17171b, #0b0b0d);
   }
   .cell-text {
@@ -466,46 +483,26 @@
     overflow: hidden;
   }
 
-  /* Quantity / asset-count chip, tucked in the top-right out of the caption's way. */
-  .qty {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    z-index: 2;
-    padding: 2px 7px;
-    border-radius: 7px;
-    background: rgb(0 0 0 / 0.66);
-    box-shadow: 0 0 0 1px rgb(255 255 255 / 0.08);
+  /* Asset name below the media, inside the container; up to two lines, then ellipsis. */
+  .name {
+    height: var(--name-h);
+    box-sizing: border-box;
+    width: 100%;
+    padding: 3px 8px 0;
+    text-align: center;
     color: #fff;
     font-family: system-ui, sans-serif;
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-    line-height: 1.4;
-    max-width: calc(100% - 16px);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /* The asset name on a plate below the media (a gallery placard); always visible,
-     one line, ellipsized. Brightens on hover/focus. */
-  .label {
-    height: var(--label);
-    box-sizing: border-box;
-    padding: 7px 6px 0;
-    color: var(--text-muted);
-    font-family: system-ui, sans-serif;
     font-size: 12px;
-    line-height: 1.3;
-    text-align: center;
-    white-space: nowrap;
+    line-height: 1.25;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
     overflow: hidden;
-    text-overflow: ellipsis;
-    transition: color 0.18s ease;
   }
 
-  /* Hover/focus: the frame lifts and brightens with a neutral light ring (no subject
-     colour), the art zooms slightly, and the name plate brightens. */
+  /* Hover/focus: the container lifts and brightens with a neutral light ring (no subject
+     colour) and the art zooms slightly. */
   .tile:hover .frame,
   .tile:focus-visible .frame {
     transform: translateY(-3px);
@@ -518,17 +515,11 @@
   .tile:focus-visible .thumb {
     transform: scale(1.04);
   }
-  .tile:hover .label,
-  .tile:focus-visible .label {
-    color: var(--text);
-  }
 
-  /* A multi-asset policy: overlapping cards stepping from top-left (back) to
-     bottom-right (front), inside the mat (inherits .art's overflow: hidden). Size is
-     set inline: it shrinks with the number of stacked cards so the fixed STACK_STEP
-     offset leaves a constant peek for each card behind. */
-  .frame.stack .art {
-    background: transparent;
+  /* A multi-asset policy: a centered square holding overlapping sample cards stepping
+     top-left → bottom-right; size set inline so a constant peek shows per card. */
+  .stackbox {
+    position: relative;
   }
   .stack-card {
     position: absolute;
@@ -550,8 +541,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .frame,
-    .thumb,
-    .label {
+    .thumb {
       transition: none;
     }
     .tile:hover .frame,
