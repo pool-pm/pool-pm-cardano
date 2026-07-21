@@ -274,8 +274,10 @@ impl BlockSnapshot {
 /// shape/semantics that rmp can't catch (it tolerates int-width changes) — a mismatch is
 /// rejected on load so the state rebuilds from db-sync. v2: `asset_holdings` leaf went
 /// from UTXO count to summed held quantity. v3: that leaf became a `u128` `Qty`. v4:
-/// `asset_holdings` flattened to one `OrdMap<HeldKey, Qty>`.
-const SNAPSHOT_FORMAT: u32 = 4;
+/// `asset_holdings` flattened to one `OrdMap<HeldKey, Qty>`. v5: force a rebuild to heal
+/// `address_balances`/`asset_holdings` drift accumulated by the intra-block debit-drop bug
+/// (produced now applied before consumed in `apply_block`).
+const SNAPSHOT_FORMAT: u32 = 5;
 
 /// Serialize `(snap, feed_index, magic, format)` and write it atomically (temp file +
 /// rename, so a crash mid-write leaves the previous snapshot intact). Free fn so it can
@@ -1198,6 +1200,21 @@ impl State {
         let mut asset_holdings = prev.asset_holdings.clone();
         let asset_holdings_populated = prev.asset_holdings_populated;
 
+        // Apply produced (credits) *before* consumed (debits). A UTXO can be created and
+        // spent within the same block; if we debited first, its entry wouldn't exist yet,
+        // so the `get_mut`/`bump_one` debit would be silently dropped — over-counting the
+        // balance/holdings — and `utxos.remove` would no-op, leaving a phantom UTXO. Doing
+        // credits first guarantees the entry exists when the debit lands. (`stakes` is
+        // immune either way: it's a flat sum of signed deltas.)
+        for (key, output) in produced {
+            let bal: i64 = output
+                .lovelaces
+                .try_into()
+                .expect("lovelace value must fit i64");
+            *address_balances.entry(output.address.clone()).or_insert(0) += bal;
+            apply_utxo_assets(&output.address, &output.assets, true, &mut asset_holdings);
+            utxos.insert(key, output);
+        }
         for (key, output) in consumed {
             utxos.remove(key);
             let bal: i64 = output
@@ -1211,15 +1228,6 @@ impl State {
                 }
             }
             apply_utxo_assets(&output.address, &output.assets, false, &mut asset_holdings);
-        }
-        for (key, output) in produced {
-            let bal: i64 = output
-                .lovelaces
-                .try_into()
-                .expect("lovelace value must fit i64");
-            *address_balances.entry(output.address.clone()).or_insert(0) += bal;
-            apply_utxo_assets(&output.address, &output.assets, true, &mut asset_holdings);
-            utxos.insert(key, output);
         }
 
         let (pool_delegations, pool_delegators) = Self::apply_delegation_changes(
@@ -2015,6 +2023,82 @@ mod tests {
             *state.current().unwrap() == initial,
             "rollback did not restore the initial snapshot exactly"
         );
+    }
+
+    /// Regression for the intra-block debit-drop bug: a UTXO created *and* spent within one
+    /// block must net to zero. `apply_block` applies produced before consumed, so the debit
+    /// finds the freshly-credited entry — no over-counted balance, no phantom held asset, no
+    /// phantom UTXO. (The old consumed-first order dropped the debit when the address started
+    /// the block with no entry, inflating `address_balances`/`asset_holdings`.)
+    #[test]
+    fn apply_block_intra_block_create_and_spend_nets_to_zero() {
+        use rust_decimal::Decimal;
+
+        // 57-byte base address that starts the block with a zero balance (absent from the
+        // maps) — the exact case the bug over-counted.
+        let addr = [&[0x00u8][..], &[0x50; 28], &[0x60; 28]].concat();
+        let cred = addr[29..57].to_vec();
+        let policy = vec![0x11u8; 28];
+        let name = b"TOK".to_vec();
+        let assets = |q: u64| -> crate::model::PolicyAssets {
+            vec![(policy.clone(), vec![(name.clone(), q)])]
+        };
+        let txout = |lov: u64| TxOutput {
+            lovelaces: Decimal::from(lov),
+            address: addr.clone(),
+            assets: assets(5),
+        };
+        let txh = vec![0xaau8; 32];
+
+        let initial = BlockSnapshot {
+            slot: 100,
+            block_hash: Some("h100".into()),
+            last_epoch: Some(10),
+            address_balances_populated: true,
+            asset_holdings_populated: true,
+            ..BlockSnapshot::default()
+        };
+        let mut state = State::new(Url::parse("postgresql:///test").unwrap());
+        state.restore_from_snapshot(initial);
+
+        // The same (txh, 0) UTXO is both produced and consumed in this block; the sink emits
+        // matching +/- stake deltas for it.
+        let produced = vec![((txh.clone(), 0i16), txout(500_000))];
+        let consumed = vec![((txh.clone(), 0i16), txout(500_000))];
+        let stake_changes = vec![(cred.clone(), 500_000i64), (cred.clone(), -500_000i64)];
+
+        state.apply_block(BlockUpdate {
+            slot: 200,
+            block_hash: "h200".into(),
+            epoch: 10,
+            produced,
+            consumed: &consumed,
+            pool_delegation_changes: &[],
+            drep_delegation_changes: &[],
+            pool_updates: &[],
+            pool_retirements: &[],
+            issuer_pool_hash: None,
+            stake_changes: &stake_changes,
+            withdrawal_changes: &[],
+            reward_deltas: None,
+            drep_active_until: None,
+        });
+
+        let cur = state.current().unwrap();
+        assert!(
+            !cur.utxos.contains_key(&(txh.clone(), 0)),
+            "created-and-spent UTXO must not linger in the utxo map"
+        );
+        assert_eq!(
+            cur.address_balances.get(&addr).copied(),
+            None,
+            "balance over-counted: the intra-block debit was dropped"
+        );
+        assert!(
+            cur.address_held_assets(&addr).is_empty(),
+            "held asset over-counted: the intra-block debit was dropped"
+        );
+        assert_eq!(cur.stakes.get(&cred).copied(), Some(0));
     }
 
     /// `write_snapshot` → `load_snapshot` round-trips the whole snapshot (including a
