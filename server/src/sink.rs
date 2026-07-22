@@ -498,6 +498,7 @@ impl Worker {
                 slot,
                 block_hash: block_hash.clone(),
                 epoch,
+                block_time: crate::mempool::slot_to_timestamp(slot, &stage.genesis) as u32,
                 produced,
                 consumed: &consumed,
                 pool_delegation_changes: &pool_deleg,

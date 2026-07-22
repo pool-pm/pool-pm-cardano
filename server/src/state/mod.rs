@@ -560,6 +560,9 @@ pub struct BlockUpdate<'a> {
     pub slot: u64,
     pub block_hash: String,
     pub epoch: u64,
+    /// The block's wall-clock time (unix seconds) — the first-mint time stamped on any asset
+    /// newly minted in this block; transferred assets carry their recorded time instead.
+    pub block_time: u32,
     pub produced: Vec<((Vec<u8>, i16), TxOutput)>,
     pub consumed: &'a [((Vec<u8>, i16), TxOutput)],
     pub pool_delegation_changes: &'a [(Vec<u8>, Option<Vec<u8>>)],
@@ -1285,6 +1288,7 @@ impl State {
             slot,
             block_hash,
             epoch,
+            block_time,
             produced,
             consumed,
             pool_delegation_changes,
@@ -1314,12 +1318,27 @@ impl State {
         // balance/holdings — and `utxos.remove` would no-op, leaving a phantom UTXO. Doing
         // credits first guarantees the entry exists when the debit lands. (`stakes` is
         // immune either way: it's a flat sum of signed deltas.)
-        // Per-block asset → first-mint time for crediting new leaves: a genuinely new mint
-        // gets this block's time; a transferred asset carries its recorded time from the input
-        // it was spent from (built below from the consumed inputs' prior leaves). block_time
-        // and mint_times are wired to real values in a later step.
-        let block_time: u32 = 0;
-        let mint_times: std::collections::HashMap<AssetId, u32> = std::collections::HashMap::new();
+        // Per-block asset → first-mint time for crediting new leaves. By ledger conservation
+        // every output asset either comes from an input this block (carry its recorded time
+        // from that input's prior leaf) or is minted this block (fall back to `block_time`).
+        // So seed the map from the consumed inputs' prior leaves; anything absent is a new mint.
+        let mut mint_times: std::collections::HashMap<AssetId, u32> =
+            std::collections::HashMap::new();
+        for (_, output) in consumed {
+            if output.assets.is_empty() {
+                continue;
+            }
+            let cred = stake_credential_from_address_bytes(&output.address);
+            let akey: AssetKey = (cred, output.address.clone());
+            for (policy, names) in &output.assets {
+                for (name, _) in names {
+                    let aid = asset_id(policy, name);
+                    if let Some(h) = prev.asset_holdings.get(&(akey.clone(), aid.clone())) {
+                        mint_times.entry(aid).or_insert(h.mint_time);
+                    }
+                }
+            }
+        }
 
         for (key, output) in produced {
             let bal: i64 = output
@@ -2064,6 +2083,7 @@ mod tests {
             slot: 200,
             block_hash: "hash200".into(),
             epoch: 11,
+            block_time: 1_700_000_200,
             produced,
             consumed: &consumed,
             pool_delegation_changes: &pool_deleg,
@@ -2214,6 +2234,7 @@ mod tests {
             slot: 200,
             block_hash: "h200".into(),
             epoch: 10,
+            block_time: 1_700_000_200,
             produced,
             consumed: &consumed,
             pool_delegation_changes: &[],
@@ -2242,6 +2263,88 @@ mod tests {
             "held asset over-counted: the intra-block debit was dropped"
         );
         assert_eq!(cur.stakes.get(&cred).copied(), Some(0));
+    }
+
+    /// Live mint-time: a transferred asset carries its recorded first-mint time from the input
+    /// it was spent from; an asset minted in the block (no matching input) gets the block time.
+    #[test]
+    fn apply_block_mint_time_carries_on_transfer_and_stamps_new_mints() {
+        use rust_decimal::Decimal;
+
+        let addr_a = [&[0x00u8][..], &[0x51; 28], &[0x61; 28]].concat();
+        let addr_b = [&[0x00u8][..], &[0x52; 28], &[0x62; 28]].concat();
+        let policy = vec![0x11u8; 28];
+        let tok = b"TOK".to_vec(); // pre-existing, minted long ago (time 111)
+        let new = b"NEW".to_vec(); // minted in this block
+        let held = |addr: &[u8], name: &[u8], q: u64| TxOutput {
+            lovelaces: Decimal::from(1_000_000u64),
+            address: addr.to_vec(),
+            assets: vec![(policy.clone(), vec![(name.to_vec(), q)])],
+        };
+        let leaf = |addr: &[u8], name: &[u8]| -> HeldKey {
+            let cred = stake_credential_from_address_bytes(addr);
+            ((cred, addr.to_vec()), asset_id(&policy, name))
+        };
+        let (txh_old, txh_new) = (vec![0xa0u8; 32], vec![0xa1u8; 32]);
+
+        // Initial: addr_a holds TOK (qty 1), first minted at time 111.
+        let mut initial = BlockSnapshot {
+            slot: 100,
+            block_hash: Some("h".into()),
+            last_epoch: Some(1),
+            address_balances_populated: true,
+            asset_holdings_populated: true,
+            ..BlockSnapshot::default()
+        };
+        initial
+            .utxos
+            .insert((txh_old.clone(), 0), held(&addr_a, &tok, 1));
+        initial
+            .asset_holdings
+            .insert(leaf(&addr_a, &tok), Held::new(1, 111));
+        let mut state = State::new(Url::parse("postgresql:///test").unwrap());
+        state.restore_from_snapshot(initial);
+
+        // Block at time 999: A spends its TOK to B (transfer) and mints NEW to itself.
+        let produced = vec![
+            ((txh_new.clone(), 0i16), held(&addr_b, &tok, 1)),
+            ((txh_new.clone(), 1i16), held(&addr_a, &new, 5)),
+        ];
+        let consumed = vec![((txh_old.clone(), 0i16), held(&addr_a, &tok, 1))];
+
+        state.apply_block(BlockUpdate {
+            slot: 200,
+            block_hash: "h2".into(),
+            epoch: 1,
+            block_time: 999,
+            produced,
+            consumed: &consumed,
+            pool_delegation_changes: &[],
+            drep_delegation_changes: &[],
+            pool_updates: &[],
+            pool_retirements: &[],
+            issuer_pool_hash: None,
+            stake_changes: &[],
+            withdrawal_changes: &[],
+            reward_deltas: None,
+            drep_active_until: None,
+        });
+
+        let cur = state.current().unwrap();
+        // TOK moved to B keeps its original mint time (111), not the block time.
+        assert_eq!(
+            cur.asset_holdings
+                .get(&leaf(&addr_b, &tok))
+                .unwrap()
+                .mint_time,
+            111
+        );
+        // A no longer holds TOK.
+        assert!(cur.asset_holdings.get(&leaf(&addr_a, &tok)).is_none());
+        // NEW was minted this block → stamped with the block time.
+        let new_leaf = cur.asset_holdings.get(&leaf(&addr_a, &new)).unwrap();
+        assert_eq!(new_leaf.qty(), 5);
+        assert_eq!(new_leaf.mint_time, 999);
     }
 
     /// `write_snapshot` → `load_snapshot` round-trips the whole snapshot (including a
