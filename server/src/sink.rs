@@ -140,10 +140,11 @@ impl Worker {
                 // return, and skip everything else (gated on `valid` below). Byron/pre-Alonzo
                 // txs are always valid.
                 let valid = tx.is_valid();
+                // The inputs this tx actually spends and outputs it actually creates —
+                // collateral only for a phase-2-invalid tx (see `effective_io`).
+                let (inputs, outputs) = crate::pallas::effective_io(&tx);
 
-                // Track consumed UTXOs: subtract lovelaces from stake credentials. An invalid
-                // tx spends its collateral inputs instead of its regular inputs.
-                let inputs = if valid { tx.inputs() } else { tx.collateral() };
+                // Track consumed UTXOs: subtract lovelaces from stake credentials.
                 for input in &inputs {
                     let key = (input.hash().as_ref().to_vec(), input.index() as i16);
                     // Check block-local UTXOs first, then in-memory state,
@@ -218,18 +219,7 @@ impl Worker {
                     new_decimals.extend(cip68::extract_from_tx(&tx));
                 }
 
-                // Track produced UTXOs: add lovelaces to stake credentials. For an invalid
-                // tx the only real output is the collateral return, placed at the ledger
-                // index = number of regular outputs.
-                let outputs = if valid {
-                    tx.outputs().into_iter().enumerate().collect::<Vec<_>>()
-                } else {
-                    let idx = tx.outputs().len();
-                    tx.collateral_return()
-                        .into_iter()
-                        .map(|o| (idx, o))
-                        .collect::<Vec<_>>()
-                };
+                // Track produced UTXOs: add lovelaces to stake credentials.
                 for (idx, output) in &outputs {
                     let addr = output
                         .address()

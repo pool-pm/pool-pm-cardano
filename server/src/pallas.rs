@@ -1,6 +1,6 @@
 use pallas::crypto::hash::Hasher;
 use pallas::ledger::primitives::{alonzo, conway, Metadatum, StakeCredential};
-use pallas::ledger::traverse::{MultiEraCert, MultiEraTx};
+use pallas::ledger::traverse::{MultiEraCert, MultiEraInput, MultiEraOutput, MultiEraTx};
 
 use crate::event::CatalystInfo;
 
@@ -175,6 +175,30 @@ pub fn drep_to_bytes(drep: &conway::DRep) -> Vec<u8> {
 /// Extracted voting procedure: (voter, gov_action_id, vote).
 pub type ExtractedVote = (conway::Voter, conway::GovActionId, conway::Vote);
 
+/// The inputs a transaction actually spends and the outputs it actually creates, honouring
+/// phase-2 validity. A valid tx (including all Byron/pre-Alonzo txs) uses its regular
+/// inputs/outputs. A phase-2-invalid ("script-invalid") tx is recorded on-chain but the ledger
+/// applies ONLY its collateral: it spends its collateral inputs and creates its collateral
+/// return, placed at the ledger output index = the number of regular outputs (so a later spend
+/// resolves against the correct UTXO ref). Its regular inputs/outputs, mints, withdrawals and
+/// certificates never take effect. Returned outputs are `(index, output)` pairs.
+pub fn effective_io<'a>(
+    tx: &'a MultiEraTx<'_>,
+) -> (Vec<MultiEraInput<'a>>, Vec<(usize, MultiEraOutput<'a>)>) {
+    if tx.is_valid() {
+        (tx.inputs(), tx.outputs().into_iter().enumerate().collect())
+    } else {
+        let idx = tx.outputs().len();
+        (
+            tx.collateral(),
+            tx.collateral_return()
+                .into_iter()
+                .map(|o| (idx, o))
+                .collect(),
+        )
+    }
+}
+
 pub trait MultiEraTxExt {
     /// Pool delegation certificates with full StakeCredential preserved.
     fn pool_delegation_certs(&self) -> Vec<PoolDelegationCert>;
@@ -323,6 +347,30 @@ impl MultiEraTxExt for MultiEraTx<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real mainnet phase-2-invalid transaction (956c5eff…): 1 regular input, 2 collateral
+    /// inputs. `effective_io` must ignore its regular inputs/outputs and use only collateral.
+    #[test]
+    fn effective_io_uses_only_collateral_for_invalid_tx() {
+        let bytes = hex::decode(include_str!("testdata/invalid_tx_956c5eff.hex").trim()).unwrap();
+        let tx = MultiEraTx::decode(&bytes).unwrap();
+
+        assert!(!tx.is_valid(), "fixture must be a phase-2-invalid tx");
+        assert!(!tx.collateral().is_empty());
+        // The fixture's regular inputs differ from its collateral, so the test distinguishes.
+        assert_ne!(tx.inputs().len(), tx.collateral().len());
+
+        let (inputs, outputs) = effective_io(&tx);
+
+        // Spends the collateral inputs, not the (never-applied) regular inputs.
+        assert_eq!(inputs.len(), tx.collateral().len());
+        assert_eq!(inputs[0].hash(), tx.collateral()[0].hash());
+        // Creates only the collateral return (0 or 1), at the ledger index = #regular outputs.
+        assert_eq!(outputs.len(), tx.collateral_return().iter().count());
+        if let Some((idx, _)) = outputs.first() {
+            assert_eq!(*idx, tx.outputs().len());
+        }
+    }
 
     fn text(s: &str) -> Metadatum {
         Metadatum::Text(s.to_string())
