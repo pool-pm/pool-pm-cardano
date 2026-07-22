@@ -41,6 +41,26 @@ export function formatAda(lovelace: string): string {
   return trimmed ? '0.' + trimmed + ' ₳' : '0' + ' ₳';
 }
 
+/** Group the integer part of a decimals-formatted quantity string with locale thousands
+ * separators, preserving any fractional part. Uses BigInt so it stays exact past
+ * Number.MAX_SAFE_INTEGER (token supplies can be huge): "520000" → "520,000",
+ * "1204.55" → "1,204.55", "0.000001" → "0.000001". */
+export function formatQuantity(qty: string): string {
+  if (!/[0-9]/.test(qty)) return qty; // empty / non-numeric: leave untouched
+  const neg = qty.startsWith('-');
+  const body = neg ? qty.slice(1) : qty;
+  const dot = body.indexOf('.');
+  const intPart = dot === -1 ? body : body.slice(0, dot);
+  const frac = dot === -1 ? '' : body.slice(dot); // includes the leading '.'
+  let grouped: string;
+  try {
+    grouped = new Intl.NumberFormat().format(BigInt(intPart || '0'));
+  } catch {
+    return qty; // non-numeric input: leave untouched
+  }
+  return (neg ? '-' : '') + grouped + frac;
+}
+
 // Largest sRGB-displayable OKLCH chroma for a given lightness & hue, found by
 // binary-searching the oklab→linear-sRGB gamut boundary (Ottosson's matrices).
 // Lets us vary chroma without straying past the gamut, where higher values just

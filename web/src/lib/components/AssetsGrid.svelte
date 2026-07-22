@@ -5,6 +5,7 @@
   import { stake, address } from '../stores';
   import { onAssetLive } from '../sse';
   import { commonNamePrefix } from '../assetName';
+  import { formatQuantity } from '../layout';
   import SubjectCard from './SubjectCard.svelte';
 
   // `endpoint` is the paginated API URL (cursor is appended as `?cursor=`); `title`
@@ -266,7 +267,7 @@
     <span class="frame" class:text={isText}>
       <!-- Owned amount (decimals-applied); the server omits it when it's 1. The band is
            always present (blank for single NFTs) so the media lines up across tiles. -->
-      <span class="qty">{a.quantity ?? ''}</span>
+      <span class="qty">{a.quantity ? formatQuantity(a.quantity) : ''}</span>
       <span class="art">
         {#if isText}
           <!-- Image 404'd: the name/fingerprint stands in for the missing art as a placard. -->
