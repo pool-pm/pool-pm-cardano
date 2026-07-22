@@ -113,7 +113,12 @@
   {#if assetFingerprint}
     <AssetPage fingerprint={assetFingerprint} initialIndex={assetFileIndex} />
   {:else if policyId}
-    <AssetsGrid endpoint={`/api/policy/${policyId}`} title={`${policyId.slice(0, 12)}…`} mode="hide-broken" />
+    <AssetsGrid
+      endpoint={`/api/policy/${policyId}`}
+      title={`${policyId.slice(0, 12)}…`}
+      mode="hide-broken"
+      sortLabel="Minted"
+    />
   {:else if ownedAssetsSubject}
     <AssetsGrid
       endpoint={`/api/assets/${ownedAssetsSubject}`}

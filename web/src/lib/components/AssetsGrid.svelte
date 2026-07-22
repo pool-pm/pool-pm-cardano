@@ -24,6 +24,7 @@
     grouped = false,
     subject = '',
     policyFilter,
+    sortLabel = 'Quantity',
   }: {
     endpoint: string;
     title: string;
@@ -31,6 +32,9 @@
     grouped?: boolean;
     subject?: string;
     policyFilter?: string;
+    // Primary sort axis named on the toggle button: 'Quantity' for owned grids,
+    // 'Minted' for the policy browse (which has no per-owner quantity).
+    sortLabel?: string;
   } = $props();
 
   // Uniform-grid geometry (px). A fixed cell size per render is what makes windowing
@@ -66,6 +70,13 @@
   let hasMore = $state(true);
   let loading = $state(false);
   let error = $state<string | null>(null);
+  // Sort direction, sent to the server as `?order=`. Default descending (highest
+  // quantity / newest mint first); the toolbar button flips it and reloads page 1.
+  let order = $state<'desc' | 'asc'>('desc');
+  let scrollEl = $state<HTMLElement | undefined>();
+  // True once a first page has arrived; keeps the sort toolbar mounted across a
+  // toggle-triggered reload (when the lists momentarily empty) so it doesn't flash out.
+  let hasLoaded = $state(false);
 
   // Live de-dup: `present` mirrors the fingerprints in `assets`; `presentPolicies` the
   // policies in `groups` — so a fetched page can't duplicate a live add.
@@ -131,35 +142,72 @@
   const slice = $derived(items.slice(startIndex, endIndex));
   const offsetY = $derived(VPAD + renderFrom * ROW);
 
+  // Bumped on every sort toggle so an in-flight page fetch started under the old order
+  // discards its response instead of appending it to the freshly-reset (new-order) lists.
+  let generation = 0;
+
   async function loadMore() {
     if (loading || !hasMore) return;
     loading = true;
+    const gen = generation;
     try {
-      const url = cursor === undefined ? endpoint : `${endpoint}?cursor=${cursor}`;
+      const params = new URLSearchParams();
+      if (cursor !== undefined) params.set('cursor', String(cursor));
+      if (order !== 'desc') params.set('order', order);
+      const qs = params.toString();
+      const url = qs ? `${endpoint}?${qs}` : endpoint;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data: GroupsResponse | AssetsResponse = await res.json();
+      // A toggle happened mid-flight (across an await): this page is for the old order —
+      // drop it. The finally clears `loading`, so the prefetch effect refetches the new order.
+      if (gen !== generation) return;
       if (grouped) {
-        const data: GroupsResponse = await res.json();
-        const fresh = data.groups.filter((g) => !presentPolicies.has(g.policy));
+        const g_data = data as GroupsResponse;
+        const fresh = g_data.groups.filter((g) => !presentPolicies.has(g.policy));
         for (const g of fresh) presentPolicies.add(g.policy);
         groups = [...groups, ...fresh];
-        cursor = data.cursor;
-        hasMore = data.has_more;
+        cursor = g_data.cursor;
+        hasMore = g_data.has_more;
       } else {
-        const data: AssetsResponse = await res.json();
+        const a_data = data as AssetsResponse;
         // Skip anything already shown via a live add, so a page can't duplicate it.
-        const fresh = data.assets.filter((a) => !present.has(a.fingerprint));
+        const fresh = a_data.assets.filter((a) => !present.has(a.fingerprint));
         for (const a of fresh) present.add(a.fingerprint);
         assets = [...assets, ...fresh];
-        cursor = data.cursor;
-        hasMore = data.has_more;
+        cursor = a_data.cursor;
+        hasMore = a_data.has_more;
       }
+      hasLoaded = true;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
       hasMore = false;
     } finally {
       loading = false;
     }
+  }
+
+  // Flip the sort direction and reload from page 1: the order is a server-side sort, so
+  // the whole result set changes and the accumulated pages/cursor are discarded. Clearing
+  // the lists drops loadedRows to 0, which re-arms the prefetch effect to fetch page 1
+  // with the new order. Live-dedup sets and scroll position reset too.
+  function toggleOrder() {
+    order = order === 'desc' ? 'asc' : 'desc';
+    generation++;
+    assets = [];
+    groups = [];
+    present.clear();
+    presentPolicies.clear();
+    cursor = undefined;
+    hasMore = true;
+    error = null;
+    loaded.clear();
+    broken.clear();
+    if (scrollEl) scrollEl.scrollTop = 0;
+    scrollTop = 0;
+    // Kick page 1 synchronously (sets `loading`) so the grid never flashes "No assets."
+    // between the reset and the prefetch effect; loadMore's guard dedupes the effect's call.
+    loadMore();
   }
 
   // Keep the buffer ahead: refetch whenever the rendered window (grown by scroll,
@@ -293,7 +341,26 @@
   <!-- Populated only on the owned-assets page (address/stake), where App connects
        the SSE feed; on policy pages both stores stay null so nothing renders. -->
   <SubjectCard stake={$stake} address={$address} />
-  <div class="scroll" bind:clientHeight={viewportH} onscroll={onScroll}>
+  <!-- Sort toggle: flips between descending (default) and ascending on the primary axis
+       (quantity for owned grids, mint date for the policy browse). Hidden until the first
+       page is in, so it doesn't flash on an empty/errored grid. -->
+  {#if hasLoaded}
+    <div class="toolbar">
+      <button
+        class="sort-btn"
+        class:asc={order === 'asc'}
+        onclick={toggleOrder}
+        title={`${sortLabel}: ${order === 'desc' ? 'high to low' : 'low to high'} — click to reverse`}
+        aria-label={`Sort by ${sortLabel}, ${order === 'desc' ? 'descending' : 'ascending'}`}
+      >
+        <span class="sort-text">{sortLabel}</span>
+        <svg class="sort-arrow" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+          <path d="M6 1.5 V10.5 M2.5 7 L6 10.5 L9.5 7" fill="none" stroke="currentColor" stroke-width="1.4" />
+        </svg>
+      </button>
+    </div>
+  {/if}
+  <div class="scroll" bind:this={scrollEl} bind:clientHeight={viewportH} onscroll={onScroll}>
     {#if error && empty}
       <div class="status">Could not load: {error}</div>
     {:else if !loading && empty}
@@ -385,6 +452,58 @@
     padding-inline: 20px;
     box-sizing: border-box;
     background: var(--surface);
+  }
+
+  /* Thin bar carrying the sort toggle, right-aligned to match the grid's inline padding.
+     Sits between the header card and the scrolling grid. */
+  .toolbar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px 20px 8px;
+    box-sizing: border-box;
+    background: var(--surface);
+  }
+
+  /* Subtle pill on the dark wall: hairline border, muted text, brightens on hover. */
+  .sort-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border: 1px solid rgb(255 255 255 / 0.12);
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.03);
+    color: rgb(255 255 255 / 0.55);
+    font-family: Inter, sans-serif;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    transition:
+      color 0.18s ease,
+      border-color 0.18s ease,
+      background 0.18s ease;
+  }
+  .sort-btn:hover,
+  .sort-btn:focus-visible {
+    color: rgb(255 255 255 / 0.85);
+    border-color: rgb(255 255 255 / 0.28);
+    background: rgb(255 255 255 / 0.06);
+    outline: none;
+  }
+  .sort-text {
+    letter-spacing: 0.02em;
+  }
+  /* The arrow points down for descending; ascending flips it 180° (smoothly). */
+  .sort-arrow {
+    transition: transform 0.2s ease;
+  }
+  .sort-btn.asc .sort-arrow {
+    transform: rotate(180deg);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sort-arrow {
+      transition: none;
+    }
   }
 
   /* Reserves the full scroll height of all loaded rows; the window is absolutely
