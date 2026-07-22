@@ -2866,6 +2866,8 @@ fn is_valid_policy_id(p: &str) -> bool {
 #[derive(serde::Deserialize)]
 struct PolicyQuery {
     cursor: Option<i64>,
+    /// `desc` (default) or `asc` — the assets grid's sort direction.
+    order: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -3018,8 +3020,15 @@ async fn policy_assets(
         .await
         .db_handle()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    // Policy browse has no per-owner quantity, so "quantity then mint date" collapses to
+    // mint date: descending (default) = newest first, ascending = oldest first.
     let rows = db
-        .assets_by_policy(&policy, query.cursor, POLICY_PAGE_SIZE)
+        .assets_by_policy(
+            &policy,
+            query.cursor,
+            POLICY_PAGE_SIZE,
+            !is_descending(&query.order),
+        )
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
 
@@ -3043,7 +3052,13 @@ async fn policy_assets(
 /// Held `(policy, name)` tokens for an address/stake subject, cloned off the
 /// `chain_state` lock (the clone is sync — no await held). Errs 400 for a
 /// non-address/stake filter or an unparseable address, 503 before the first snapshot.
-type HeldList = Vec<(Vec<u8>, Vec<u8>, u128)>;
+type HeldList = Vec<(Vec<u8>, Vec<u8>, u128, u32)>;
+
+/// Sort direction from the `?order=` query param. Defaults to descending (highest quantity /
+/// newest mint first); `?order=asc` reverses it.
+fn is_descending(order: &Option<String>) -> bool {
+    order.as_deref() != Some("asc")
+}
 
 async fn collect_held(
     state: &AppState,
@@ -3082,8 +3097,8 @@ fn build_owned_tile(
 }
 
 /// One policy's owned tokens while grouping: `(policy, held count, up to `GROUP_SAMPLES`
-/// `(name, quantity)` sample tiles)`.
-type PolicyGroup = (Vec<u8>, usize, Vec<(Vec<u8>, u128)>);
+/// `(name, quantity)` sample tiles, oldest mint_time in the group)`.
+type PolicyGroup = (Vec<u8>, usize, Vec<(Vec<u8>, u128)>, u32);
 
 /// Assets owned by a payment address (`addr1…`) or stake credential (`stake1…`),
 /// **grouped by policy** — one tile per policy with its held `count` and up to
@@ -3102,20 +3117,37 @@ async fn owned_assets(
     held.sort_unstable();
 
     // held is sorted by (policy, name), so each policy's tokens are contiguous: count
-    // them all, keeping up to GROUP_SAMPLES (name, quantity) samples for the thumbnail.
+    // them all, keeping up to GROUP_SAMPLES (name, quantity) samples for the thumbnail and
+    // the group's oldest mint_time for the sort below.
     let mut groups: Vec<PolicyGroup> = Vec::new();
-    for (policy, name, qty) in held {
-        if let Some((p, count, samples)) = groups.last_mut() {
+    for (policy, name, qty, mint_time) in held {
+        if let Some((p, count, samples, min_mint)) = groups.last_mut() {
             if *p == policy {
                 *count += 1;
                 if samples.len() < GROUP_SAMPLES {
                     samples.push((name, qty));
                 }
+                *min_mint = (*min_mint).min(mint_time);
                 continue;
             }
         }
-        groups.push((policy, 1, vec![(name, qty)]));
+        groups.push((policy, 1, vec![(name, qty)], mint_time));
     }
+
+    // Sort the policy tiles: a single-asset tile by its quantity, a multi-asset stack (NFTs,
+    // quantity 1) by the group's oldest mint. (sort_qty, mint, policy) is a total order;
+    // reversed for the default descending.
+    let descending = is_descending(&query.order);
+    groups.sort_unstable_by(|a, b| {
+        let ka = (if a.1 == 1 { a.2[0].1 } else { 1 }, a.3, &a.0);
+        let kb = (if b.1 == 1 { b.2[0].1 } else { 1 }, b.3, &b.0);
+        let ord = ka.cmp(&kb);
+        if descending {
+            ord.reverse()
+        } else {
+            ord
+        }
+    });
 
     let total = groups.len();
     let offset = query.cursor.unwrap_or(0).max(0) as usize;
@@ -3123,7 +3155,7 @@ async fn owned_assets(
         .into_iter()
         .skip(offset)
         .take(GROUP_PAGE_SIZE)
-        .map(|(policy, count, samples)| {
+        .map(|(policy, count, samples, _min_mint)| {
             let policy_hex = hex::encode(&policy);
             let samples = samples
                 .into_iter()
@@ -3164,8 +3196,18 @@ async fn owned_assets_by_policy(
     let policy = hex::decode(&policy_id).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     let (mut held, decimals) = collect_held(&state, &filter).await?;
-    held.retain(|(p, _, _)| *p == policy);
-    held.sort_unstable();
+    held.retain(|(p, _, _, _)| *p == policy);
+    // Sort by (quantity, mint_time, name) — name makes it a total order for stable offset
+    // pagination; reversed for the default descending (highest qty / newest mint first).
+    let descending = is_descending(&query.order);
+    held.sort_unstable_by(|a, b| {
+        let ord = (a.2, a.3, &a.1).cmp(&(b.2, b.3, &b.1));
+        if descending {
+            ord.reverse()
+        } else {
+            ord
+        }
+    });
 
     let total = held.len();
     let offset = query.cursor.unwrap_or(0).max(0) as usize;
@@ -3173,7 +3215,7 @@ async fn owned_assets_by_policy(
         .into_iter()
         .skip(offset)
         .take(POLICY_PAGE_SIZE as usize)
-        .map(|(_, name, qty)| {
+        .map(|(_, name, qty, _)| {
             build_owned_tile(&state.nftcdn, &policy_id, &policy, name, qty, &decimals)
         })
         .collect();

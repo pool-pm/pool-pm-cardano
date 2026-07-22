@@ -392,6 +392,7 @@ impl DbSync {
         policy: &[u8],
         cursor: Option<i64>,
         limit: i64,
+        ascending: bool,
     ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
         // MATERIALIZED CTE inhibits the planner from pushing the outer
         // `ORDER BY id DESC LIMIT N` into a backward pkey scan that filters by
@@ -400,29 +401,57 @@ impl DbSync {
         // → millions of rows scanned for 60 hits). Materializing forces the
         // bitmap-scan via `unique_multi_asset (policy, name)` first, then
         // top-N sort over the small per-policy result.
-        let rows = sqlx::query!(
-            r#"WITH filtered AS MATERIALIZED (
-                SELECT id, fingerprint AS "fingerprint!", name AS "name!"
-                FROM multi_asset
-                WHERE policy = $1 AND ($2::bigint IS NULL OR id < $2)
-                -- Hide CIP-68 reference NFTs (CIP-67 label 100); the (222)
-                -- user token renders the same image, so they'd otherwise show
-                -- as duplicates.
-                AND substring(name from 1 for 4) != '\x000643b0'
+        //
+        // `ascending` (oldest first) pages strictly upward (`id > cursor`,
+        // `ORDER BY id ASC`); the default descending pages downward
+        // (`id < cursor`, `ORDER BY id DESC`). Both directions are a top-N sort
+        // over the materialized per-policy set, so the cursor stays stable
+        // against concurrent mints exactly as documented above.
+        let rows = if ascending {
+            sqlx::query!(
+                r#"WITH filtered AS MATERIALIZED (
+                    SELECT id, fingerprint AS "fingerprint!", name AS "name!"
+                    FROM multi_asset
+                    WHERE policy = $1 AND ($2::bigint IS NULL OR id > $2)
+                    AND substring(name from 1 for 4) != '\x000643b0'
+                )
+                SELECT id, "fingerprint!", "name!" FROM filtered
+                ORDER BY id ASC
+                LIMIT $3"#,
+                policy,
+                cursor,
+                limit
             )
-            SELECT id, "fingerprint!", "name!" FROM filtered
-            ORDER BY id DESC
-            LIMIT $3"#,
-            policy,
-            cursor,
-            limit
-        )
-        .fetch_all(&self.db)
-        .await?;
-        Ok(rows
+            .fetch_all(&self.db)
+            .await?
             .into_iter()
             .map(|r| (r.id, r.fingerprint, r.name))
-            .collect())
+            .collect()
+        } else {
+            sqlx::query!(
+                r#"WITH filtered AS MATERIALIZED (
+                    SELECT id, fingerprint AS "fingerprint!", name AS "name!"
+                    FROM multi_asset
+                    WHERE policy = $1 AND ($2::bigint IS NULL OR id < $2)
+                    -- Hide CIP-68 reference NFTs (CIP-67 label 100); the (222)
+                    -- user token renders the same image, so they'd otherwise show
+                    -- as duplicates.
+                    AND substring(name from 1 for 4) != '\x000643b0'
+                )
+                SELECT id, "fingerprint!", "name!" FROM filtered
+                ORDER BY id DESC
+                LIMIT $3"#,
+                policy,
+                cursor,
+                limit
+            )
+            .fetch_all(&self.db)
+            .await?
+            .into_iter()
+            .map(|r| (r.id, r.fingerprint, r.name))
+            .collect()
+        };
+        Ok(rows)
     }
 
     /// Batch-resolve UTXOs. Returns (address, lovelace, assets, unspent).

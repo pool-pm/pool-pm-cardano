@@ -212,31 +212,34 @@ impl BlockSnapshot {
         union.len() as u32
     }
 
-    /// Every `(policy, name, quantity)` token currently held by a payment address — the
-    /// rows the owned-assets grid renders, straight from memory (no db scan). Unsorted;
-    /// the caller sorts and paginates.
-    pub fn address_held_assets(&self, address: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, u128)> {
+    /// Every `(policy, name, quantity, mint_time)` token currently held by a payment address —
+    /// the rows the owned-assets grid renders, straight from memory (no db scan). Unsorted;
+    /// the caller sorts (by quantity, then mint_time) and paginates.
+    pub fn address_held_assets(&self, address: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, u128, u32)> {
         let cred = stake_credential_from_address_bytes(address);
         addr_range(&self.asset_holdings, &(cred, address.to_vec()))
             .map(|((_, asset), h)| {
                 let (policy, name) = split_asset(asset);
-                (policy.to_vec(), name.to_vec(), h.qty())
+                (policy.to_vec(), name.to_vec(), h.qty(), h.mint_time)
             })
             .collect()
     }
 
-    /// Distinct `(policy, name, quantity)` tokens held across every payment address
-    /// sharing a stake credential — the same asset on two of the credential's addresses
-    /// is one owned asset, with the quantities summed. Unsorted; the caller paginates.
-    pub fn stake_held_assets(&self, cred: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, u128)> {
-        let mut sums: std::collections::HashMap<&[u8], u128> = std::collections::HashMap::new();
+    /// Distinct `(policy, name, quantity, mint_time)` tokens held across every payment address
+    /// sharing a stake credential — the same asset on two of the credential's addresses is one
+    /// owned asset, with the quantities summed (mint_time is per-asset, so identical across the
+    /// leaves). Unsorted; the caller paginates.
+    pub fn stake_held_assets(&self, cred: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, u128, u32)> {
+        let mut sums: std::collections::HashMap<&[u8], (u128, u32)> =
+            std::collections::HashMap::new();
         for ((_, asset), h) in cred_range(&self.asset_holdings, cred) {
-            *sums.entry(asset).or_insert(0) += h.qty();
+            let e = sums.entry(asset).or_insert((0, h.mint_time));
+            e.0 += h.qty();
         }
         sums.into_iter()
-            .map(|(asset, q)| {
+            .map(|(asset, (q, mint_time))| {
                 let (policy, name) = split_asset(asset);
-                (policy.to_vec(), name.to_vec(), q)
+                (policy.to_vec(), name.to_vec(), q, mint_time)
             })
             .collect()
     }
@@ -2120,13 +2123,15 @@ mod tests {
 
         // Asset holdings: addr1's token removed, addr2 untouched, addr3's token added.
         assert!(cur.address_held_assets(&addr1).is_empty());
+        // addr2's token carries its original mint_time (0); addr3's is a new mint stamped
+        // with this block's time (policy2/name2 was in no consumed input).
         assert_eq!(
             cur.address_held_assets(&addr2),
-            vec![(policy1.clone(), name1.clone(), 3u128)]
+            vec![(policy1.clone(), name1.clone(), 3u128, 0)]
         );
         assert_eq!(
             cur.address_held_assets(&addr3),
-            vec![(policy2.clone(), name2.clone(), 7u128)]
+            vec![(policy2.clone(), name2.clone(), 7u128, 1_700_000_200)]
         );
 
         // Pools: pool_q new + minted this block; pool_p carried blocks/ticker, params updated, retiring set.
@@ -2487,8 +2492,8 @@ mod tests {
         assert_eq!(
             held,
             vec![
-                (pa.clone(), na.clone(), 13u128),
-                (pb.clone(), nb.clone(), 5u128)
+                (pa.clone(), na.clone(), 13u128, 0),
+                (pb.clone(), nb.clone(), 5u128, 0)
             ]
         );
 
