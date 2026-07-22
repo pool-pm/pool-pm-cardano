@@ -415,7 +415,7 @@ fn apply_utxo_assets(
     assets: &crate::model::PolicyAssets,
     add: bool,
     holdings: &mut AssetHoldings,
-    mint_times: &HashMap<AssetId, u32>,
+    mint_times: &std::collections::HashMap<AssetId, u32>,
     block_time: u32,
 ) {
     if assets.is_empty() {
@@ -684,7 +684,14 @@ impl State {
         };
         let holdings = {
             let Some(db) = self.db().await else { return };
-            match Self::fetch_asset_holdings(db, last_tx_id).await {
+            let mint_times = match Self::fetch_asset_mint_times(db).await {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!("failed to fetch asset mint times: {e}");
+                    return;
+                }
+            };
+            match Self::fetch_asset_holdings(db, last_tx_id, &mint_times).await {
                 Ok(h) => h,
                 Err(e) => {
                     tracing::warn!("failed to fetch asset holdings: {e}");
@@ -995,6 +1002,35 @@ impl State {
         (address_balances, stakes)
     }
 
+    /// Build the `ident → first-mint unix time (u32)` map from db-sync — the source of the
+    /// holdings-leaf `mint_time`. Streamed (never one big `Vec`); a heavy one-time cold-start
+    /// aggregate (~minutes), so warm resume reads mint times from the snapshot instead.
+    async fn fetch_asset_mint_times(
+        db: &DbSync,
+    ) -> Result<std::collections::HashMap<i64, u32>, sqlx::Error> {
+        let mut map: std::collections::HashMap<i64, u32> = std::collections::HashMap::new();
+        let mut rows: u64 = 0;
+        db.asset_mint_times_for_each(|ident, first_mint| {
+            rows += 1;
+            // Block times are positive and fit u32 well past year 2100.
+            map.insert(ident, first_mint.max(0) as u32);
+            if rows.is_multiple_of(2_000_000) {
+                tracing::info!(
+                    rss_mb = rss_mb(),
+                    rows,
+                    "asset mint times: loading (streaming)"
+                );
+            }
+        })
+        .await?;
+        tracing::info!(
+            rss_mb = rss_mb(),
+            assets = map.len(),
+            "asset mint times loaded from db-sync"
+        );
+        Ok(map)
+    }
+
     /// Build the global [`BlockSnapshot::asset_holdings`] map from db-sync's
     /// `(bech32 address, fingerprint, unspent-UTXO count)` stream (ordered by address),
     /// computing each address's stake credential once. Streamed row-by-row so the full
@@ -1003,6 +1039,7 @@ impl State {
     async fn fetch_asset_holdings(
         db: &DbSync,
         last_tx_id: i64,
+        mint_times: &std::collections::HashMap<i64, u32>,
     ) -> Result<AssetHoldings, sqlx::Error> {
         use pallas::ledger::addresses::Address;
         let mut holdings: AssetHoldings = OrdMap::new();
@@ -1011,7 +1048,7 @@ impl State {
         let mut cur_addr: Option<String> = None;
         let mut cur_key: Option<AssetKey> = None;
         let mut rows: u64 = 0;
-        db.asset_holdings_for_each(last_tx_id, |addr, policy, name, count| {
+        db.asset_holdings_for_each(last_tx_id, |addr, policy, name, count, ident| {
             rows += 1;
             if cur_addr.as_deref() != Some(addr.as_str()) {
                 cur_key = Address::from_bech32(&addr).ok().map(|a| {
@@ -1024,8 +1061,11 @@ impl State {
             // absurd u128 ceiling, far beyond any real token — so no precision is lost).
             let qty = count.parse::<u128>().unwrap_or(u128::MAX);
             if let (Some(key), true) = (&cur_key, qty > 0) {
-                // mint_time is backfilled from db-sync after this stream (see reset).
-                holdings.insert((key.clone(), asset_id(&policy, &name)), Held::new(qty, 0));
+                let mint_time = mint_times.get(&ident).copied().unwrap_or(0);
+                holdings.insert(
+                    (key.clone(), asset_id(&policy, &name)),
+                    Held::new(qty, mint_time),
+                );
             }
             if rows.is_multiple_of(1_000_000) {
                 tracing::info!(
@@ -1182,8 +1222,11 @@ impl State {
 
         let total_staked = Self::sum_delegated_stake(&pool_delegations, &stakes, &rewards);
 
+        tracing::info!("Fetching asset first-mint times...");
+        let mint_times = Self::fetch_asset_mint_times(db).await?;
         tracing::info!("Fetching per-address asset holdings...");
-        let asset_holdings = Self::fetch_asset_holdings(db, last_tx_id).await?;
+        let asset_holdings = Self::fetch_asset_holdings(db, last_tx_id, &mint_times).await?;
+        drop(mint_times);
 
         self.history.clear();
         self.history.push(BlockSnapshot {
@@ -1276,7 +1319,7 @@ impl State {
         // it was spent from (built below from the consumed inputs' prior leaves). block_time
         // and mint_times are wired to real values in a later step.
         let block_time: u32 = 0;
-        let mint_times: HashMap<AssetId, u32> = HashMap::new();
+        let mint_times: std::collections::HashMap<AssetId, u32> = std::collections::HashMap::new();
 
         for (key, output) in produced {
             let bal: i64 = output
@@ -1924,7 +1967,7 @@ mod tests {
             &p1n1(10),
             true,
             &mut initial.asset_holdings,
-            &HashMap::new(),
+            &std::collections::HashMap::new(),
             0,
         );
         apply_utxo_assets(
@@ -1932,7 +1975,7 @@ mod tests {
             &p1n1(3),
             true,
             &mut initial.asset_holdings,
-            &HashMap::new(),
+            &std::collections::HashMap::new(),
             0,
         );
         initial.stakes.insert(cred_a.clone(), 100);
@@ -2308,7 +2351,7 @@ mod tests {
             ],
             true,
             &mut snap.asset_holdings,
-            &HashMap::new(),
+            &std::collections::HashMap::new(),
             0,
         );
         apply_utxo_assets(
@@ -2316,7 +2359,7 @@ mod tests {
             &vec![(pa.clone(), vec![(na.clone(), 3)])],
             true,
             &mut snap.asset_holdings,
-            &HashMap::new(),
+            &std::collections::HashMap::new(),
             0,
         );
         apply_utxo_assets(
@@ -2324,7 +2367,7 @@ mod tests {
             &vec![(pa.clone(), vec![(na.clone(), 100)])],
             true,
             &mut snap.asset_holdings,
-            &HashMap::new(),
+            &std::collections::HashMap::new(),
             0,
         );
 

@@ -742,7 +742,7 @@ impl DbSync {
     /// derived on demand). `c` is the summed held quantity (not a UTXO count), as **text**:
     /// a token's per-address total can exceed i64, and a `::bigint` cast throws "bigint out
     /// of range", so the caller parses to u64 (saturating).
-    pub async fn asset_holdings_for_each<F: FnMut(String, Vec<u8>, Vec<u8>, String)>(
+    pub async fn asset_holdings_for_each<F: FnMut(String, Vec<u8>, Vec<u8>, String, i64)>(
         &self,
         last_tx_id: i64,
         mut f: F,
@@ -756,7 +756,7 @@ impl DbSync {
                   AND (o.consumed_by_tx_id IS NULL OR o.consumed_by_tx_id > $1)
                 GROUP BY o.address_id, m.ident
             )
-            SELECT a.address AS "address!", ma.policy AS "policy!", ma.name AS "name!", held.c AS "count!"
+            SELECT a.address AS "address!", ma.policy AS "policy!", ma.name AS "name!", held.c AS "count!", held.ident AS "ident!"
             FROM held
             JOIN address a ON a.id = held.address_id
             JOIN multi_asset ma ON ma.id = held.ident
@@ -765,7 +765,30 @@ impl DbSync {
         )
         .fetch(&self.db);
         while let Some(r) = stream.try_next().await? {
-            f(r.address, r.policy, r.name, r.count);
+            f(r.address, r.policy, r.name, r.count, r.ident);
+        }
+        Ok(())
+    }
+
+    /// First-mint time (unix seconds) per asset `ident` (`multi_asset.id`), aggregated from
+    /// `ma_tx_mint → tx → block`. Streamed (`fetch`) so the ~11M-row result never materializes
+    /// as one `Vec`. The heavy cold-start join (~minutes over ~19M mint rows, wants
+    /// `idx_ma_tx_mint_ident`); warm resume reads the times from the snapshot instead. Keyed by
+    /// `ident` (8 bytes) rather than `(policy, name)` to keep the transient reset map small.
+    pub async fn asset_mint_times_for_each<F: FnMut(i64, i64)>(
+        &self,
+        mut f: F,
+    ) -> Result<(), sqlx::Error> {
+        let mut stream = sqlx::query!(
+            r#"SELECT m.ident AS "ident!", EXTRACT(EPOCH FROM MIN(b.time))::bigint AS "first_mint!"
+               FROM ma_tx_mint m
+               JOIN tx t ON t.id = m.tx_id
+               JOIN block b ON b.id = t.block_id
+               GROUP BY m.ident"#
+        )
+        .fetch(&self.db);
+        while let Some(r) = stream.try_next().await? {
+            f(r.ident, r.first_mint);
         }
         Ok(())
     }

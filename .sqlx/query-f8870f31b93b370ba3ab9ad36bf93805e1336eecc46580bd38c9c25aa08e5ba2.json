@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT m.ident AS \"ident!\", EXTRACT(EPOCH FROM MIN(b.time))::bigint AS \"first_mint!\"\n               FROM ma_tx_mint m\n               JOIN tx t ON t.id = m.tx_id\n               JOIN block b ON b.id = t.block_id\n               GROUP BY m.ident",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ident!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "first_mint!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "f8870f31b93b370ba3ab9ad36bf93805e1336eecc46580bd38c9c25aa08e5ba2"
+}
