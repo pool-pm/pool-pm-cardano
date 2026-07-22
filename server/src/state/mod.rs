@@ -128,6 +128,49 @@ impl<'de> serde::Deserialize<'de> for Qty {
     }
 }
 
+/// A held token's leaf: its quantity plus the asset's first-mint time (unix seconds as `u32`
+/// — fits well past year 2100). The quantity is stored as a `(lo, hi)` `u64` pair, not a
+/// `u128`, so the struct aligns to 8 and is 24 bytes rather than 32 (a `u128` would force
+/// 16-byte alignment and pad the `u32`), keeping the ~15M-entry map small. `mint_time` is
+/// chain-derived (block time), so the snapshot stays independent of any db-sync's row ids.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Held {
+    qty_lo: u64,
+    qty_hi: u64,
+    /// First-mint time of the asset, unix seconds (0 = unknown/not yet sourced).
+    pub mint_time: u32,
+}
+
+impl Held {
+    pub fn new(qty: u128, mint_time: u32) -> Self {
+        Held {
+            qty_lo: qty as u64,
+            qty_hi: (qty >> 64) as u64,
+            mint_time,
+        }
+    }
+    pub fn qty(&self) -> u128 {
+        ((self.qty_hi as u128) << 64) | self.qty_lo as u128
+    }
+    fn set_qty(&mut self, qty: u128) {
+        self.qty_lo = qty as u64;
+        self.qty_hi = (qty >> 64) as u64;
+    }
+}
+
+impl serde::Serialize for Held {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        // (mint_time, qty) — the quantity keeps the variable-length `Qty` encoding.
+        (self.mint_time, Qty(self.qty())).serialize(s)
+    }
+}
+impl<'de> serde::Deserialize<'de> for Held {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let (mint_time, qty): (u32, Qty) = serde::Deserialize::deserialize(d)?;
+        Ok(Held::new(qty.0, mint_time))
+    }
+}
+
 /// A held token's asset id: `policy (28 bytes) ++ name`. Since `policy` is fixed-width the
 /// packed bytes sort exactly as `(policy, name)` — and it's one allocation, not two.
 pub type AssetId = Box<[u8]>;
@@ -175,9 +218,9 @@ impl BlockSnapshot {
     pub fn address_held_assets(&self, address: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, u128)> {
         let cred = stake_credential_from_address_bytes(address);
         addr_range(&self.asset_holdings, &(cred, address.to_vec()))
-            .map(|((_, asset), qty)| {
+            .map(|((_, asset), h)| {
                 let (policy, name) = split_asset(asset);
-                (policy.to_vec(), name.to_vec(), qty.0)
+                (policy.to_vec(), name.to_vec(), h.qty())
             })
             .collect()
     }
@@ -187,8 +230,8 @@ impl BlockSnapshot {
     /// is one owned asset, with the quantities summed. Unsorted; the caller paginates.
     pub fn stake_held_assets(&self, cred: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, u128)> {
         let mut sums: std::collections::HashMap<&[u8], u128> = std::collections::HashMap::new();
-        for ((_, asset), qty) in cred_range(&self.asset_holdings, cred) {
-            *sums.entry(asset).or_insert(0) += qty.0;
+        for ((_, asset), h) in cred_range(&self.asset_holdings, cred) {
+            *sums.entry(asset).or_insert(0) += h.qty();
         }
         sums.into_iter()
             .map(|(asset, q)| {
@@ -209,7 +252,7 @@ pub fn address_token_qty(
 ) -> u128 {
     holdings
         .get(&(key.clone(), asset_id(policy, name)))
-        .map(|q| q.0)
+        .map(|h| h.qty())
         .unwrap_or(0)
 }
 
@@ -218,7 +261,7 @@ pub fn address_token_qty(
 pub fn stake_token_qty(holdings: &AssetHoldings, cred: &[u8], policy: &[u8], name: &[u8]) -> u128 {
     let target = asset_id(policy, name);
     cred_range(holdings, cred)
-        .filter_map(|((_, asset), q)| (asset == &target).then_some(q.0))
+        .filter_map(|((_, asset), h)| (asset == &target).then_some(h.qty()))
         .sum()
 }
 
@@ -276,8 +319,9 @@ impl BlockSnapshot {
 /// from UTXO count to summed held quantity. v3: that leaf became a `u128` `Qty`. v4:
 /// `asset_holdings` flattened to one `OrdMap<HeldKey, Qty>`. v5: force a rebuild to heal
 /// `address_balances`/`asset_holdings` drift accumulated by the intra-block debit-drop bug
-/// (produced now applied before consumed in `apply_block`).
-const SNAPSHOT_FORMAT: u32 = 5;
+/// (produced now applied before consumed in `apply_block`). v6: the holdings leaf gained the
+/// asset's `mint_time` (`Qty` → `Held`).
+const SNAPSHOT_FORMAT: u32 = 6;
 
 /// Serialize `(snap, feed_index, magic, format)` and write it atomically (temp file +
 /// rename, so a crash mid-write leaves the previous snapshot intact). Free fn so it can
@@ -320,12 +364,13 @@ pub type Token = (Vec<u8>, Vec<u8>);
 /// The global per-address holdings map ([`BlockSnapshot::asset_holdings`]'s type). A
 /// connection caches the previous block's handle (O(1)) and diffs the current one for
 /// its live grid tiles.
-pub type AssetHoldings = OrdMap<HeldKey, Qty>;
+pub type AssetHoldings = OrdMap<HeldKey, Held>;
 
 /// Apply a single token's `±qty` to one `(address, policy, name)` entry in the flat
 /// holdings map. An entry is pruned when it hits 0, so the keys stay exactly the tokens
-/// currently held. Live tile deltas are *not* emitted here — each open assets page derives
-/// them by diffing snapshots; this only maintains the map.
+/// currently held. On credit, a fresh entry records `mint_time` (the asset's first-mint
+/// time); an existing entry keeps its recorded time. Live tile deltas are *not* emitted
+/// here — each open assets page derives them by diffing snapshots; this only maintains the map.
 fn bump_one(
     holdings: &mut AssetHoldings,
     key: &AssetKey,
@@ -333,17 +378,24 @@ fn bump_one(
     name: &[u8],
     qty: u128,
     add: bool,
+    mint_time: u32,
 ) {
     let hkey = (key.clone(), asset_id(policy, name));
     if add {
-        holdings.entry(hkey).or_default().0 += qty;
+        let h = holdings.entry(hkey).or_default();
+        h.set_qty(h.qty() + qty);
+        // Record the asset's first-mint time on the first credit to this leaf; keep any
+        // time already recorded (all leaves of one asset share the same mint time).
+        if h.mint_time == 0 {
+            h.mint_time = mint_time;
+        }
     } else {
         // produced/consumed amounts balance exactly; saturate as a guard against any stray
         // underflow rather than panic, and prune the entry at 0.
         let drop = match holdings.get_mut(&hkey) {
-            Some(c) => {
-                c.0 = c.0.saturating_sub(qty);
-                c.0 == 0
+            Some(h) => {
+                h.set_qty(h.qty().saturating_sub(qty));
+                h.qty() == 0
             }
             None => false,
         };
@@ -354,13 +406,17 @@ fn bump_one(
 }
 
 /// Apply one UTXO's policy-grouped assets to the global holdings map (`add` = produced,
-/// else consumed), computing the UTXO's stake credential once. Maintained for *every*
-/// address; live tile deltas are derived per connection by diffing, not emitted here.
+/// else consumed), computing the UTXO's stake credential once. On credit, each asset's
+/// first-mint time is looked up in `mint_times` (per-block asset→time map), falling back to
+/// `block_time` for a freshly minted asset. Maintained for *every* address; live tile deltas
+/// are derived per connection by diffing, not emitted here.
 fn apply_utxo_assets(
     address: &[u8],
     assets: &crate::model::PolicyAssets,
     add: bool,
     holdings: &mut AssetHoldings,
+    mint_times: &HashMap<AssetId, u32>,
+    block_time: u32,
 ) {
     if assets.is_empty() {
         return;
@@ -369,17 +425,25 @@ fn apply_utxo_assets(
     let key: AssetKey = (cred, address.to_vec());
     for (policy, names) in assets {
         for (name, qty) in names {
-            bump_one(holdings, &key, policy, name, *qty as u128, add);
+            let mt = if add {
+                mint_times
+                    .get(&asset_id(policy, name))
+                    .copied()
+                    .unwrap_or(block_time)
+            } else {
+                0
+            };
+            bump_one(holdings, &key, policy, name, *qty as u128, add, mt);
         }
     }
 }
 
 /// The credential's held tokens — the contiguous `(Some(cred), …)` key prefix of the flat
-/// map, yielding `(&HeldKey, &Qty)`. Shared by the count/grid/diff helpers.
+/// map, yielding `(&HeldKey, &Held)`. Shared by the count/grid/diff helpers.
 fn cred_range<'a>(
     holdings: &'a AssetHoldings,
     cred: &'a [u8],
-) -> impl Iterator<Item = (&'a HeldKey, &'a Qty)> {
+) -> impl Iterator<Item = (&'a HeldKey, &'a Held)> {
     let start: HeldKey = ((Some(cred.to_vec()), Vec::new()), Box::default());
     holdings
         .range(start..)
@@ -390,7 +454,7 @@ fn cred_range<'a>(
 fn addr_range<'a>(
     holdings: &'a AssetHoldings,
     key: &'a AssetKey,
-) -> impl Iterator<Item = (&'a HeldKey, &'a Qty)> {
+) -> impl Iterator<Item = (&'a HeldKey, &'a Held)> {
     let start: HeldKey = (key.clone(), Box::default());
     holdings
         .range(start..)
@@ -960,7 +1024,8 @@ impl State {
             // absurd u128 ceiling, far beyond any real token — so no precision is lost).
             let qty = count.parse::<u128>().unwrap_or(u128::MAX);
             if let (Some(key), true) = (&cur_key, qty > 0) {
-                holdings.insert((key.clone(), asset_id(&policy, &name)), Qty(qty));
+                // mint_time is backfilled from db-sync after this stream (see reset).
+                holdings.insert((key.clone(), asset_id(&policy, &name)), Held::new(qty, 0));
             }
             if rows.is_multiple_of(1_000_000) {
                 tracing::info!(
@@ -1206,13 +1271,27 @@ impl State {
         // balance/holdings — and `utxos.remove` would no-op, leaving a phantom UTXO. Doing
         // credits first guarantees the entry exists when the debit lands. (`stakes` is
         // immune either way: it's a flat sum of signed deltas.)
+        // Per-block asset → first-mint time for crediting new leaves: a genuinely new mint
+        // gets this block's time; a transferred asset carries its recorded time from the input
+        // it was spent from (built below from the consumed inputs' prior leaves). block_time
+        // and mint_times are wired to real values in a later step.
+        let block_time: u32 = 0;
+        let mint_times: HashMap<AssetId, u32> = HashMap::new();
+
         for (key, output) in produced {
             let bal: i64 = output
                 .lovelaces
                 .try_into()
                 .expect("lovelace value must fit i64");
             *address_balances.entry(output.address.clone()).or_insert(0) += bal;
-            apply_utxo_assets(&output.address, &output.assets, true, &mut asset_holdings);
+            apply_utxo_assets(
+                &output.address,
+                &output.assets,
+                true,
+                &mut asset_holdings,
+                &mint_times,
+                block_time,
+            );
             utxos.insert(key, output);
         }
         for (key, output) in consumed {
@@ -1227,7 +1306,14 @@ impl State {
                     address_balances.remove(&output.address);
                 }
             }
-            apply_utxo_assets(&output.address, &output.assets, false, &mut asset_holdings);
+            apply_utxo_assets(
+                &output.address,
+                &output.assets,
+                false,
+                &mut asset_holdings,
+                &mint_times,
+                block_time,
+            );
         }
 
         let (pool_delegations, pool_delegators) = Self::apply_delegation_changes(
@@ -1624,20 +1710,20 @@ mod tests {
         let name = b"TOKEN".to_vec();
         let hkey = (key.clone(), asset_id(&policy, &name));
 
-        bump_one(&mut holdings, &key, &policy, &name, 1, true);
-        assert_eq!(holdings[&hkey].0, 1);
-        bump_one(&mut holdings, &key, &policy, &name, 1, true);
-        assert_eq!(holdings[&hkey].0, 2);
-        bump_one(&mut holdings, &key, &policy, &name, 1, false);
-        assert_eq!(holdings[&hkey].0, 1);
+        bump_one(&mut holdings, &key, &policy, &name, 1, true, 1000);
+        assert_eq!(holdings[&hkey].qty(), 1);
+        bump_one(&mut holdings, &key, &policy, &name, 1, true, 1000);
+        assert_eq!(holdings[&hkey].qty(), 2);
+        bump_one(&mut holdings, &key, &policy, &name, 1, false, 0);
+        assert_eq!(holdings[&hkey].qty(), 1);
 
         // Last UTXO spent → the entry hits 0 and is pruned, so the map's keys stay exactly
         // the tokens currently held by ≥1 UTXO.
-        bump_one(&mut holdings, &key, &policy, &name, 1, false);
+        bump_one(&mut holdings, &key, &policy, &name, 1, false, 0);
         assert!(holdings.is_empty());
 
         // Spending a token the map never had is a no-op.
-        bump_one(&mut holdings, &key, &policy, &name, 1, false);
+        bump_one(&mut holdings, &key, &policy, &name, 1, false, 0);
         assert!(holdings.is_empty());
     }
 
@@ -1678,7 +1764,7 @@ mod tests {
         // s0 empty → s1: addr1 gains the token.
         let s0: AssetHoldings = OrdMap::new();
         let mut s1 = s0.clone();
-        bump_one(&mut s1, &key1, &policy, &name, 1, true);
+        bump_one(&mut s1, &key1, &policy, &name, 1, true, 1000);
 
         // Address diff: addr1 gains a tile; an untouched address sees nothing.
         assert_eq!(
@@ -1695,17 +1781,17 @@ mod tests {
 
         // s1 → s2: addr2 also gains it. The union already had it (addr1) → no change.
         let mut s2 = s1.clone();
-        bump_one(&mut s2, &key2, &policy, &name, 1, true);
+        bump_one(&mut s2, &key2, &policy, &name, 1, true, 1000);
         assert_eq!(stake_tile_diff(&s1, &s2, &cred), (vec![], vec![]));
 
         // s2 → s3: addr1 drops it; addr2 still holds → union unchanged.
         let mut s3 = s2.clone();
-        bump_one(&mut s3, &key1, &policy, &name, 1, false);
+        bump_one(&mut s3, &key1, &policy, &name, 1, false, 0);
         assert_eq!(stake_tile_diff(&s2, &s3, &cred), (vec![], vec![]));
 
         // s3 → s4: addr2 drops it; nobody holds → union loses it.
         let mut s4 = s3.clone();
-        bump_one(&mut s4, &key2, &policy, &name, 1, false);
+        bump_one(&mut s4, &key2, &policy, &name, 1, false, 0);
         assert_eq!(
             stake_tile_diff(&s3, &s4, &cred),
             (vec![], vec![tok.clone()])
@@ -1833,8 +1919,22 @@ mod tests {
             .insert((txh1.clone(), 0), txout(1_000_000, &addr1, p1n1(10)));
         initial.address_balances.insert(addr1.clone(), 1_000_000);
         initial.address_balances.insert(addr2.clone(), 2_000_000);
-        apply_utxo_assets(&addr1, &p1n1(10), true, &mut initial.asset_holdings);
-        apply_utxo_assets(&addr2, &p1n1(3), true, &mut initial.asset_holdings);
+        apply_utxo_assets(
+            &addr1,
+            &p1n1(10),
+            true,
+            &mut initial.asset_holdings,
+            &HashMap::new(),
+            0,
+        );
+        apply_utxo_assets(
+            &addr2,
+            &p1n1(3),
+            true,
+            &mut initial.asset_holdings,
+            &HashMap::new(),
+            0,
+        );
         initial.stakes.insert(cred_a.clone(), 100);
         initial.stakes.insert(cred_b.clone(), 50);
         initial.rewards.insert(cred_a.clone(), 5);
@@ -2134,7 +2234,8 @@ mod tests {
             (Some(vec![0xcc; 28]), vec![0x01; 57]),
             asset_id(&[0x11; 28], b"BIG"),
         );
-        snap.asset_holdings.insert(hkey.clone(), Qty(big));
+        snap.asset_holdings
+            .insert(hkey.clone(), Held::new(big, 1_700_000_000));
         let mut poolp = Pool::from_registration(vec![0x01; 28], 1, 2, 3, 100);
         poolp.ticker = Some("TICK".into());
         poolp.blocks = 9;
@@ -2169,7 +2270,9 @@ mod tests {
         // Correct magic → the entire snapshot round-trips, including the >u64 holding.
         let (loaded, loaded_fi) = State::load_snapshot(&path, magic).unwrap();
         assert!(loaded == snap, "snapshot did not round-trip exactly");
-        assert_eq!(loaded.asset_holdings.get(&hkey).unwrap().0, big);
+        let loaded_held = loaded.asset_holdings.get(&hkey).unwrap();
+        assert_eq!(loaded_held.qty(), big);
+        assert_eq!(loaded_held.mint_time, 1_700_000_000);
         assert_eq!(loaded_fi.pool_minted_blocks(&[0x01; 28]).len(), 1);
 
         // A snapshot tagged with a different SNAPSHOT_FORMAT → rejected (forces rebuild).
@@ -2205,18 +2308,24 @@ mod tests {
             ],
             true,
             &mut snap.asset_holdings,
+            &HashMap::new(),
+            0,
         );
         apply_utxo_assets(
             &addr_y,
             &vec![(pa.clone(), vec![(na.clone(), 3)])],
             true,
             &mut snap.asset_holdings,
+            &HashMap::new(),
+            0,
         );
         apply_utxo_assets(
             &addr_e,
             &vec![(pa.clone(), vec![(na.clone(), 100)])],
             true,
             &mut snap.asset_holdings,
+            &HashMap::new(),
+            0,
         );
 
         // Per-address counts.
