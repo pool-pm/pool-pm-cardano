@@ -134,9 +134,17 @@ impl Worker {
 
             for tx in block.txs() {
                 let hash = tx.hash();
+                // A phase-2-invalid tx is recorded on-chain, but the ledger applies ONLY its
+                // collateral: its regular inputs/outputs, mints, withdrawals and certificates
+                // never take effect. So spend its collateral inputs and produce its collateral
+                // return, and skip everything else (gated on `valid` below). Byron/pre-Alonzo
+                // txs are always valid.
+                let valid = tx.is_valid();
 
-                // Track consumed UTXOs: subtract lovelaces from stake credentials
-                for input in tx.inputs() {
+                // Track consumed UTXOs: subtract lovelaces from stake credentials. An invalid
+                // tx spends its collateral inputs instead of its regular inputs.
+                let inputs = if valid { tx.inputs() } else { tx.collateral() };
+                for input in &inputs {
                     let key = (input.hash().as_ref().to_vec(), input.index() as i16);
                     // Check block-local UTXOs first, then in-memory state,
                     // then fall back to db-sync for pre-reset UTXOs.
@@ -204,11 +212,25 @@ impl Worker {
                     .await,
                 );
 
-                // CIP-68: extract decimals from reference token datums
-                new_decimals.extend(cip68::extract_from_tx(&tx));
+                // CIP-68: extract decimals from reference token datums (valid txs only;
+                // an invalid tx's outputs never reach the ledger).
+                if valid {
+                    new_decimals.extend(cip68::extract_from_tx(&tx));
+                }
 
-                // Track produced UTXOs: add lovelaces to stake credentials
-                for (idx, output) in tx.outputs().iter().enumerate() {
+                // Track produced UTXOs: add lovelaces to stake credentials. For an invalid
+                // tx the only real output is the collateral return, placed at the ledger
+                // index = number of regular outputs.
+                let outputs = if valid {
+                    tx.outputs().into_iter().enumerate().collect::<Vec<_>>()
+                } else {
+                    let idx = tx.outputs().len();
+                    tx.collateral_return()
+                        .into_iter()
+                        .map(|o| (idx, o))
+                        .collect::<Vec<_>>()
+                };
+                for (idx, output) in &outputs {
                     let addr = output
                         .address()
                         .ok()
@@ -271,13 +293,19 @@ impl Worker {
                         }
                     }
                     produced.insert(
-                        (hash.as_ref().to_vec(), idx as i16),
+                        (hash.as_ref().to_vec(), *idx as i16),
                         TxOutput {
                             lovelaces,
                             address: addr,
                             assets,
                         },
                     );
+                }
+
+                // An invalid tx's withdrawals and certificates never take effect — only its
+                // collateral (handled above) moved. Skip the rest of the per-tx processing.
+                if !valid {
+                    continue;
                 }
 
                 // Track withdrawals (reduce reward balance)
