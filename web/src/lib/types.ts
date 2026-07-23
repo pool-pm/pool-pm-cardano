@@ -282,6 +282,9 @@ export interface StakeInfo {
   pool_ticker?: string | null;
   drep_id?: string;
   drep_name?: string | null;
+  /** Shortest ADA Handle owned across this stake credential's payment addresses, if any
+   * (updated live per block). Shown on the stake assets page as "$handle's stake". */
+  handle?: string;
   /** Distinct multi-assets across every payment address sharing this stake;
    * always present (read from the in-memory holdings map), updated live per
    * block. Plain number — counts won't approach 2^53. */

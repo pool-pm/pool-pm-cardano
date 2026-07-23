@@ -523,6 +523,10 @@ struct StakeEvent<'a> {
     drep_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     drep_name: Option<String>,
+    /// Shortest ADA Handle owned across this stake credential's payment addresses, if any
+    /// (snapshot-live). The stake page shows it as "$handle's stake".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    handle: Option<String>,
     /// Distinct multi-assets held across every payment address sharing this
     /// credential. Computed once via db-sync at connect; not updated live.
     assets_count: u32,
@@ -577,6 +581,7 @@ fn stake_sse_event(
     let balance = snap.and_then(|s| s.stakes.get(cred).copied()).unwrap_or(0);
     let rewards = snap.and_then(|s| s.rewards.get(cred).copied()).unwrap_or(0);
     let (pool_id, pool_ticker, drep_id, drep_name) = pool_drep_info(snap, cred);
+    let handle = snap.and_then(|s| s.handle_for_stake(cred));
     let json = serde_json::to_string(&StakeEvent {
         kind: "Stake",
         stake_address,
@@ -586,6 +591,7 @@ fn stake_sse_event(
         pool_ticker,
         drep_id,
         drep_name,
+        handle,
         assets_count,
     })
     .unwrap();

@@ -10,7 +10,9 @@ use crate::cip26;
 use crate::model::{
     asset_fingerprint, parse_virtual_handle_address, DRep, Pool, TxOutput, HANDLE_POLICIES,
 };
-use crate::pallas::{stake_credential_from_address_bytes, PoolUpdate};
+use crate::pallas::{
+    stake_credential_from_address_bytes, stake_credential_from_bech32, PoolUpdate,
+};
 pub use dbsync::DbSync;
 pub use feed_index::FeedIndex;
 
@@ -37,6 +39,13 @@ pub struct BlockSnapshot {
     /// ADA Handle: handle name → owner address
     #[serde(default)]
     pub address_by_handle: HashMap<String, String>,
+    /// ADA Handle: 28-byte stake credential → handle names owned across all of its payment
+    /// addresses (a re-keying of `handle_by_address` by stake credential; the shortest wins at
+    /// query time). Derived — `#[serde(skip)]` and rebuilt from `handle_by_address` on load/reset,
+    /// so it adds nothing to the snapshot file and needs no format bump; maintained live per block
+    /// alongside the other two maps and reverted with them on rollback (all on the snapshot).
+    #[serde(skip)]
+    pub handle_by_stake: HashMap<Vec<u8>, Vec<String>>,
     /// Governance action titles: "tx_hash#index" → title
     #[serde(default)]
     pub gov_action_titles: HashMap<String, String>,
@@ -716,11 +725,12 @@ impl BlockSnapshot {
         consumed_handles: &[String],
     ) {
         for (handle, new_addr) in changes {
-            if self.address_by_handle.get(handle).map(String::as_str) == Some(new_addr.as_str()) {
+            let old = self.address_by_handle.get(handle).cloned();
+            if old.as_deref() == Some(new_addr.as_str()) {
                 continue; // already resolves here
             }
-            if let Some(old) = self.address_by_handle.get(handle).cloned() {
-                self.detach_handle(&old, handle);
+            if let Some(old) = &old {
+                self.detach_handle(old, handle);
             }
             self.handle_by_address
                 .entry(new_addr.clone())
@@ -728,6 +738,18 @@ impl BlockSnapshot {
                 .push(handle.clone());
             self.address_by_handle
                 .insert(handle.clone(), new_addr.clone());
+            // Stake-credential index: move the handle only if the owner's credential changed
+            // (a move between two addresses of the same stake key leaves it in place).
+            let old_cred = old.as_deref().and_then(stake_credential_from_bech32);
+            let new_cred = stake_credential_from_bech32(new_addr);
+            if old_cred != new_cred {
+                if let Some(oc) = &old_cred {
+                    self.detach_stake_handle(oc, handle);
+                }
+                if let Some(nc) = new_cred {
+                    self.attach_stake_handle(nc, handle);
+                }
+            }
         }
         // Burns: a handle NFT spent this block and not re-produced anywhere in it.
         let produced: std::collections::HashSet<&str> =
@@ -738,8 +760,18 @@ impl BlockSnapshot {
             }
             if let Some(old) = self.address_by_handle.remove(handle) {
                 self.detach_handle(&old, handle);
+                if let Some(oc) = stake_credential_from_bech32(&old) {
+                    self.detach_stake_handle(&oc, handle);
+                }
             }
         }
+    }
+
+    /// Shortest ADA Handle owned across every payment address of a stake credential, if any.
+    pub fn handle_for_stake(&self, cred: &[u8]) -> Option<String> {
+        self.handle_by_stake
+            .get(cred)
+            .and_then(|handles| handles.iter().min_by_key(|h| h.len()).cloned())
     }
 
     /// Detach `handle` from `addr`'s list in `handle_by_address`, dropping the entry when empty.
@@ -751,6 +783,39 @@ impl BlockSnapshot {
             }
         }
     }
+
+    /// Detach `handle` from `cred`'s list in `handle_by_stake`, dropping the entry when empty.
+    fn detach_stake_handle(&mut self, cred: &[u8], handle: &str) {
+        if let Some(list) = self.handle_by_stake.get_mut(cred) {
+            list.retain(|h| h != handle);
+            if list.is_empty() {
+                self.handle_by_stake.remove(cred);
+            }
+        }
+    }
+
+    /// Attach `handle` to `cred`'s list in `handle_by_stake` (deduped).
+    fn attach_stake_handle(&mut self, cred: Vec<u8>, handle: &str) {
+        let list = self.handle_by_stake.entry(cred).or_default();
+        if !list.iter().any(|h| h == handle) {
+            list.push(handle.to_string());
+        }
+    }
+}
+
+/// Build the stake-credential → handles index from `handle_by_address` (at reset/load). A handle's
+/// stake credential is that of its bech32 owner address; enterprise/pointer addresses (no stake
+/// part) contribute nothing.
+fn build_handle_by_stake(
+    handle_by_address: &HashMap<String, Vec<String>>,
+) -> HashMap<Vec<u8>, Vec<String>> {
+    let mut out: HashMap<Vec<u8>, Vec<String>> = HashMap::new();
+    for (addr, handles) in handle_by_address.iter() {
+        if let Some(cred) = stake_credential_from_bech32(addr) {
+            out.entry(cred).or_default().extend(handles.iter().cloned());
+        }
+    }
+    out
 }
 
 /// A `(policy bytes, name bytes)` token — the unit a live assets-grid tile is keyed by;
@@ -1312,53 +1377,57 @@ impl State {
             .last()
             .map(|s| s.address_by_handle.is_empty())
             .unwrap_or(true);
-        if !is_empty {
-            return;
-        }
-        let policies: Vec<&[u8]> = HANDLE_POLICIES.iter().map(|p| p.as_slice()).collect();
-        let rows = match self.db().await {
-            Some(db) => match db.handles(&policies).await {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!("failed to fetch handles: {e}");
-                    return;
-                }
-            },
-            None => return,
-        };
-        let total = rows.len();
-        let snap = self.history.last_mut().unwrap();
-        let mut virtual_ok = 0usize;
-        let mut virtual_fail = 0usize;
-        for (handle, addr, datum) in rows {
-            let resolved_addr = if datum.is_some() {
-                match datum.and_then(|d| parse_virtual_handle_address(&d)) {
-                    Some(a) => {
-                        virtual_ok += 1;
-                        a
+        // Fetch + resolve from db-sync only when the loaded snapshot has no handles yet; a warm
+        // snapshot with handles keeps them (they're maintained live per block since).
+        if is_empty {
+            let policies: Vec<&[u8]> = HANDLE_POLICIES.iter().map(|p| p.as_slice()).collect();
+            if let Some(db) = self.db().await {
+                match db.handles(&policies).await {
+                    Ok(rows) => {
+                        let total = rows.len();
+                        let snap = self.history.last_mut().unwrap();
+                        let mut virtual_ok = 0usize;
+                        let mut virtual_fail = 0usize;
+                        for (handle, addr, datum) in rows {
+                            let resolved_addr = if datum.is_some() {
+                                match datum.and_then(|d| parse_virtual_handle_address(&d)) {
+                                    Some(a) => {
+                                        virtual_ok += 1;
+                                        a
+                                    }
+                                    None => {
+                                        virtual_fail += 1;
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                addr
+                            };
+                            snap.handle_by_address
+                                .entry(resolved_addr.clone())
+                                .or_default()
+                                .push(handle.clone());
+                            snap.address_by_handle.insert(handle, resolved_addr);
+                        }
+                        let resolved = snap.address_by_handle.len();
+                        tracing::info!(
+                            total,
+                            resolved,
+                            virtual_ok,
+                            virtual_fail,
+                            "ADA Handles populated from db-sync"
+                        );
                     }
-                    None => {
-                        virtual_fail += 1;
-                        continue;
-                    }
+                    Err(e) => tracing::warn!("failed to fetch handles: {e}"),
                 }
-            } else {
-                addr
-            };
-            snap.handle_by_address
-                .entry(resolved_addr.clone())
-                .or_default()
-                .push(handle.clone());
-            snap.address_by_handle.insert(handle, resolved_addr);
+            }
         }
-        let resolved = snap.address_by_handle.len();
-        tracing::info!(
-            total,
-            resolved,
-            virtual_ok,
-            virtual_fail,
-            "ADA Handles populated from db-sync"
-        );
+        // (Re)build the derived stake-credential index from handle_by_address — it's
+        // `#[serde(skip)]`, so it's empty right after a snapshot load; also covers the
+        // freshly-populated case above. One cheap pass over the resolved handles.
+        if let Some(snap) = self.history.last_mut() {
+            snap.handle_by_stake = build_handle_by_stake(&snap.handle_by_address);
+        }
     }
 
     /// Populate governance action titles from db-sync if empty.
@@ -1695,6 +1764,7 @@ impl State {
             stakes,
             rewards,
             decimals,
+            handle_by_stake: build_handle_by_stake(&handle_by_address),
             handle_by_address,
             address_by_handle,
             gov_action_titles,
@@ -1923,6 +1993,9 @@ impl State {
         let decimals = prev.decimals.clone();
         let handle_by_address = prev.handle_by_address.clone();
         let address_by_handle = prev.address_by_handle.clone();
+        // Cloned forward (imbl O(1)); the sink's apply_handle_updates then applies this block's
+        // moves/burns to all three handle maps on the new snapshot.
+        let handle_by_stake = prev.handle_by_stake.clone();
         let gov_action_titles = prev.gov_action_titles.clone();
         let address_balances_populated = prev.address_balances_populated;
         self.history.push(BlockSnapshot {
@@ -1945,6 +2018,7 @@ impl State {
             asset_holdings_populated,
             handle_by_address,
             address_by_handle,
+            handle_by_stake,
             gov_action_titles,
             total_staked,
         });
@@ -2333,6 +2407,79 @@ mod tests {
         snap.apply_handle_updates(&[(s("alice"), s("addrB"))], &[s("alice")]);
         assert_eq!(snap.handle_for("addrB"), Some(s("alice")));
         assert_eq!(snap.handle_for("addrA"), None);
+    }
+
+    // ---- Stake-credential handle index (`handle_by_stake` / `handle_for_stake`) ----
+
+    /// A mainnet base address (type 0) with the given payment- and stake-hash fill bytes, so tests
+    /// control which addresses share a stake credential. Its stake credential is `scred(stake)`.
+    fn base_addr(payment: u8, stake: u8) -> String {
+        let mut bytes = vec![0x01u8];
+        bytes.extend(std::iter::repeat(payment).take(28));
+        bytes.extend(std::iter::repeat(stake).take(28));
+        bech32::encode::<bech32::Bech32>(bech32::Hrp::parse("addr").unwrap(), &bytes).unwrap()
+    }
+    fn scred(stake: u8) -> Vec<u8> {
+        vec![stake; 28]
+    }
+    /// Seed all three handle maps through the real update path (mints).
+    fn snap_with_stake_handles(entries: &[(&str, &str)]) -> BlockSnapshot {
+        let mut snap = BlockSnapshot::default();
+        let changes: Vec<(String, String)> = entries.iter().map(|(h, a)| (s(h), s(a))).collect();
+        snap.apply_handle_updates(&changes, &[]);
+        snap
+    }
+
+    #[test]
+    fn stake_index_groups_addresses_of_one_credential_shortest_wins() {
+        // Two different payment addresses, same stake key (stake byte 9): their handles unite
+        // under that one credential; handle_for_stake returns the shortest.
+        let snap =
+            snap_with_stake_handles(&[("alice", &base_addr(1, 9)), ("bob", &base_addr(2, 9))]);
+        assert_eq!(snap.handle_for_stake(&scred(9)), Some(s("bob"))); // "bob" < "alice"
+    }
+
+    #[test]
+    fn stake_index_move_across_credentials() {
+        let mut snap = snap_with_stake_handles(&[("alice", &base_addr(1, 9))]);
+        // Move to a different stake key (byte 7).
+        snap.apply_handle_updates(&[(s("alice"), base_addr(2, 7))], &[s("alice")]);
+        assert_eq!(snap.handle_for_stake(&scred(9)), None);
+        assert_eq!(snap.handle_for_stake(&scred(7)), Some(s("alice")));
+    }
+
+    #[test]
+    fn stake_index_move_within_same_credential_keeps_it() {
+        // Move between two payment addresses of the SAME stake key: the stake resolution is
+        // unchanged (even though the payment address changed).
+        let mut snap = snap_with_stake_handles(&[("alice", &base_addr(1, 9))]);
+        snap.apply_handle_updates(&[(s("alice"), base_addr(2, 9))], &[s("alice")]);
+        assert_eq!(snap.handle_for_stake(&scred(9)), Some(s("alice")));
+    }
+
+    #[test]
+    fn stake_index_burn_removes() {
+        let mut snap = snap_with_stake_handles(&[("alice", &base_addr(1, 9))]);
+        snap.apply_handle_updates(&[], &[s("alice")]);
+        assert_eq!(snap.handle_for_stake(&scred(9)), None);
+    }
+
+    #[test]
+    fn stake_index_rebuilt_from_address_map() {
+        // build_handle_by_stake (used at reset/load) groups handle_by_address by credential.
+        let mut hba: HashMap<String, Vec<String>> = HashMap::new();
+        hba.insert(base_addr(1, 9), vec![s("alice")]);
+        hba.insert(base_addr(2, 9), vec![s("bob")]);
+        hba.insert(base_addr(3, 5), vec![s("carol")]);
+        // Enterprise/handle-less addresses without a stake part are skipped.
+        hba.insert(s("not-an-address"), vec![s("ghost")]);
+        let snap = BlockSnapshot {
+            handle_by_stake: build_handle_by_stake(&hba),
+            handle_by_address: hba,
+            ..BlockSnapshot::default()
+        };
+        assert_eq!(snap.handle_for_stake(&scred(9)), Some(s("bob")));
+        assert_eq!(snap.handle_for_stake(&scred(5)), Some(s("carol")));
     }
 
     #[test]

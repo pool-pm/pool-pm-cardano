@@ -455,8 +455,12 @@
       {@const stakeTotal = (BigInt($stake.balance ?? '0') + BigInt($stake.rewards ?? '0')).toString()}
       <div class="subject">
         <div class="subject-balance">{formatAda(stakeTotal)}</div>
+        <!-- Handle when the credential owns one ("$handle's stake" to set it apart from the
+             addr1 page); otherwise the stake address with its "stake" prefix prominent. -->
         <div class="subject-id" title={$stake.stake_address}>
-          <span class="id-strong">{id.prefix}</span><span class="id-weak">{id.rest}</span>
+          {#if $stake.handle}<span class="id-weak">$</span><span class="id-strong">{$stake.handle}</span><span
+              class="id-weak">'s stake</span
+            >{:else}<span class="id-strong">{id.prefix}</span><span class="id-weak">{id.rest}</span>{/if}
         </div>
         {#if $stake.pool_id || $stake.drep_id}
           <div class="subject-deleg">

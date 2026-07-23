@@ -131,6 +131,15 @@ pub fn stake_credential_from_address_bytes(addr: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+/// Extract the 28-byte stake credential of an address given as a bech32 string (base or reward
+/// address), or None for enterprise/pointer/byron/unparseable addresses without a stake part.
+pub fn stake_credential_from_bech32(address: &str) -> Option<Vec<u8>> {
+    let bytes = pallas::ledger::addresses::Address::from_bech32(address)
+        .ok()?
+        .to_vec();
+    stake_credential_from_address_bytes(&bytes)
+}
+
 pub fn stake_address_bech32(cred: &StakeCredential, mainnet: bool) -> String {
     use bech32::{Bech32, Hrp};
     let (header, hrp) = match (cred, mainnet) {
