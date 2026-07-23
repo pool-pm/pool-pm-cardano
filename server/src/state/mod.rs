@@ -696,6 +696,61 @@ impl BlockSnapshot {
             .get(address)
             .and_then(|handles| handles.iter().min_by_key(|h| h.len()).cloned())
     }
+
+    /// Apply one block's ADA Handle movements to the resolution maps, in place.
+    ///
+    /// `changes` are `(handle, new_owner_address)` for every handle NFT that appeared in the
+    /// block's *produced* outputs — classic/CIP-68 (222) resolve to the holding address, virtual
+    /// (000) to the address in the NFT's inline datum (resolved by the caller). Each handle is
+    /// moved to its new owner; a mint is just a change with no prior entry.
+    ///
+    /// `consumed_handles` are the handle names whose NFT was *spent* this block. Any not
+    /// re-produced (absent from `changes`) is a burn/revoke and is removed, so a spent-and-not-
+    /// recreated handle stops resolving to its stale former owner.
+    ///
+    /// Rollback-safe: mutates only this snapshot's (imbl, copy-on-write) maps, so truncating
+    /// history reverts it.
+    pub fn apply_handle_updates(
+        &mut self,
+        changes: &[(String, String)],
+        consumed_handles: &[String],
+    ) {
+        for (handle, new_addr) in changes {
+            if self.address_by_handle.get(handle).map(String::as_str) == Some(new_addr.as_str()) {
+                continue; // already resolves here
+            }
+            if let Some(old) = self.address_by_handle.get(handle).cloned() {
+                self.detach_handle(&old, handle);
+            }
+            self.handle_by_address
+                .entry(new_addr.clone())
+                .or_default()
+                .push(handle.clone());
+            self.address_by_handle
+                .insert(handle.clone(), new_addr.clone());
+        }
+        // Burns: a handle NFT spent this block and not re-produced anywhere in it.
+        let produced: std::collections::HashSet<&str> =
+            changes.iter().map(|(h, _)| h.as_str()).collect();
+        for handle in consumed_handles {
+            if produced.contains(handle.as_str()) {
+                continue; // moved, not burned
+            }
+            if let Some(old) = self.address_by_handle.remove(handle) {
+                self.detach_handle(&old, handle);
+            }
+        }
+    }
+
+    /// Detach `handle` from `addr`'s list in `handle_by_address`, dropping the entry when empty.
+    fn detach_handle(&mut self, addr: &str, handle: &str) {
+        if let Some(list) = self.handle_by_address.get_mut(addr) {
+            list.retain(|h| h != handle);
+            if list.is_empty() {
+                self.handle_by_address.remove(addr);
+            }
+        }
+    }
 }
 
 /// A `(policy bytes, name bytes)` token — the unit a live assets-grid tile is keyed by;
@@ -2202,6 +2257,82 @@ mod tests {
     /// what the map compares, so a per-call Arc is fine for both mutation and lookup.
     fn ak(key: &AssetKey) -> Arc<AddrKey> {
         Arc::new(AddrKey::from_query(key))
+    }
+
+    // ---- ADA Handle live resolution (`BlockSnapshot::apply_handle_updates`) ----
+
+    fn s(x: &str) -> String {
+        x.to_string()
+    }
+
+    /// A snapshot seeded with the given `handle → address` resolutions (both maps in sync).
+    fn snap_with_handles(entries: &[(&str, &str)]) -> BlockSnapshot {
+        let mut snap = BlockSnapshot::default();
+        for (handle, addr) in entries {
+            snap.address_by_handle.insert(s(handle), s(addr));
+            snap.handle_by_address
+                .entry(s(addr))
+                .or_default()
+                .push(s(handle));
+        }
+        snap
+    }
+
+    #[test]
+    fn handle_mint_adds_new_resolution() {
+        let mut snap = BlockSnapshot::default();
+        snap.apply_handle_updates(&[(s("alice"), s("addrA"))], &[]);
+        assert_eq!(snap.address_by_handle.get("alice"), Some(&s("addrA")));
+        assert_eq!(snap.handle_for("addrA"), Some(s("alice")));
+    }
+
+    #[test]
+    fn handle_move_reassigns_owner() {
+        // classic / CIP-68 / virtual all reduce to (handle, new_owner) here; the datum
+        // resolution that distinguishes them happens in the sink and is tested in model.rs.
+        let mut snap = snap_with_handles(&[("alice", "addrA")]);
+        snap.apply_handle_updates(&[(s("alice"), s("addrB"))], &[s("alice")]);
+        assert_eq!(snap.handle_for("addrB"), Some(s("alice")));
+        // Old owner drops out entirely (it held only this handle).
+        assert_eq!(snap.handle_for("addrA"), None);
+        assert!(!snap.handle_by_address.contains_key("addrA"));
+    }
+
+    #[test]
+    fn handle_move_keeps_other_handles_at_old_address() {
+        let mut snap = snap_with_handles(&[("alice", "addrA"), ("bob", "addrA")]);
+        snap.apply_handle_updates(&[(s("alice"), s("addrB"))], &[s("alice")]);
+        assert_eq!(snap.handle_by_address.get("addrA"), Some(&vec![s("bob")]));
+        assert_eq!(snap.handle_for("addrB"), Some(s("alice")));
+    }
+
+    #[test]
+    fn handle_no_op_when_owner_unchanged() {
+        // Re-produced at the same address (e.g. a datum update that didn't move the owner):
+        // no change, and no duplicate in the address's list.
+        let mut snap = snap_with_handles(&[("alice", "addrA")]);
+        snap.apply_handle_updates(&[(s("alice"), s("addrA"))], &[s("alice")]);
+        assert_eq!(snap.handle_by_address.get("addrA"), Some(&vec![s("alice")]));
+    }
+
+    #[test]
+    fn handle_burn_removes_resolution() {
+        // Spent this block and not re-produced anywhere → burn/revoke.
+        let mut snap = snap_with_handles(&[("alice", "addrA")]);
+        snap.apply_handle_updates(&[], &[s("alice")]);
+        assert_eq!(snap.address_by_handle.get("alice"), None);
+        assert_eq!(snap.handle_for("addrA"), None);
+        assert!(!snap.handle_by_address.contains_key("addrA"));
+    }
+
+    #[test]
+    fn handle_spent_and_reproduced_is_a_move_not_a_burn() {
+        // Consumed at addrA and produced at addrB in the same block: the produced side wins,
+        // so it is a move — the burn pass must not then delete it.
+        let mut snap = snap_with_handles(&[("alice", "addrA")]);
+        snap.apply_handle_updates(&[(s("alice"), s("addrB"))], &[s("alice")]);
+        assert_eq!(snap.handle_for("addrB"), Some(s("alice")));
+        assert_eq!(snap.handle_for("addrA"), None);
     }
 
     #[test]

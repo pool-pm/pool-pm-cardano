@@ -511,30 +511,24 @@ impl Worker {
                 drep_active_until: drep_active_until.as_ref(),
             });
 
-            // ADA Handle: update handle cache in the latest snapshot
-            if !handle_changes.is_empty() {
-                if let Some(snap) = state.current_mut() {
-                    for (handle, new_addr) in handle_changes {
-                        let old_addr = snap.address_by_handle.get(&handle).cloned();
-                        if old_addr.as_ref() == Some(&new_addr) {
-                            continue; // no change
-                        }
-                        // Remove from old owner
-                        if let Some(old) = old_addr {
-                            if let Some(list) = snap.handle_by_address.get_mut(&old) {
-                                list.retain(|h| h != &handle);
-                                if list.is_empty() {
-                                    snap.handle_by_address.remove(&old);
-                                }
+            // ADA Handle: keep the resolution live. `handle_changes` are the handles produced
+            // (moved/minted) this block; also gather the handle names *spent* this block so a
+            // burn/revoke (spent, not re-produced) is removed rather than left stale.
+            let mut consumed_handles: Vec<String> = Vec::new();
+            for (_, out) in &consumed {
+                for (policy, tokens) in &out.assets {
+                    if is_handle_policy(policy) {
+                        for (name, _qty) in tokens {
+                            if let Some((handle, _is_virtual)) = parse_handle_name(name) {
+                                consumed_handles.push(handle);
                             }
                         }
-                        // Add to new owner
-                        snap.handle_by_address
-                            .entry(new_addr.clone())
-                            .or_default()
-                            .push(handle.clone());
-                        snap.address_by_handle.insert(handle, new_addr);
                     }
+                }
+            }
+            if !handle_changes.is_empty() || !consumed_handles.is_empty() {
+                if let Some(snap) = state.current_mut() {
+                    snap.apply_handle_updates(&handle_changes, &consumed_handles);
                 }
             }
 
