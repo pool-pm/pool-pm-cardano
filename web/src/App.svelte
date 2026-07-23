@@ -66,19 +66,29 @@
     backStaysOnSite = false;
   }
 
-  // Backspace navigates back (the classic shortcut browsers dropped over form data-loss),
-  // but only when nothing editable is focused, so it never eats a keystroke mid-edit.
-  // Deliberately scoped to in-app history: it walks back through pool.pm and simply stops
-  // rather than ejecting to an external referrer on a stray press (the back button still
-  // does the standard, cross-site thing). Modifier combos are left to the OS/browser.
+  // Backspace-family navigation, only when nothing editable is focused (so it never eats a
+  // keystroke mid-edit — in a field Backspace deletes a char and Ctrl+Backspace a word) and
+  // with no Alt/Meta/Shift held:
+  //   Backspace       — back one step, but scoped to in-app history: it walks back through
+  //                     pool.pm and stops rather than ejecting to an external referrer on a
+  //                     stray press (the back button still does the standard cross-site thing).
+  //   Ctrl+Backspace  — jump straight to the pool.pm homepage (not a browser binding outside
+  //                     a text field).
   $effect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key !== 'Backspace' || e.ctrlKey || e.metaKey || e.altKey || !backStaysOnSite) return;
+      if (e.key !== 'Backspace' || e.metaKey || e.altKey || e.shiftKey) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable))
         return;
-      e.preventDefault();
-      window.history.back();
+      if (e.ctrlKey) {
+        if (window.location.pathname !== '/') {
+          e.preventDefault();
+          window.location.href = '/';
+        }
+      } else if (backStaysOnSite) {
+        e.preventDefault();
+        window.history.back();
+      }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
