@@ -512,9 +512,9 @@
     background: var(--surface);
   }
 
-  /* Both controls wear the asset tiles' "stretched canvas" (.frame): sharp edges, a dark
-     top→bottom gradient, no border, and layered drop + inset shadows so each sits proud of
-     the wall. Same fixed height + border-box so filter and sort line up exactly. */
+  /* Shared frame: sharp edges, no border, same fixed height + border-box so filter and sort
+     line up exactly. The lighting differs — the button is embossed (raised), the input
+     debossed (recessed) — since a text field reads better carved into the wall than proud. */
   .filter-input,
   .sort-btn {
     height: 28px;
@@ -523,36 +523,13 @@
     font-size: 12px;
     border: none;
     border-radius: 0;
-    background: linear-gradient(180deg, #17171c 0%, #0c0c0f 100%);
-    box-shadow:
-      0 6px 14px -5px rgb(0 0 0 / 0.6),
-      inset 0 1px 0 rgb(255 255 255 / 0.08),
-      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
     transition:
       color 0.18s ease,
       box-shadow 0.18s ease;
   }
-  /* Brighter top-edge light-catch on focus/hover — the canvas "lit more", no flat fill. */
-  .filter-input:focus,
-  .sort-btn:hover,
-  .sort-btn:focus-visible {
-    outline: none;
-    box-shadow:
-      0 6px 14px -5px rgb(0 0 0 / 0.6),
-      inset 0 1px 0 rgb(255 255 255 / 0.16),
-      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
-  }
 
-  .filter-input {
-    min-width: 0;
-    max-width: 220px;
-    padding: 0 12px;
-    color: rgb(255 255 255 / 0.85);
-  }
-  .filter-input::placeholder {
-    color: rgb(255 255 255 / 0.4);
-  }
-
+  /* Embossed "stretched canvas" (the asset tiles' .frame): lighter-top → darker-bottom
+     gradient, a drop shadow lifting it off the wall, top light-catch + underside shadow. */
   .sort-btn {
     display: inline-flex;
     align-items: center;
@@ -561,10 +538,44 @@
     color: rgb(255 255 255 / 0.55);
     line-height: 1;
     cursor: pointer;
+    background: linear-gradient(180deg, #17171c 0%, #0c0c0f 100%);
+    box-shadow:
+      0 6px 14px -5px rgb(0 0 0 / 0.6),
+      inset 0 1px 0 rgb(255 255 255 / 0.08),
+      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
   }
   .sort-btn:hover,
   .sort-btn:focus-visible {
+    outline: none;
     color: rgb(255 255 255 / 0.85);
+    /* Brighter top light-catch — the canvas "lit more". */
+    box-shadow:
+      0 6px 14px -5px rgb(0 0 0 / 0.6),
+      inset 0 1px 0 rgb(255 255 255 / 0.16),
+      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
+  }
+
+  /* Debossed: the inverse — darker-top → lighter-bottom gradient, an inner top shadow (the
+     recess) and a faint lit bottom edge, no outer drop shadow. Reads as carved in. */
+  .filter-input {
+    min-width: 0;
+    max-width: 220px;
+    padding: 0 12px;
+    color: rgb(255 255 255 / 0.85);
+    background: linear-gradient(180deg, #0a0a0d 0%, #141419 100%);
+    box-shadow:
+      inset 0 2px 4px -1px rgb(0 0 0 / 0.6),
+      inset 0 -1px 0 rgb(255 255 255 / 0.05);
+  }
+  .filter-input::placeholder {
+    color: rgb(255 255 255 / 0.4);
+  }
+  .filter-input:focus {
+    outline: none;
+    /* Deepen the recess a touch and brighten the bottom lit edge on focus. */
+    box-shadow:
+      inset 0 2px 5px -1px rgb(0 0 0 / 0.65),
+      inset 0 -1px 0 rgb(255 255 255 / 0.09);
   }
   /* The arrow points down for descending; ascending flips it 180° (smoothly). */
   .sort-arrow {
