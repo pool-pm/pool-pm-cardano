@@ -3,6 +3,7 @@ pub mod feed_index;
 
 use imbl::{hashmap::HashMap, hashset::HashSet, ordmap::OrdMap};
 use std::path::Path;
+use std::sync::Arc;
 use url::Url;
 
 use crate::cip26;
@@ -79,10 +80,66 @@ pub struct BlockSnapshot {
     pub asset_holdings_populated: bool,
 }
 
-/// Key into [`BlockSnapshot::asset_holdings`]: `(stake credential | None for an
-/// enterprise/pointer address, payment-address bytes)`. Ordered by credential first so
-/// a stake's payment addresses are a contiguous range.
+/// A **query** descriptor for one payment address: `(stake credential | None for an
+/// enterprise/pointer address, payment-address bytes)`. Callers pass this to describe an
+/// address; internally it's converted to an [`AddrKey`] for the interned holdings key.
+/// Ordered by credential first so a stake's payment addresses are a contiguous range.
 pub type AssetKey = (Option<Vec<u8>>, Vec<u8>);
+
+/// The interned `(cred, addr)` half of a holdings key. All of one address's tokens share a
+/// single `Arc<AddrKey>`, so the credential + address bytes (and their allocations) are
+/// stored once instead of once per held token. Derived `Ord` reproduces the old
+/// `(Option<Vec<u8>>, Vec<u8>)` ordering exactly — `None < Some`, then cred bytes, then addr
+/// bytes (`Box<[u8]>` compares as the slice, same as `Vec<u8>`) — and `Arc<T>`'s by-value
+/// `Ord` delegates to it, so the `(cred, addr, policy, name)` sort the prefix range scans
+/// depend on is unchanged. `Hash`/`Eq` back the interner map.
+#[derive(
+    Clone,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub struct AddrKey {
+    pub cred: Option<Box<[u8]>>,
+    pub addr: Box<[u8]>,
+}
+
+impl AddrKey {
+    fn new(cred: Option<&[u8]>, addr: &[u8]) -> Self {
+        AddrKey {
+            cred: cred.map(Box::from),
+            addr: Box::from(addr),
+        }
+    }
+    fn from_query(q: &AssetKey) -> Self {
+        AddrKey::new(q.0.as_deref(), &q.1)
+    }
+}
+
+/// Interner mapping each distinct `(cred, addr)` to a shared `Arc<AddrKey>`. Lives in
+/// [`State`] (not in [`BlockSnapshot`]) so the persisted snapshot stays free of pointers and
+/// rollback needs no special handling — interned values are content-addressed and immutable,
+/// so a rollback just drops entries (dropping `Arc` refs) and any stale interner entry is
+/// harmlessly reused. Grows with distinct token-holding addresses ever seen; never evicted.
+pub type AddrInterner = std::collections::HashMap<AddrKey, Arc<AddrKey>>;
+
+/// Return the shared `Arc<AddrKey>` for `(cred, addr)`, creating and caching it on first use.
+/// Every holdings *mutation* routes through this so all of an address's tokens share one Arc.
+fn intern_addr(interner: &mut AddrInterner, cred: Option<&[u8]>, addr: &[u8]) -> Arc<AddrKey> {
+    let k = AddrKey::new(cred, addr);
+    if let Some(a) = interner.get(&k) {
+        return a.clone();
+    }
+    let arc = Arc::new(k.clone());
+    interner.insert(k, arc.clone());
+    arc
+}
 
 /// A held token quantity. `u128`, because a per-address sum across UTXOs can exceed `u64`
 /// (the ledger bounds a single output to `i64`, but several add up). MessagePack/rmp has
@@ -175,9 +232,17 @@ impl<'de> serde::Deserialize<'de> for Held {
 /// packed bytes sort exactly as `(policy, name)` — and it's one allocation, not two.
 pub type AssetId = Box<[u8]>;
 
-/// Composite key of the flat [`AssetHoldings`] map: `((cred, addr), policy ++ name)`,
-/// sorting `(cred, addr, policy, name)`.
-pub type HeldKey = (AssetKey, AssetId);
+/// Composite key of the flat [`AssetHoldings`] map: `(interned (cred, addr), policy ++
+/// name)`, sorting `(cred, addr, policy, name)`. The `(cred, addr)` is an `Arc<AddrKey>`
+/// shared across every token that address holds (see [`AddrInterner`]).
+pub type HeldKey = (Arc<AddrKey>, AssetId);
+
+/// Build a throwaway (non-interned) `HeldKey` lower bound for a range scan / point lookup:
+/// a fresh `Arc<AddrKey>` for the address plus an empty `AssetId`. Cheap one-off alloc; the
+/// map compares by value, so it need not be the interned Arc.
+fn bound_key(addr: AddrKey) -> HeldKey {
+    (Arc::new(addr), Box::default())
+}
 
 /// Pack a token's policy + name into an [`AssetId`].
 fn asset_id(policy: &[u8], name: &[u8]) -> AssetId {
@@ -254,7 +319,7 @@ pub fn address_token_qty(
     name: &[u8],
 ) -> u128 {
     holdings
-        .get(&(key.clone(), asset_id(policy, name)))
+        .get(&(Arc::new(AddrKey::from_query(key)), asset_id(policy, name)))
         .map(|h| h.qty())
         .unwrap_or(0)
 }
@@ -413,8 +478,8 @@ impl BlockSnapshot {
         }
 
         // asset_holdings — the dominant field; break it out (see log_memory_holdings).
-        let (ah_entries, ah_inline, ah_key_heap, ah_held_inline) = self.holdings_memory();
-        let ah_b = ah_inline + ah_key_heap;
+        let (ah_entries, ah_inline, ah_assetid_heap, ah_held_inline) = self.holdings_memory();
+        let ah_b = ah_inline + ah_assetid_heap;
 
         let total = stakes_b
             + rewards_b
@@ -456,105 +521,41 @@ impl BlockSnapshot {
             "memory: snapshot fields (content bytes: inline + heap, excl. node overhead)",
         );
 
-        // asset_holdings breakdown — the field the 128-bit repack targets. `held_inline` is
-        // the value's share (`entries * size_of::<Held>()`); shrinking `Held` moves only that.
+        // asset_holdings breakdown. The `(cred, addr)` bytes are now interned (one shared
+        // `Arc<AddrKey>` per address), so per entry the key costs only the `Arc` pointer inline
+        // + the `AssetId` (policy++name); the shared address bytes are accounted separately in
+        // `memory: addr_interner`. `held_inline` is the value's share (`entries *
+        // size_of::<Held>()`).
         tracing::info!(
             label,
             entries = ah_entries,
             total_mb = mb(ah_b),
             inline_mb = mb(ah_inline),
-            key_heap_mb = mb(ah_key_heap),
+            assetid_heap_mb = mb(ah_assetid_heap),
             held_inline_mb = mb(ah_held_inline),
             held_bytes = size_of::<Held>(),
             key_inline_bytes = size_of::<HeldKey>(),
             bytes_per_entry = if ah_entries > 0 { ah_b / ah_entries } else { 0 },
-            "memory: asset_holdings (leaf = Held; key = ((cred, addr), policy++name))",
-        );
-
-        self.log_holdings_interning(label);
-    }
-
-    /// What-if for interning the `(cred, addr)` key: since `asset_holdings` is sorted by
-    /// `(cred, addr, policy, name)`, all entries sharing a `(cred, addr)` are **adjacent**, so
-    /// one O(entries)/O(1)-memory pass counts distinct address keys and the `(cred, addr)` heap
-    /// paid **now** (per entry) vs **interned** (once per distinct). `policy++name` heap is
-    /// unchanged by this interning (still one `AssetId` per entry). Also reports the live
-    /// small-allocation counts before/after — the dominant hidden RSS cost (~3 allocs/entry
-    /// today: cred, addr, assetid). Diagnostic only; drives the intern-or-not decision.
-    fn log_holdings_interning(&self, label: &str) {
-        use std::mem::size_of;
-        let mb = |b: usize| b / (1024 * 1024);
-        let entries = self.asset_holdings.len();
-
-        let mut distinct_addr_keys = 0usize;
-        let mut cred_addr_now = 0usize; // Σ over all entries (what we pay today)
-        let mut cred_addr_interned = 0usize; // Σ over distinct (cred, addr) (paid once)
-        let mut assetid_heap = 0usize; // unchanged by (cred, addr) interning
-        let mut prev: Option<&AssetKey> = None;
-        for ((akey, aid), _held) in self.asset_holdings.iter() {
-            let this = akey.0.as_ref().map_or(0, |c| c.capacity()) + akey.1.capacity();
-            cred_addr_now += this;
-            assetid_heap += aid.len();
-            if prev != Some(akey) {
-                distinct_addr_keys += 1;
-                cred_addr_interned += this;
-                prev = Some(akey);
-            }
-        }
-
-        // Key inline: today ((Option<Vec>, Vec), Box) = 64 B/entry. Interned (Arc<AddrKey>,
-        // AssetId): a thin `Arc` (8 B) + the `Box<[u8]>` assetid (16 B) = 24 B/entry.
-        const KEY_INLINE_INTERNED: usize = 8 + size_of::<AssetId>();
-        let inline_now = entries * size_of::<HeldKey>();
-        let inline_interned = entries * KEY_INLINE_INTERNED;
-
-        // Content bytes moved by interning = (per-entry inline + heap) collapsed to per-distinct.
-        // (Interned pool also costs ~1 Arc control block / distinct + the interner side-map;
-        // both scale with `distinct`, small vs the per-entry savings — computed in analysis.)
-        let saved_inline = inline_now.saturating_sub(inline_interned);
-        let saved_heap = cred_addr_now.saturating_sub(cred_addr_interned);
-
-        tracing::info!(
-            label,
-            entries,
-            distinct_addr_keys,
-            dedup_ratio = if distinct_addr_keys > 0 {
-                entries as f64 / distinct_addr_keys as f64
-            } else {
-                0.0
-            },
-            cred_addr_heap_now_mb = mb(cred_addr_now),
-            cred_addr_heap_interned_mb = mb(cred_addr_interned),
-            assetid_heap_mb = mb(assetid_heap),
-            key_inline_now_bytes = size_of::<HeldKey>(),
-            key_inline_interned_bytes = KEY_INLINE_INTERNED,
-            saved_inline_mb = mb(saved_inline),
-            saved_cred_addr_heap_mb = mb(saved_heap),
-            allocs_now = 3 * entries,
-            allocs_interned = entries + distinct_addr_keys,
-            "memory: asset_holdings interning what-if ((cred, addr) → Arc, byte-order kept)",
+            "memory: asset_holdings (leaf = Held; key = (Arc<AddrKey>, policy++name))",
         );
     }
 
-    /// Walk `asset_holdings` once, returning `(entries, inline_bytes, key_heap_bytes,
+    /// Walk `asset_holdings` once, returning `(entries, inline_bytes, assetid_heap_bytes,
     /// held_inline_bytes)`. `inline` = `entries * size_of::<(HeldKey, Held)>()` (the pair
-    /// stored in imbl nodes); `key_heap` = the credential + payment-address + `policy++name`
-    /// bytes each key points to (`Held` is `Copy`, no heap); `held_inline` = the value's
-    /// share of `inline` (`entries * size_of::<Held>()`), isolated so the effect of a
-    /// smaller leaf is visible.
+    /// stored in imbl nodes — now `Arc` pointer + `AssetId` + `Held`); `assetid_heap` = the
+    /// per-entry `policy++name` bytes (the `(cred, addr)` bytes are interned/shared, counted in
+    /// `memory: addr_interner`, not here); `held_inline` = the value's share (`entries *
+    /// size_of::<Held>()`).
     fn holdings_memory(&self) -> (usize, usize, usize, usize) {
         use std::mem::size_of;
         let entries = self.asset_holdings.len();
-        let mut key_heap = 0usize;
-        for ((akey, aid), _held) in self.asset_holdings.iter() {
-            if let Some(cred) = &akey.0 {
-                key_heap += cred.capacity();
-            }
-            key_heap += akey.1.capacity() + aid.len();
+        let mut assetid_heap = 0usize;
+        for ((_arc, aid), _held) in self.asset_holdings.iter() {
+            assetid_heap += aid.len();
         }
         let inline = entries * size_of::<(HeldKey, Held)>();
         let held_inline = entries * size_of::<Held>();
-        (entries, inline, key_heap, held_inline)
+        (entries, inline, assetid_heap, held_inline)
     }
 }
 
@@ -565,8 +566,9 @@ impl BlockSnapshot {
 /// `asset_holdings` flattened to one `OrdMap<HeldKey, Qty>`. v5: force a rebuild to heal
 /// `address_balances`/`asset_holdings` drift accumulated by the intra-block debit-drop bug
 /// (produced now applied before consumed in `apply_block`). v6: the holdings leaf gained the
-/// asset's `mint_time` (`Qty` → `Held`).
-const SNAPSHOT_FORMAT: u32 = 6;
+/// asset's `mint_time` (`Qty` → `Held`). v7: holdings key `(cred, addr)` became an interned
+/// `Arc<AddrKey>` (wire shape unchanged per entry, but re-interned on load).
+const SNAPSHOT_FORMAT: u32 = 7;
 
 /// Serialize `(snap, feed_index, magic, format)` and write it atomically (temp file +
 /// rename, so a crash mid-write leaves the previous snapshot intact). Free fn so it can
@@ -618,14 +620,14 @@ pub type AssetHoldings = OrdMap<HeldKey, Held>;
 /// here — each open assets page derives them by diffing snapshots; this only maintains the map.
 fn bump_one(
     holdings: &mut AssetHoldings,
-    key: &AssetKey,
+    addr: &Arc<AddrKey>,
     policy: &[u8],
     name: &[u8],
     qty: u128,
     add: bool,
     mint_time: u32,
 ) {
-    let hkey = (key.clone(), asset_id(policy, name));
+    let hkey = (addr.clone(), asset_id(policy, name));
     if add {
         let h = holdings.entry(hkey).or_default();
         h.set_qty(h.qty() + qty);
@@ -660,6 +662,7 @@ fn apply_utxo_assets(
     assets: &crate::model::PolicyAssets,
     add: bool,
     holdings: &mut AssetHoldings,
+    interner: &mut AddrInterner,
     mint_times: &std::collections::HashMap<AssetId, u32>,
     block_time: u32,
 ) {
@@ -667,7 +670,8 @@ fn apply_utxo_assets(
         return;
     }
     let cred = stake_credential_from_address_bytes(address);
-    let key: AssetKey = (cred, address.to_vec());
+    // Intern once per output; every token of this address shares the resulting Arc.
+    let addr = intern_addr(interner, cred.as_deref(), address);
     for (policy, names) in assets {
         for (name, qty) in names {
             let mt = if add {
@@ -678,7 +682,7 @@ fn apply_utxo_assets(
             } else {
                 0
             };
-            bump_one(holdings, &key, policy, name, *qty as u128, add, mt);
+            bump_one(holdings, &addr, policy, name, *qty as u128, add, mt);
         }
     }
 }
@@ -689,10 +693,10 @@ fn cred_range<'a>(
     holdings: &'a AssetHoldings,
     cred: &'a [u8],
 ) -> impl Iterator<Item = (&'a HeldKey, &'a Held)> {
-    let start: HeldKey = ((Some(cred.to_vec()), Vec::new()), Box::default());
+    let start = bound_key(AddrKey::new(Some(cred), &[]));
     holdings
         .range(start..)
-        .take_while(move |(((c, _), _), _)| c.as_deref() == Some(cred))
+        .take_while(move |((k, _), _)| k.cred.as_deref() == Some(cred))
 }
 
 /// One payment address's held tokens — the contiguous `((cred, addr), …)` key prefix.
@@ -700,10 +704,11 @@ fn addr_range<'a>(
     holdings: &'a AssetHoldings,
     key: &'a AssetKey,
 ) -> impl Iterator<Item = (&'a HeldKey, &'a Held)> {
-    let start: HeldKey = (key.clone(), Box::default());
+    let target = AddrKey::from_query(key);
+    let start = bound_key(target.clone());
     holdings
         .range(start..)
-        .take_while(move |((k, _), _)| k == key)
+        .take_while(move |((k, _), _)| k.as_ref() == &target)
 }
 
 /// Live tile changes for one payment address between two holdings snapshots: `(added,
@@ -718,14 +723,15 @@ pub fn address_tile_diff(
     key: &AssetKey,
 ) -> (Vec<Token>, Vec<Token>) {
     use imbl::ordmap::DiffItem;
+    let target = AddrKey::from_query(key);
     let (mut added, mut removed) = (Vec::new(), Vec::new());
     for d in prev.diff(curr) {
         match d {
-            DiffItem::Add((k, asset), _) if k == key => {
+            DiffItem::Add((k, asset), _) if k.as_ref() == &target => {
                 let (policy, name) = split_asset(asset);
                 added.push((policy.to_vec(), name.to_vec()));
             }
-            DiffItem::Remove((k, asset), _) if k == key => {
+            DiffItem::Remove((k, asset), _) if k.as_ref() == &target => {
                 let (policy, name) = split_asset(asset);
                 removed.push((policy.to_vec(), name.to_vec()));
             }
@@ -760,7 +766,7 @@ pub fn stake_tile_diff(
                 ..
             } => (k, asset),
         };
-        if k.0.as_deref() == Some(cred) {
+        if k.cred.as_deref() == Some(cred) {
             candidates.insert(asset.clone());
         }
     }
@@ -837,6 +843,10 @@ pub struct State {
     // the first post-catch-up block backfills (and a rollback resets them to 0).
     pub pool_meta_cursor: i64,
     pub drep_meta_cursor: i64,
+    /// Interns the `(cred, addr)` half of every holdings key so an address's tokens share one
+    /// `Arc<AddrKey>`. Not persisted (rebuilt at `reset` / re-interned on snapshot load);
+    /// rollback-safe because it only ever grows and its entries are content-addressed.
+    addr_interner: AddrInterner,
 }
 
 impl State {
@@ -848,6 +858,7 @@ impl State {
             feed_index: FeedIndex::new(),
             pool_meta_cursor: 0,
             drep_meta_cursor: 0,
+            addr_interner: AddrInterner::new(),
         }
     }
 
@@ -861,6 +872,25 @@ impl State {
             snap.log_memory(label);
         }
         self.feed_index.log_memory(label);
+        // The interned `(cred, addr)` pool: distinct addresses holding tokens, plus the shared
+        // cred + addr bytes stored once each (vs once per held token before interning).
+        {
+            let mb = |b: usize| b / (1024 * 1024);
+            let mut addr_bytes = 0usize;
+            for k in self.addr_interner.keys() {
+                addr_bytes += k.cred.as_ref().map_or(0, |c| c.len()) + k.addr.len();
+            }
+            // Per distinct: the AddrKey struct + its ArcInner control block, both interned once.
+            let inline = self.addr_interner.len()
+                * (std::mem::size_of::<AddrKey>() + 2 * std::mem::size_of::<usize>());
+            tracing::info!(
+                label,
+                distinct_addrs = self.addr_interner.len(),
+                shared_addr_bytes_mb = mb(addr_bytes),
+                inline_mb = mb(inline),
+                "memory: addr_interner (shared (cred, addr) — counted once, not per token)",
+            );
+        }
         tracing::info!(
             label,
             history_snapshots = self.history.len(),
@@ -948,7 +978,7 @@ impl State {
                 }
             }
         };
-        let holdings = {
+        let (holdings, interner) = {
             let Some(db) = self.db().await else { return };
             let mint_times = match Self::fetch_asset_mint_times(db).await {
                 Ok(m) => m,
@@ -965,6 +995,7 @@ impl State {
                 }
             }
         };
+        self.addr_interner = interner;
         let snap = self.history.last_mut().unwrap();
         snap.asset_holdings = holdings;
         snap.asset_holdings_populated = true;
@@ -1306,30 +1337,32 @@ impl State {
         db: &DbSync,
         last_tx_id: i64,
         mint_times: &std::collections::HashMap<i64, u32>,
-    ) -> Result<AssetHoldings, sqlx::Error> {
+    ) -> Result<(AssetHoldings, AddrInterner), sqlx::Error> {
         use pallas::ledger::addresses::Address;
         let mut holdings: AssetHoldings = OrdMap::new();
-        // The query is ordered by address, so cache the decoded `(cred, addr)` key and
-        // reuse it across that address's rows instead of re-decoding the bech32 each row.
+        let mut interner: AddrInterner = AddrInterner::new();
+        // The query is ordered by address, so decode + intern each `(cred, addr)` once when the
+        // address changes and reuse the shared `Arc` across all of that address's rows.
         let mut cur_addr: Option<String> = None;
-        let mut cur_key: Option<AssetKey> = None;
+        let mut cur_arc: Option<Arc<AddrKey>> = None;
         let mut rows: u64 = 0;
         db.asset_holdings_for_each(last_tx_id, |addr, policy, name, count, ident| {
             rows += 1;
             if cur_addr.as_deref() != Some(addr.as_str()) {
-                cur_key = Address::from_bech32(&addr).ok().map(|a| {
+                cur_arc = Address::from_bech32(&addr).ok().map(|a| {
                     let bytes = a.to_vec();
-                    (stake_credential_from_address_bytes(&bytes), bytes)
+                    let cred = stake_credential_from_address_bytes(&bytes);
+                    intern_addr(&mut interner, cred.as_deref(), &bytes)
                 });
                 cur_addr = Some(addr);
             }
             // `count` is the summed quantity as text; parse to u128 (saturates only at the
             // absurd u128 ceiling, far beyond any real token — so no precision is lost).
             let qty = count.parse::<u128>().unwrap_or(u128::MAX);
-            if let (Some(key), true) = (&cur_key, qty > 0) {
+            if let (Some(arc), true) = (&cur_arc, qty > 0) {
                 let mint_time = mint_times.get(&ident).copied().unwrap_or(0);
                 holdings.insert(
-                    (key.clone(), asset_id(&policy, &name)),
+                    (arc.clone(), asset_id(&policy, &name)),
                     Held::new(qty, mint_time),
                 );
             }
@@ -1338,6 +1371,7 @@ impl State {
                     rss_mb = rss_mb(),
                     rows,
                     entries = holdings.len(),
+                    interned = interner.len(),
                     "asset holdings: building (streaming)"
                 );
             }
@@ -1347,9 +1381,10 @@ impl State {
             rss_mb = rss_mb(),
             rows,
             entries = holdings.len(),
+            interned = interner.len(),
             "asset holdings built from db-sync"
         );
-        Ok(holdings)
+        Ok((holdings, interner))
     }
 
     /// Initialize state from db-sync data at a given reset point.
@@ -1491,8 +1526,10 @@ impl State {
         tracing::info!("Fetching asset first-mint times...");
         let mint_times = Self::fetch_asset_mint_times(db).await?;
         tracing::info!("Fetching per-address asset holdings...");
-        let asset_holdings = Self::fetch_asset_holdings(db, last_tx_id, &mint_times).await?;
+        let (asset_holdings, addr_interner) =
+            Self::fetch_asset_holdings(db, last_tx_id, &mint_times).await?;
         drop(mint_times);
+        self.addr_interner = addr_interner;
 
         self.history.clear();
         self.history.push(BlockSnapshot {
@@ -1567,6 +1604,9 @@ impl State {
         } = update;
 
         let prev = self.history.last().expect("state not initialized");
+        // Own the interner for the duration (disjoint field from `self.history`, which `prev`
+        // borrows); restored below once the holdings mutations are done.
+        let mut interner = std::mem::take(&mut self.addr_interner);
 
         let mut utxos = prev.utxos.clone();
         let mut address_balances = prev.address_balances.clone();
@@ -1593,11 +1633,11 @@ impl State {
                 continue;
             }
             let cred = stake_credential_from_address_bytes(&output.address);
-            let akey: AssetKey = (cred, output.address.clone());
+            let addr = Arc::new(AddrKey::new(cred.as_deref(), &output.address));
             for (policy, names) in &output.assets {
                 for (name, _) in names {
                     let aid = asset_id(policy, name);
-                    if let Some(h) = prev.asset_holdings.get(&(akey.clone(), aid.clone())) {
+                    if let Some(h) = prev.asset_holdings.get(&(addr.clone(), aid.clone())) {
                         mint_times.entry(aid).or_insert(h.mint_time);
                     }
                 }
@@ -1615,6 +1655,7 @@ impl State {
                 &output.assets,
                 true,
                 &mut asset_holdings,
+                &mut interner,
                 &mint_times,
                 block_time,
             );
@@ -1637,10 +1678,13 @@ impl State {
                 &output.assets,
                 false,
                 &mut asset_holdings,
+                &mut interner,
                 &mint_times,
                 block_time,
             );
         }
+        // Holdings mutations done — hand the interner back to `self`.
+        self.addr_interner = interner;
 
         let (pool_delegations, pool_delegators) = Self::apply_delegation_changes(
             &prev.pool_delegations,
@@ -1915,7 +1959,25 @@ impl State {
     }
 
     /// Restore state from a previously saved snapshot.
-    pub fn restore_from_snapshot(&mut self, snapshot: BlockSnapshot) {
+    pub fn restore_from_snapshot(&mut self, mut snapshot: BlockSnapshot) {
+        // serde (rc feature) rebuilds a *fresh* `Arc<AddrKey>` per entry — sharing is lost on
+        // the wire — so re-intern: collapse all of an address's tokens back onto one shared
+        // Arc and seed the live interner. One-time O(n) rebuild at load; the map order is
+        // unchanged (same AddrKey values), so `collect` preserves the sort.
+        let mut interner = AddrInterner::new();
+        let reinterned: AssetHoldings = snapshot
+            .asset_holdings
+            .iter()
+            .map(|((arc, aid), held)| {
+                let shared = interner
+                    .entry((**arc).clone())
+                    .or_insert_with(|| arc.clone())
+                    .clone();
+                ((shared, aid.clone()), *held)
+            })
+            .collect();
+        snapshot.asset_holdings = reinterned;
+        self.addr_interner = interner;
         self.history.clear();
         self.history.push(snapshot);
     }
@@ -2028,28 +2090,35 @@ mod tests {
     use super::*;
     use oura::framework::GenesisValues;
 
+    /// Test helper: a fresh (non-interned) `Arc<AddrKey>` for an `AssetKey`. Value equality is
+    /// what the map compares, so a per-call Arc is fine for both mutation and lookup.
+    fn ak(key: &AssetKey) -> Arc<AddrKey> {
+        Arc::new(AddrKey::from_query(key))
+    }
+
     #[test]
     fn bump_one_maintains_and_prunes() {
         let mut holdings: AssetHoldings = OrdMap::new();
         let key: AssetKey = (None, b"addr".to_vec());
         let policy = vec![0xaau8; 28];
         let name = b"TOKEN".to_vec();
-        let hkey = (key.clone(), asset_id(&policy, &name));
+        let arc = ak(&key);
+        let hkey = (arc.clone(), asset_id(&policy, &name));
 
-        bump_one(&mut holdings, &key, &policy, &name, 1, true, 1000);
+        bump_one(&mut holdings, &arc, &policy, &name, 1, true, 1000);
         assert_eq!(holdings[&hkey].qty(), 1);
-        bump_one(&mut holdings, &key, &policy, &name, 1, true, 1000);
+        bump_one(&mut holdings, &arc, &policy, &name, 1, true, 1000);
         assert_eq!(holdings[&hkey].qty(), 2);
-        bump_one(&mut holdings, &key, &policy, &name, 1, false, 0);
+        bump_one(&mut holdings, &arc, &policy, &name, 1, false, 0);
         assert_eq!(holdings[&hkey].qty(), 1);
 
         // Last UTXO spent → the entry hits 0 and is pruned, so the map's keys stay exactly
         // the tokens currently held by ≥1 UTXO.
-        bump_one(&mut holdings, &key, &policy, &name, 1, false, 0);
+        bump_one(&mut holdings, &arc, &policy, &name, 1, false, 0);
         assert!(holdings.is_empty());
 
         // Spending a token the map never had is a no-op.
-        bump_one(&mut holdings, &key, &policy, &name, 1, false, 0);
+        bump_one(&mut holdings, &arc, &policy, &name, 1, false, 0);
         assert!(holdings.is_empty());
     }
 
@@ -2090,7 +2159,7 @@ mod tests {
         // s0 empty → s1: addr1 gains the token.
         let s0: AssetHoldings = OrdMap::new();
         let mut s1 = s0.clone();
-        bump_one(&mut s1, &key1, &policy, &name, 1, true, 1000);
+        bump_one(&mut s1, &ak(&key1), &policy, &name, 1, true, 1000);
 
         // Address diff: addr1 gains a tile; an untouched address sees nothing.
         assert_eq!(
@@ -2107,17 +2176,17 @@ mod tests {
 
         // s1 → s2: addr2 also gains it. The union already had it (addr1) → no change.
         let mut s2 = s1.clone();
-        bump_one(&mut s2, &key2, &policy, &name, 1, true, 1000);
+        bump_one(&mut s2, &ak(&key2), &policy, &name, 1, true, 1000);
         assert_eq!(stake_tile_diff(&s1, &s2, &cred), (vec![], vec![]));
 
         // s2 → s3: addr1 drops it; addr2 still holds → union unchanged.
         let mut s3 = s2.clone();
-        bump_one(&mut s3, &key1, &policy, &name, 1, false, 0);
+        bump_one(&mut s3, &ak(&key1), &policy, &name, 1, false, 0);
         assert_eq!(stake_tile_diff(&s2, &s3, &cred), (vec![], vec![]));
 
         // s3 → s4: addr2 drops it; nobody holds → union loses it.
         let mut s4 = s3.clone();
-        bump_one(&mut s4, &key2, &policy, &name, 1, false, 0);
+        bump_one(&mut s4, &ak(&key2), &policy, &name, 1, false, 0);
         assert_eq!(
             stake_tile_diff(&s3, &s4, &cred),
             (vec![], vec![tok.clone()])
@@ -2245,11 +2314,13 @@ mod tests {
             .insert((txh1.clone(), 0), txout(1_000_000, &addr1, p1n1(10)));
         initial.address_balances.insert(addr1.clone(), 1_000_000);
         initial.address_balances.insert(addr2.clone(), 2_000_000);
+        let mut interner = AddrInterner::new();
         apply_utxo_assets(
             &addr1,
             &p1n1(10),
             true,
             &mut initial.asset_holdings,
+            &mut interner,
             &std::collections::HashMap::new(),
             0,
         );
@@ -2258,6 +2329,7 @@ mod tests {
             &p1n1(3),
             true,
             &mut initial.asset_holdings,
+            &mut interner,
             &std::collections::HashMap::new(),
             0,
         );
@@ -2549,7 +2621,10 @@ mod tests {
         };
         let leaf = |addr: &[u8], name: &[u8]| -> HeldKey {
             let cred = stake_credential_from_address_bytes(addr);
-            ((cred, addr.to_vec()), asset_id(&policy, name))
+            (
+                Arc::new(AddrKey::new(cred.as_deref(), addr)),
+                asset_id(&policy, name),
+            )
         };
         let (txh_old, txh_new) = (vec![0xa0u8; 32], vec![0xa1u8; 32]);
 
@@ -2643,7 +2718,7 @@ mod tests {
         // A holding above u64 — the variable-length Qty path must survive serialization.
         let big = u128::from(u64::MAX) + 1000;
         let hkey = (
-            (Some(vec![0xcc; 28]), vec![0x01; 57]),
+            Arc::new(AddrKey::new(Some(&[0xcc; 28]), &[0x01; 57])),
             asset_id(&[0x11; 28], b"BIG"),
         );
         snap.asset_holdings
@@ -2711,6 +2786,7 @@ mod tests {
         let nb = b"B".to_vec();
 
         let mut snap = BlockSnapshot::default();
+        let mut interner = AddrInterner::new();
         // addr_x: pa/na x10, pb/nb x5 ; addr_y: pa/na x3 (shared) ; addr_e: pa/na x100 (excluded).
         apply_utxo_assets(
             &addr_x,
@@ -2720,6 +2796,7 @@ mod tests {
             ],
             true,
             &mut snap.asset_holdings,
+            &mut interner,
             &std::collections::HashMap::new(),
             0,
         );
@@ -2728,6 +2805,7 @@ mod tests {
             &vec![(pa.clone(), vec![(na.clone(), 3)])],
             true,
             &mut snap.asset_holdings,
+            &mut interner,
             &std::collections::HashMap::new(),
             0,
         );
@@ -2736,6 +2814,7 @@ mod tests {
             &vec![(pa.clone(), vec![(na.clone(), 100)])],
             true,
             &mut snap.asset_holdings,
+            &mut interner,
             &std::collections::HashMap::new(),
             0,
         );
