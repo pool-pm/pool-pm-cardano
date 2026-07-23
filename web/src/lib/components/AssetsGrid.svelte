@@ -66,9 +66,12 @@
   let hasMore = $state(true);
   let loading = $state(false);
   let error = $state<string | null>(null);
-  // Sort direction, sent to the server as `?order=`. Default descending (highest
-  // quantity / newest mint first); the toolbar button flips it and reloads page 1.
-  let order = $state<'desc' | 'asc'>('desc');
+  // Sort direction, sent to the server as `?order=` and mirrored in the page URL so the
+  // choice survives leaving and returning (open an asset, then Back). Default descending
+  // (highest quantity / newest mint first); the toolbar button flips it and reloads page 1.
+  let order = $state<'desc' | 'asc'>(
+    new URLSearchParams(window.location.search).get('order') === 'asc' ? 'asc' : 'desc',
+  );
   let scrollEl = $state<HTMLElement | undefined>();
   // True once a first page has arrived; keeps the sort toolbar mounted across a
   // toggle-triggered reload (when the lists momentarily empty) so it doesn't flash out.
@@ -189,6 +192,11 @@
   // with the new order. Live-dedup sets and scroll position reset too.
   function toggleOrder() {
     order = order === 'desc' ? 'asc' : 'desc';
+    // Mirror into the URL (replaceState — no new history entry) so Back restores this order.
+    const url = new URL(window.location.href);
+    if (order === 'desc') url.searchParams.delete('order');
+    else url.searchParams.set('order', order);
+    history.replaceState(history.state, '', url);
     generation++;
     assets = [];
     groups = [];
