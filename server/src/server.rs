@@ -447,6 +447,38 @@ async fn search(
 }
 
 #[derive(serde::Serialize)]
+struct HandleAddress {
+    address: String,
+}
+
+/// Resolve an exact ADA Handle name to its holder's payment address — the deterministic
+/// lookup behind the `pool.pm/$handle` URL redirect (the fuzzy `$`-prefixed `/api/search`
+/// stays the search-dropdown path). The stored handle name carries no `$` (it's just the
+/// display sigil), so a single leading `$` is stripped if the caller included it; matching is
+/// case-insensitive against `address_by_handle` (handle name → holder address, kept live by
+/// the sink). `404` if no such handle — the frontend renders its Not Found page.
+async fn resolve_handle(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Result<axum::Json<HandleAddress>, StatusCode> {
+    let trimmed = name.trim();
+    let name = trimmed.strip_prefix('$').unwrap_or(trimmed).to_lowercase();
+    if name.is_empty() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    // O(1) await-free lookup — safe to hold the read guard (doesn't block other readers,
+    // and never spans an await, per the never-block-the-feeds rule).
+    let guard = state.chain_state.read().await;
+    let snap = guard.current().ok_or(StatusCode::NOT_FOUND)?;
+    match snap.address_by_handle.get(&name) {
+        Some(address) => Ok(axum::Json(HandleAddress {
+            address: address.clone(),
+        })),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+#[derive(serde::Serialize)]
 struct StakeEvent<'a> {
     #[serde(rename = "type")]
     kind: &'a str,
@@ -3469,6 +3501,7 @@ pub async fn serve(config: ServeConfig) {
         )
         .route("/api/feed/{feed_id}/older", get(older_blocks))
         .route("/api/search", get(search))
+        .route("/api/handle/{name}", get(resolve_handle))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

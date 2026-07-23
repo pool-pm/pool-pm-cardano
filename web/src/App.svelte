@@ -1,9 +1,12 @@
 <script lang="ts">
   import { connectSSE, disconnectSSE } from './lib/sse';
+  import { isFeedPath } from './lib/search';
   import Feed from './lib/components/Feed.svelte';
   import AssetPage from './lib/components/AssetPage.svelte';
   import AssetsGrid from './lib/components/AssetsGrid.svelte';
   import SearchBar from './lib/components/SearchBar.svelte';
+  import HandleRedirect from './lib/components/HandleRedirect.svelte';
+  import NotFound from './lib/components/NotFound.svelte';
   import './app.css';
 
   const SSE_BASE = import.meta.env.VITE_SSE_URL || `${window.location.origin}/events`;
@@ -24,6 +27,24 @@
   const ownedPolicySubject = ownedPolicyMatch?.[1] ?? null;
   const ownedPolicy = ownedPolicyMatch?.[4] ?? null;
 
+  // `/$handle` resolves an ADA Handle to its holder's address and redirects there. Only a
+  // `$`-prefixed path is a handle — `pool.pm/handle` (no `$`) is not, and falls to Not Found.
+  const handleSeg = path.startsWith('$') ? path.slice(1) : null;
+  const slash = handleSeg?.indexOf('/') ?? -1;
+  const handleName = handleSeg ? (slash >= 0 ? handleSeg.slice(0, slash) : handleSeg) : null;
+  const handleRest = handleSeg && slash >= 0 ? handleSeg.slice(slash) : '';
+
+  // Anything that isn't one of the known routes above and isn't a valid feed subject
+  // (root or a checksum-valid bech32 of a known prefix) is a dead URL → Not Found. This
+  // also stops the SSE reconnect loop that a bogus `/events/{garbage}` (400) would spin.
+  const routeNotFound =
+    !handleName &&
+    !assetFingerprint &&
+    !policyId &&
+    !ownedAssetsSubject &&
+    !(ownedPolicySubject && ownedPolicy) &&
+    !isFeedPath(path);
+
   // The owned-assets drill-down shares the subject's SSE feed (drop the /policy suffix).
   const ssePath = ownedPolicySubject ? `${ownedPolicySubject}/assets` : path;
 
@@ -36,12 +57,12 @@
   }
 
   $effect(() => {
-    // The standalone asset and policy pages are stateless HTTP views — no SSE.
-    // The owned-assets page *does* connect (to `/events/<bech32>/assets`): its SSE
-    // feed sends the address/stake header and keeps the connection open for future
-    // live asset updates. `sseUrl()` already targets `/events/<bech32>/assets` since
-    // `path` is `<bech32>/assets`.
-    if (assetFingerprint || policyId) return;
+    // The standalone asset and policy pages are stateless HTTP views — no SSE. Handle
+    // redirects and Not Found pages don't connect either (a `/events/$handle` or
+    // `/events/{garbage}` would 400 and reconnect-loop). The owned-assets page *does*
+    // connect (to `/events/<bech32>/assets`): its SSE feed sends the address/stake header
+    // and keeps the connection open for live asset updates.
+    if (assetFingerprint || policyId || handleName || routeNotFound) return;
 
     const url = sseUrl();
     connectSSE(url);
@@ -110,15 +131,14 @@
 <SearchBar visible={uiVisible} bind:open={searchOpen} />
 
 <main>
-  {#if assetFingerprint}
+  {#if handleName}
+    <HandleRedirect name={handleName} rest={handleRest} />
+  {:else if routeNotFound}
+    <NotFound detail={`/${path}`} />
+  {:else if assetFingerprint}
     <AssetPage fingerprint={assetFingerprint} initialIndex={assetFileIndex} />
   {:else if policyId}
-    <AssetsGrid
-      endpoint={`/api/policy/${policyId}`}
-      title={`${policyId.slice(0, 12)}…`}
-      mode="hide-broken"
-      sortLabel="Minted"
-    />
+    <AssetsGrid endpoint={`/api/policy/${policyId}`} title={`${policyId.slice(0, 12)}…`} mode="hide-broken" />
   {:else if ownedAssetsSubject}
     <AssetsGrid
       endpoint={`/api/assets/${ownedAssetsSubject}`}

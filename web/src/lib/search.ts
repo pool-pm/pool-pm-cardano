@@ -29,6 +29,15 @@ export function searchTarget(raw: string): string | null {
   return hrp && FEED_HRPS.has(hrp) ? `/${v}` : null;
 }
 
+// Whether a URL path is a real feed subject: the root (homepage), or a complete
+// valid-checksum bech32 of a known feed prefix (addr/stake/pool/drep/asset). Used by the
+// router to send anything else to the Not Found page instead of a dead SSE connection.
+export function isFeedPath(path: string): boolean {
+  if (path === '') return true;
+  const hrp = bech32Hrp(path);
+  return hrp !== null && FEED_HRPS.has(hrp);
+}
+
 // Resolve an ambiguous 56-hex hash to its destination: if the server recognizes it
 // as a registered pool, the pool feed (`/{pool-bech32}`); otherwise treat it as a
 // minting policy id (`/policy/{hex}`). Falls back to the policy page on any error.

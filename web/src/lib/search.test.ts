@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { sanitizeQuery, searchTarget, isHash, resolveHexTarget } from './search';
+import { sanitizeQuery, searchTarget, isHash, resolveHexTarget, isFeedPath } from './search';
 
 // Real mainnet addresses + valid testnet/script addresses constructed from them
 // (same credential, flipped network nibble / script HRP, recomputed checksum).
@@ -57,6 +57,26 @@ describe('searchTarget', () => {
     expect(searchTarget(POOL.slice(0, -1) + 'q')).toBeNull(); // tampered checksum
     expect(searchTarget('notanaddress')).toBeNull();
     expect(searchTarget('asset1notavalidchecksum')).toBeNull();
+  });
+});
+
+describe('isFeedPath', () => {
+  it('true for the root and complete bech32 feed subjects', () => {
+    expect(isFeedPath('')).toBe(true); // homepage
+    expect(isFeedPath(POOL)).toBe(true);
+    expect(isFeedPath(DREP)).toBe(true);
+    expect(isFeedPath(STAKE)).toBe(true);
+    expect(isFeedPath(ADDR)).toBe(true);
+    expect(isFeedPath(ASSET)).toBe(true);
+    expect(isFeedPath(ADDR_TEST)).toBe(true);
+  });
+
+  it('false for garbage, tampered checksums, and non-feed paths → Not Found', () => {
+    expect(isFeedPath('garbage')).toBe(false);
+    expect(isFeedPath(ADDR.slice(0, -1) + 'q')).toBe(false); // tampered checksum
+    expect(isFeedPath('$handle')).toBe(false); // handle is routed separately, not a feed
+    expect(isFeedPath('policy/' + POLICY)).toBe(false); // has its own route, not a bech32 feed
+    expect(isFeedPath(POLICY)).toBe(false); // bare hex is not a bech32 subject
   });
 });
 
