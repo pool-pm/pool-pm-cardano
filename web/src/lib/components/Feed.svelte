@@ -617,7 +617,10 @@
     overflow: hidden;
   }
 
-  .section.mempool {
+  /* Desaturate the mempool, but per-child so the pool-colored epoch-block count is spared
+     (a `filter` on the section itself would grey its whole subtree — children can't escape
+     a parent filter). Everything else (header, MEMPOOL label, pending txs) stays greyed. */
+  .section.mempool > :not(.epoch-blocks) {
     filter: grayscale(1);
   }
 
