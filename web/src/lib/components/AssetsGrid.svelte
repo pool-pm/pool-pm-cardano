@@ -459,7 +459,7 @@
          (quantity, then mint date) is deliberately unlabelled. Hidden until the first page is
          in, so it doesn't flash on an empty/errored grid. -->
     {#if hasLoaded}
-      <div class="toolbar">
+      <div class="toolbar" style="--toolbar-w: {CELL}px">
         <!-- Name filter — server-side, so results are complete for any collection size. On the
            grouped (top-level) grid it filters assets before grouping, so a tile keeps only its
            matching assets and empty policies drop out. One embossed panel holds the recessed
@@ -580,10 +580,11 @@
     justify-content: space-between;
     gap: 16px;
     /* logo bottom (~76) + toolbar (28) so the bottom-anchored toolbar drops below the logo. */
-    min-height: 112px;
-    /* 20px inline = the grid's inline padding (text + toolbar align to the tile edges); the small
-       bottom gap plus the grid's own top VPAD give roughly one inter-tile gap down to the grid. */
-    padding: 12px 20px 4px;
+    min-height: 108px;
+    /* Left 20px = the grid's inline padding; right also clears the grid's vertical scrollbar so
+       the toolbar's right edge lands on the rightmost tile. Bottom 0 so the only gap down to the
+       grid is the grid's own top VPAD (= one inter-tile gap). */
+    padding: 12px calc(20px + var(--scrollbar-width, 0px)) 0 20px;
     box-sizing: border-box;
     background: var(--surface);
   }
@@ -688,7 +689,9 @@
     gap: 3px;
     height: 28px;
     box-sizing: border-box;
-    max-width: 240px;
+    /* One asset tile wide (set per render from the grid's CELL), so it lines up with the
+       rightmost tile of the first row. */
+    width: var(--toolbar-w, 240px);
     border-radius: 0;
     padding: 3px;
     background: linear-gradient(180deg, #17171c 0%, #0c0c0f 100%);
