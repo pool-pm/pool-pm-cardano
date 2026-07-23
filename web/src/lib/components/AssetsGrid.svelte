@@ -5,8 +5,12 @@
   import { stake, address } from '../stores';
   import { onAssetLive } from '../sse';
   import { commonNamePrefix } from '../assetName';
-  import { formatQuantity } from '../layout';
-  import SubjectCard from './SubjectCard.svelte';
+  import { formatQuantity, formatAda } from '../layout';
+
+  // Compact a long bech32 for the minimalist header (e.g. addr1q8e533…u6aldq).
+  function shortId(s: string): string {
+    return s.length > 22 ? `${s.slice(0, 12)}…${s.slice(-6)}` : s;
+  }
 
   // `endpoint` is the paginated API URL (cursor is appended as `?cursor=`); `title`
   // sets document.title. `mode` controls cell rendering: 'hide-broken' (policy
@@ -368,42 +372,80 @@
 {/snippet}
 
 <div class="page">
-  <!-- Populated only on the owned-assets page (address/stake), where App connects
-       the SSE feed; on policy pages both stores stay null so nothing renders. -->
-  <SubjectCard stake={$stake} address={$address} />
-  <!-- Sort toggle: flips between descending (default, high to low) and ascending. The
-       primary axis (quantity, then mint date) is deliberately not labelled — naming just
-       "Quantity" understated the tie-break. Hidden until the first page is in, so it
-       doesn't flash on an empty/errored grid. -->
-  {#if hasLoaded}
-    <div class="toolbar">
-      <!-- Name filter — server-side, so results are complete for any collection size. On the
+  <!-- Top row: minimalist subject header on the left (owned pages only — on policy browse both
+       stores stay null so nothing shows), the filter + sort toolbar aligned to the right.
+       Colorless, mirroring the single-asset placard: a plain id/handle line + muted meta. -->
+  <div class="assets-head">
+    {#if $address}
+      <div class="subject">
+        <div class="subject-id" title={$address.address}>
+          {#if $address.handle}<span class="dollar">$</span>{$address.handle}{:else}{shortId($address.address)}{/if}
+        </div>
+        <dl class="subject-meta">
+          {#if $address.balance}
+            <div class="meta-row">
+              <dt>balance</dt>
+              <dd>{formatAda($address.balance)}</dd>
+            </div>
+          {/if}
+          <div class="meta-row">
+            <dt>assets</dt>
+            <dd>{$address.assets_count}</dd>
+          </div>
+        </dl>
+      </div>
+    {:else if $stake}
+      {@const stakeTotal = (BigInt($stake.balance ?? '0') + BigInt($stake.rewards ?? '0')).toString()}
+      <div class="subject">
+        <!-- No ADA handle on a stake credential; append " stake" to set it apart from the addr1 page. -->
+        <div class="subject-id" title={$stake.stake_address}>
+          {shortId($stake.stake_address)}<span class="suffix"> stake</span>
+        </div>
+        <dl class="subject-meta">
+          <div class="meta-row">
+            <dt>balance</dt>
+            <dd>{formatAda(stakeTotal)}</dd>
+          </div>
+          <div class="meta-row">
+            <dt>assets</dt>
+            <dd>{$stake.assets_count}</dd>
+          </div>
+        </dl>
+      </div>
+    {/if}
+    <!-- Sort toggle: flips descending (default, high to low) ↔ ascending; the primary axis
+         (quantity, then mint date) is deliberately unlabelled. Hidden until the first page is
+         in, so it doesn't flash on an empty/errored grid. -->
+    {#if hasLoaded}
+      <div class="toolbar">
+        <!-- Name filter — server-side, so results are complete for any collection size. On the
            grouped (top-level) grid it filters assets before grouping, so a tile keeps only its
            matching assets and empty policies drop out. One embossed panel holds the recessed
            input on the left and the sort button as its right segment. -->
-      <div class="filter">
-        <input
-          class="filter-input"
-          type="text"
-          placeholder="Filter by name"
-          value={q}
-          oninput={onFilterInput}
-          aria-label="Filter assets by name"
-        />
-        <button
-          class="sort-btn"
-          class:asc={order === 'asc'}
-          onclick={toggleOrder}
-          title={order === 'desc' ? 'Sorted high to low — click to reverse' : 'Sorted low to high — click to reverse'}
-          aria-label={`Sort order: ${order === 'desc' ? 'descending' : 'ascending'}`}
-        >
-          <svg class="sort-arrow" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
-            <path d="M6 1.5 V10.5 M2.5 7 L6 10.5 L9.5 7" fill="none" stroke="currentColor" stroke-width="1.4" />
-          </svg>
-        </button>
+        <div class="filter">
+          <input
+            class="filter-input"
+            type="text"
+            placeholder="Filter by name"
+            value={q}
+            oninput={onFilterInput}
+            aria-label="Filter assets by name"
+          />
+          <button
+            class="sort-btn"
+            class:asc={order === 'asc'}
+            onclick={toggleOrder}
+            title={order === 'desc' ? 'Sorted high to low — click to reverse' : 'Sorted low to high — click to reverse'}
+            aria-label={`Sort order: ${order === 'desc' ? 'descending' : 'ascending'}`}
+          >
+            <svg class="sort-arrow" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+              <path d="M6 1.5 V10.5 M2.5 7 L6 10.5 L9.5 7" fill="none" stroke="currentColor" stroke-width="1.4" />
+            </svg>
+          </button>
+        </div>
       </div>
-    </div>
-  {/if}
+    {/if}
+  </div>
   <div class="scroll" bind:this={scrollEl} bind:clientHeight={viewportH} onscroll={onScroll}>
     {#if error && empty}
       <div class="status">Could not load: {error}</div>
@@ -481,11 +523,67 @@
     display: flex;
     flex-direction: column;
     height: 100dvh;
-    /* Top breathing room for the header card, matching the feed's 16px top padding.
-       The card centers itself (margin-inline auto) and clears the corner chrome. */
-    padding-top: 16px;
     box-sizing: border-box;
     background: var(--surface);
+  }
+
+  /* Top row: minimalist subject on the left, filter+sort on the right — colorless, echoing
+     the single-asset placard (plain id/handle line + tiny uppercase meta), no card chrome. */
+  .assets-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    /* Match the grid's inline padding + the feed's top breathing room. */
+    padding: 14px 20px 8px;
+    box-sizing: border-box;
+    background: var(--surface);
+  }
+  .subject {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .subject-id {
+    max-width: 56vw;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.15;
+    color: rgb(255 255 255 / 0.9);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
+    user-select: all;
+  }
+  /* The `$` sigil and the " stake" tag are dimmer than the name they qualify. */
+  .subject-id .dollar,
+  .subject-id .suffix {
+    color: rgb(255 255 255 / 0.45);
+    font-weight: 500;
+  }
+  .subject-meta {
+    margin: 0;
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: rgb(255 255 255 / 0.62);
+  }
+  .meta-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+  .subject-meta dt {
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    font-size: 9px;
+    color: rgb(255 255 255 / 0.4);
+  }
+  .subject-meta dd {
+    margin: 0;
+    font-variant-numeric: tabular-nums;
   }
 
   .scroll {
@@ -500,18 +598,14 @@
     background: var(--surface);
   }
 
-  /* Thin bar carrying the sort toggle, right-aligned to match the grid's inline padding.
-     Sits between the header card and the scrolling grid. */
+  /* Filter + sort, sitting at the right end of the head row (margin-left:auto pins it right
+     even when there's no subject, e.g. the policy-browse page). */
   .toolbar {
     display: flex;
     align-items: center;
     gap: 8px;
-    /* Center the [filter][sort] group as a whole; the sort button sits directly right of the
-       filter (separated by the gap above). */
-    justify-content: center;
-    padding: 4px 20px 8px;
-    box-sizing: border-box;
-    background: var(--surface);
+    margin-left: auto;
+    flex-shrink: 0;
   }
 
   /* One embossed "stretched canvas" panel (the asset tiles' .frame): sharp edges, lighter-top →
