@@ -3209,6 +3209,14 @@ async fn owned_assets(
 ) -> Result<axum::Json<GroupsResponse>, StatusCode> {
     let filter = filter::FeedFilter::from_path(&feed_id).ok_or(StatusCode::BAD_REQUEST)?;
     let (mut held, decimals) = collect_held(&state, &filter).await?;
+    // Optional name filter (only when the box is non-empty): drop non-matching assets before
+    // grouping, so each remaining policy tile stacks/counts just its matching assets and
+    // policies with no match fall away. Nothing when unfiltered.
+    if let Some(q) = name_filter(&query.q) {
+        held.retain(|(_, name, _, _)| {
+            decode_asset_name(name).is_some_and(|n| n.to_lowercase().contains(&q))
+        });
+    }
     held.sort_unstable();
 
     // held is sorted by (policy, name), so each policy's tokens are contiguous: count

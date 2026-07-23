@@ -377,18 +377,18 @@
        doesn't flash on an empty/errored grid. -->
   {#if hasLoaded}
     <div class="toolbar">
-      {#if !grouped}
-        <!-- Name filter (flat grids only) — server-side, so results are complete for any
-             collection size. `margin-right: auto` pushes it left of the sort button. -->
-        <input
-          class="filter-input"
-          type="text"
-          placeholder="Filter by name…"
-          value={q}
-          oninput={onFilterInput}
-          aria-label="Filter assets by name"
-        />
-      {/if}
+      <!-- Name filter — server-side, so results are complete for any collection size. On the
+           grouped (top-level) grid it filters assets before grouping, so a tile keeps only its
+           matching assets and empty policies drop out. `margin-right: auto` pushes it left of
+           the sort button. -->
+      <input
+        class="filter-input"
+        type="text"
+        placeholder="Filter by name…"
+        value={q}
+        oninput={onFilterInput}
+        aria-label="Filter assets by name"
+      />
       <button
         class="sort-btn"
         class:asc={order === 'asc'}
