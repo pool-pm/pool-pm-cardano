@@ -20,8 +20,10 @@
   let metaHeight = $state(0); // measured, so the media reserves room below the metadata
   let current = $state(0); // which media is on screen (one at a time); onMount applies initialIndex
   // The top-left metadata panel; a tap toggles it (the media reclaims the space). Hidden by
-  // default on mobile (coarse pointer), where it can eat most of the screen; shown on desktop.
-  let metaOpen = $state(!window.matchMedia('(pointer: coarse)').matches);
+  // default in a small window — narrow (the panel wraps tall) or short (it crowds the media) —
+  // and shown otherwise. Keyed on window size, not device type, so a small desktop window
+  // behaves like a phone and a roomy tablet keeps it open.
+  let metaOpen = $state(!window.matchMedia('(max-width: 720px), (max-height: 600px)').matches);
 
   // Reserved gaps so the media never touches the chrome around it.
   const MEDIA_TOP_GAP = 14; // below the top band (corner icons / metadata)
