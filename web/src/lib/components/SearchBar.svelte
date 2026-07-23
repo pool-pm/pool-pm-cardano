@@ -131,6 +131,9 @@
       selected = Math.max(selected - 1, 0);
     } else if (e.key === 'Escape') {
       open = false;
+      // Blur too: otherwise the hidden input keeps focus, and the global "/" / type-to-open
+      // shortcut (which ignores keys while a field is focused) would swallow every key.
+      inputEl?.blur();
     }
   }
 
