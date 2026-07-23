@@ -196,10 +196,23 @@
     }
 
     function handleKeydown(e: KeyboardEvent) {
-      if (!landscape) return;
+      if (!landscape || e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable))
+        return;
+      // Landscape scrolls horizontally (row-reverse): scrollLeft is 0 at the newest (right)
+      // edge and goes negative toward older. Map the vertical scroll keys onto it so they
+      // behave like portrait — Home = newest, PageDown = older (leftward), PageUp = newer.
+      const page = feedEl.clientWidth * 0.9;
       if (e.key === 'Home') {
         e.preventDefault();
         feedEl.scrollLeft = 0;
+      } else if (e.key === 'PageDown') {
+        e.preventDefault();
+        feedEl.scrollLeft -= page;
+      } else if (e.key === 'PageUp') {
+        e.preventDefault();
+        feedEl.scrollLeft += page;
       }
     }
 
