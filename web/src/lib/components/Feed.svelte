@@ -488,7 +488,9 @@
                  displayed epoch rolls past it, show 0 until the pool's next mint re-emits. -->
             {@const cur = epochInfo($config.genesis).epoch}
             {@const n = cur === $pool.epoch ? $pool.epoch_blocks : 0}
-            <div class="epoch-blocks">{n} block{n > 1 ? 's' : ''}</div>
+            <div class="epoch-blocks" style:color={poolColor($pool.pool_id)}>
+              {n} block{n > 1 ? 's' : ''}
+            </div>
           {/if}
           {#if section.block}
             <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
