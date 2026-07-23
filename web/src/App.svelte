@@ -176,7 +176,12 @@
   {:else if assetFingerprint}
     <AssetPage fingerprint={assetFingerprint} initialIndex={assetFileIndex} />
   {:else if policyId}
-    <AssetsGrid endpoint={`/api/policy/${policyId}`} title={`${policyId.slice(0, 12)}…`} mode="hide-broken" />
+    <AssetsGrid
+      endpoint={`/api/policy/${policyId}`}
+      title={`${policyId.slice(0, 12)}…`}
+      mode="hide-broken"
+      {uiVisible}
+    />
   {:else if ownedAssetsSubject}
     <AssetsGrid
       endpoint={`/api/assets/${ownedAssetsSubject}`}
@@ -184,6 +189,7 @@
       mode="text-fallback"
       grouped
       subject={ownedAssetsSubject}
+      {uiVisible}
     />
   {:else if ownedPolicySubject && ownedPolicy}
     <AssetsGrid
@@ -191,6 +197,7 @@
       title={`${ownedPolicy.slice(0, 12)}… assets`}
       mode="text-fallback"
       policyFilter={ownedPolicy}
+      {uiVisible}
     />
   {:else}
     <Feed />

@@ -36,6 +36,7 @@
     grouped = false,
     subject = '',
     policyFilter,
+    uiVisible = true,
   }: {
     endpoint: string;
     title: string;
@@ -43,6 +44,9 @@
     grouped?: boolean;
     subject?: string;
     policyFilter?: string;
+    // Shared idle-fade signal (App). The toolbar hides with the corner chrome when idle — but
+    // only while the filter is empty, so an active filter is never hidden out from under the user.
+    uiVisible?: boolean;
   } = $props();
 
   // Uniform-grid geometry (px). A fixed cell size per render is what makes windowing
@@ -479,7 +483,7 @@
          (quantity, then mint date) is deliberately unlabelled. Hidden until the first page is
          in, so it doesn't flash on an empty/errored grid. -->
     {#if hasLoaded}
-      <div class="toolbar" style="--toolbar-w: {CELL}px">
+      <div class="toolbar" class:idle-hidden={!uiVisible && q.trim() === ''} style="--toolbar-w: {CELL}px">
         <!-- Name filter — server-side, so results are complete for any collection size. On the
            grouped (top-level) grid it filters assets before grouping, so a tile keeps only its
            matching assets and empty policies drop out. One embossed panel holds the recessed
@@ -697,6 +701,14 @@
     margin-left: auto;
     align-self: flex-end;
     flex-shrink: 0;
+    opacity: 1;
+    transition: opacity 0.15s ease; /* fast fade-in on interaction, like the corner chrome */
+  }
+  /* Idle fade-out (slow), mirroring the logo/search — only when the filter is empty. */
+  .toolbar.idle-hidden {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 1.5s ease;
   }
 
   /* One embossed "stretched canvas" panel (the asset tiles' .frame): sharp edges, lighter-top →
