@@ -521,7 +521,6 @@
   .filter {
     display: flex;
     align-items: center;
-    gap: 3px;
     height: 28px;
     box-sizing: border-box;
     max-width: 240px;
@@ -563,32 +562,37 @@
       inset 0 -1px 0 rgb(255 255 255 / 0.09);
   }
 
-  /* Sort button: the panel's right segment — a raised sub-button (top light-catch + gradient,
-     no drop shadow since it lives inside the panel) so it reads as pressable next to the field. */
+  /* Sort button: a square on the right, flush with the container's embossed surface (no
+     background/shadow of its own, so it adds no volume) — just the arrow. It debosses (recesses
+     like the input) while pressed, for click feedback. */
   .sort-btn {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     height: 100%;
-    padding: 0 8px;
+    aspect-ratio: 1;
+    padding: 0;
     border: none;
     border-radius: 0;
     color: rgb(255 255 255 / 0.55);
     cursor: pointer;
-    background: linear-gradient(180deg, #1c1c22 0%, #101015 100%);
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.1),
-      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
+    background: transparent;
     transition:
       color 0.18s ease,
-      box-shadow 0.18s ease;
+      box-shadow 0.12s ease,
+      background 0.12s ease;
   }
   .sort-btn:hover,
   .sort-btn:focus-visible {
     outline: none;
     color: rgb(255 255 255 / 0.85);
+  }
+  .sort-btn:active {
+    color: rgb(255 255 255 / 0.85);
+    background: linear-gradient(180deg, #08080a 0%, #131318 100%);
     box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.18),
-      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
+      inset 0 2px 4px -1px rgb(0 0 0 / 0.7),
+      inset 0 -1px 0 rgb(255 255 255 / 0.05);
   }
   /* The arrow points down for descending; ascending flips it 180° (smoothly). */
   .sort-arrow {
