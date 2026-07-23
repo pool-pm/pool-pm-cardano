@@ -645,7 +645,7 @@
     color: rgb(255 255 255 / 0.45);
   }
   .subject-balance {
-    font-size: 48px;
+    font-size: 42px;
     font-weight: 650;
     line-height: 1.1;
     color: rgb(255 255 255 / 0.92);
