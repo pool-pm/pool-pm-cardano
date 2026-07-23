@@ -5,11 +5,21 @@
   import { stake, address } from '../stores';
   import { onAssetLive } from '../sse';
   import { commonNamePrefix } from '../assetName';
-  import { formatQuantity, formatAda } from '../layout';
+  import { formatQuantity, formatAda, formatTicker } from '../layout';
 
   // Compact a long bech32 for the minimalist header (e.g. addr1q8e533…u6aldq).
   function shortId(s: string): string {
     return s.length > 22 ? `${s.slice(0, 12)}…${s.slice(-6)}` : s;
+  }
+
+  // Split a bech32 id into its human-readable prefix (addr/stake) and the truncated data
+  // part, so the header can show the prefix prominent (white) and the rest dimmer + smaller.
+  function idParts(bech32: string): { prefix: string; rest: string } {
+    const m = /^(addr_test|addr|stake_test|stake)(1.+)$/.exec(bech32);
+    const prefix = m ? m[1] : '';
+    const body = m ? m[2] : bech32;
+    const rest = body.length > 16 ? `${body.slice(0, 9)}…${body.slice(-6)}` : body;
+    return { prefix, rest };
   }
 
   // `endpoint` is the paginated API URL (cursor is appended as `?cursor=`); `title`
@@ -377,35 +387,67 @@
        Colorless, mirroring the single-asset placard: a plain id/handle line + muted meta. -->
   <div class="assets-head">
     {#if $address}
+      {@const id = idParts($address.address)}
       <div class="subject">
+        <!-- Handle when held ($ dimmer than the name); otherwise the address with its "addr"
+             prefix prominent and the rest dimmer + smaller. -->
         <div class="subject-id" title={$address.address}>
-          {#if $address.handle}<span class="dollar">$</span>{$address.handle}{:else}{shortId($address.address)}{/if}
+          {#if $address.handle}<span class="id-weak">$</span><span class="id-strong">{$address.handle}</span
+            >{:else}<span class="id-strong">{id.prefix}</span><span class="id-weak">{id.rest}</span>{/if}
         </div>
+        {#if $address.balance}<div class="subject-balance">{formatAda($address.balance)}</div>{/if}
         <dl class="subject-meta">
-          {#if $address.balance}
-            <div class="meta-row">
-              <dt>balance</dt>
-              <dd>{formatAda($address.balance)}</dd>
-            </div>
+          {#if $address.pool_id}
+            <a class="meta-row" href="/{$address.pool_id}">
+              <dt>pool</dt>
+              <dd>{$address.pool_ticker ? formatTicker($address.pool_ticker) : shortId($address.pool_id)}</dd>
+            </a>
+          {/if}
+          {#if $address.drep_id}
+            <a class="meta-row" href="/{$address.drep_id}">
+              <dt>drep</dt>
+              <dd>{$address.drep_name ?? shortId($address.drep_id)}</dd>
+            </a>
           {/if}
           <div class="meta-row">
             <dt>assets</dt>
             <dd>{$address.assets_count}</dd>
           </div>
+          {#if $address.stake_address && $address.stake_assets_count && $address.stake_assets_count !== $address.assets_count}
+            <a class="meta-row" href="/{$address.stake_address}/assets">
+              <dt>staked assets</dt>
+              <dd>{$address.stake_assets_count}</dd>
+            </a>
+          {/if}
+          {#if $address.stake_address && $address.stake_value && $address.stake_value !== $address.balance}
+            <a class="meta-row" href="/{$address.stake_address}">
+              <dt>stake</dt>
+              <dd>{formatAda($address.stake_value)}</dd>
+            </a>
+          {/if}
         </dl>
       </div>
     {:else if $stake}
+      {@const id = idParts($stake.stake_address)}
       {@const stakeTotal = (BigInt($stake.balance ?? '0') + BigInt($stake.rewards ?? '0')).toString()}
       <div class="subject">
-        <!-- No ADA handle on a stake credential; append " stake" to set it apart from the addr1 page. -->
         <div class="subject-id" title={$stake.stake_address}>
-          {shortId($stake.stake_address)}<span class="suffix"> stake</span>
+          <span class="id-strong">{id.prefix}</span><span class="id-weak">{id.rest}</span>
         </div>
+        <div class="subject-balance">{formatAda(stakeTotal)}</div>
         <dl class="subject-meta">
-          <div class="meta-row">
-            <dt>balance</dt>
-            <dd>{formatAda(stakeTotal)}</dd>
-          </div>
+          {#if $stake.pool_id}
+            <a class="meta-row" href="/{$stake.pool_id}">
+              <dt>pool</dt>
+              <dd>{$stake.pool_ticker ? formatTicker($stake.pool_ticker) : shortId($stake.pool_id)}</dd>
+            </a>
+          {/if}
+          {#if $stake.drep_id}
+            <a class="meta-row" href="/{$stake.drep_id}">
+              <dt>drep</dt>
+              <dd>{$stake.drep_name ?? shortId($stake.drep_id)}</dd>
+            </a>
+          {/if}
           <div class="meta-row">
             <dt>assets</dt>
             <dd>{$stake.assets_count}</dd>
@@ -527,15 +569,21 @@
     background: var(--surface);
   }
 
-  /* Top row: minimalist subject on the left, filter+sort on the right — colorless, echoing
-     the single-asset placard (plain id/handle line + tiny uppercase meta), no card chrome. */
+  /* Top row: minimalist subject on the top-left (aligned to the leftmost tile), filter+sort
+     dropped to the bottom-right just above the grid (aligned to the rightmost tile). Colorless,
+     echoing the single-asset placard — a plain id/handle line, a large balance, then tiny
+     uppercase meta. The min-height + bottom-anchored toolbar keep the toolbar clear of the fixed
+     top-right logo (48px wide × ~64px tall portrait mark, so its bottom sits near 76px). */
   .assets-head {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 12px;
-    /* Match the grid's inline padding + the feed's top breathing room. */
-    padding: 14px 20px 8px;
+    gap: 16px;
+    /* logo bottom (~76) + toolbar (28) so the bottom-anchored toolbar drops below the logo. */
+    min-height: 112px;
+    /* 20px inline = the grid's inline padding (text + toolbar align to the tile edges); the small
+       bottom gap plus the grid's own top VPAD give roughly one inter-tile gap down to the grid. */
+    padding: 12px 20px 4px;
     box-sizing: border-box;
     background: var(--surface);
   }
@@ -543,30 +591,40 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 3px;
   }
   .subject-id {
-    max-width: 56vw;
-    font-size: 16px;
-    font-weight: 600;
-    line-height: 1.15;
-    color: rgb(255 255 255 / 0.9);
+    max-width: 58vw;
+    line-height: 1.2;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-variant-numeric: tabular-nums;
     user-select: all;
   }
-  /* The `$` sigil and the " stake" tag are dimmer than the name they qualify. */
-  .subject-id .dollar,
-  .subject-id .suffix {
-    color: rgb(255 255 255 / 0.45);
+  /* The identifying part (handle, or the "addr"/"stake" prefix) is white; the rest ($ sigil, or
+     the address body) is dimmer and a notch smaller. */
+  .subject-id .id-strong {
+    font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+  }
+  .subject-id .id-weak {
+    font-size: 12px;
     font-weight: 500;
+    color: rgb(255 255 255 / 0.45);
+  }
+  .subject-balance {
+    font-size: 27px;
+    font-weight: 650;
+    line-height: 1.1;
+    color: rgb(255 255 255 / 0.92);
+    font-variant-numeric: tabular-nums;
   }
   .subject-meta {
-    margin: 0;
+    margin: 2px 0 0;
     display: flex;
-    gap: 16px;
+    flex-wrap: wrap;
+    gap: 4px 16px;
     font-size: 12px;
     color: rgb(255 255 255 / 0.62);
   }
@@ -574,6 +632,12 @@
     display: flex;
     align-items: baseline;
     gap: 6px;
+    text-decoration: none;
+    color: inherit;
+  }
+  /* Meta rows that link (pool/drep/stake/staked assets) underline their value on hover. */
+  a.meta-row:hover dd {
+    text-decoration: underline;
   }
   .subject-meta dt {
     text-transform: uppercase;
@@ -598,13 +662,15 @@
     background: var(--surface);
   }
 
-  /* Filter + sort, sitting at the right end of the head row (margin-left:auto pins it right
-     even when there's no subject, e.g. the policy-browse page). */
+  /* Filter + sort, pinned to the bottom-right of the head row: margin-left:auto keeps it right
+     even with no subject (policy-browse page); align-self:flex-end drops it to just above the
+     grid, below the logo. */
   .toolbar {
     display: flex;
     align-items: center;
     gap: 8px;
     margin-left: auto;
+    align-self: flex-end;
     flex-shrink: 0;
   }
 

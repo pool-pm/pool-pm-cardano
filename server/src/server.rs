@@ -531,14 +531,18 @@ struct StakeEvent<'a> {
 /// Build a `Stake` info event for a stake feed: ADA balance, available rewards,
 /// current pool/drep delegation (all snapshot-live), plus a connect-time
 /// `assets_count` the caller passes through unchanged on every emit.
-fn stake_sse_event(
-    stake_address: &str,
-    cred: &[u8],
+/// A stake credential's pool + DRep delegation for the header events, shared by the stake
+/// feed and the (delegating) address feed. Returns `(pool_id bech32, pool_ticker, drep_id
+/// bech32, drep_name)`, each `None` when not delegated.
+fn pool_drep_info(
     snap: Option<&BlockSnapshot>,
-    assets_count: u32,
-) -> Result<SseEvent, Infallible> {
-    let balance = snap.and_then(|s| s.stakes.get(cred).copied()).unwrap_or(0);
-    let rewards = snap.and_then(|s| s.rewards.get(cred).copied()).unwrap_or(0);
+    cred: &[u8],
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
     let (pool_id, pool_ticker) = match snap.and_then(|s| s.pool_delegations.get(cred)) {
         Some(hash) => {
             let ticker = snap
@@ -561,6 +565,18 @@ fn stake_sse_event(
         }
         None => (None, None),
     };
+    (pool_id, pool_ticker, drep_id, drep_name)
+}
+
+fn stake_sse_event(
+    stake_address: &str,
+    cred: &[u8],
+    snap: Option<&BlockSnapshot>,
+    assets_count: u32,
+) -> Result<SseEvent, Infallible> {
+    let balance = snap.and_then(|s| s.stakes.get(cred).copied()).unwrap_or(0);
+    let rewards = snap.and_then(|s| s.rewards.get(cred).copied()).unwrap_or(0);
+    let (pool_id, pool_ticker, drep_id, drep_name) = pool_drep_info(snap, cred);
     let json = serde_json::to_string(&StakeEvent {
         kind: "Stake",
         stake_address,
@@ -646,6 +662,16 @@ struct AddressEvent<'a> {
     /// ADA Handle currently held by this address, if any (without the `$`).
     #[serde(skip_serializing_if = "Option::is_none")]
     handle: Option<String>,
+    /// Pool + DRep this address's stake credential delegates to (same as the linked stake
+    /// feed). `None` when not delegated / no stake part.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pool_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pool_ticker: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    drep_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    drep_name: Option<String>,
     /// Distinct multi-assets currently held. Computed once via db-sync at
     /// connect; not updated live.
     assets_count: u32,
@@ -689,6 +715,11 @@ fn address_sse_event(
     let stake_assets_count = stake_hash_raw
         .as_deref()
         .and_then(|hash_raw| snap.map(|s| s.stake_asset_count(&hash_raw[1..])));
+    // Pool/DRep of the address's stake credential (same as the linked stake feed shows).
+    let (pool_id, pool_ticker, drep_id, drep_name) = match stake_hash_raw.as_deref() {
+        Some(hash_raw) => pool_drep_info(snap, &hash_raw[1..]),
+        None => (None, None, None, None),
+    };
     let json = serde_json::to_string(&AddressEvent {
         kind: "Address",
         address,
@@ -697,6 +728,10 @@ fn address_sse_event(
         stake_value,
         stake_assets_count,
         handle,
+        pool_id,
+        pool_ticker,
+        drep_id,
+        drep_name,
         assets_count,
     })
     .unwrap();

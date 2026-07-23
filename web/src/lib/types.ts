@@ -299,6 +299,12 @@ export interface AddressInfo {
    * for enterprise/pointer addresses. */
   stake_assets_count?: number;
   handle?: string;
+  /** Pool + DRep this address's stake credential delegates to (same as the linked
+   * stake feed); absent when not delegated / no stake part. */
+  pool_id?: string;
+  pool_ticker?: string | null;
+  drep_id?: string;
+  drep_name?: string | null;
   /** Distinct multi-assets currently held; always present (in-memory),
    * updated live per block. */
   assets_count: number;
