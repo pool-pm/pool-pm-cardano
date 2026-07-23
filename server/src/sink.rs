@@ -258,7 +258,7 @@ impl Worker {
                                         // Virtual: resolve from inline datum
                                         output.datum().and_then(|d| {
                                             use pallas::ledger::primitives::conway::DatumOption;
-                                            match d.into() {
+                                            match d {
                                                 DatumOption::Data(data) => {
                                                     crate::model::parse_virtual_handle_address_from_datum(
                                                         &data.0,

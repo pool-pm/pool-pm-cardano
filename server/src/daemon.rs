@@ -52,7 +52,7 @@ fn connect_stages(
         gasket::runtime::spawn_stage(mempool, policy),
     ];
 
-    let runtime = Daemon(tethers);
+    let runtime = Daemon::new(tethers);
 
     Ok(runtime)
 }
@@ -298,12 +298,22 @@ pub fn run(args: Args) -> Result<(), Error> {
         }));
     }
 
-    daemon.block();
+    // gasket 0.11's Daemon::block/teardown consume `self`, but the daemon is shared (Arc) with
+    // the metrics task. So poll stop_reason() here (exactly what block() loops on), then reclaim
+    // sole ownership for the graceful teardown once the metrics task has released its clone.
+    while daemon.stop_reason().is_none() {
+        std::thread::sleep(Duration::from_millis(1500));
+    }
 
     info!("daemon is stopping");
 
-    daemon.teardown();
     prometheus.abort();
+    let _ = tokio_rt.block_on(prometheus); // let the metrics task drop its Arc<Daemon> clone
+
+    match Arc::try_unwrap(daemon) {
+        Ok(daemon) => daemon.teardown(),
+        Err(_) => warn!("daemon still shared, skipping graceful teardown"),
+    }
 
     Ok(())
 }

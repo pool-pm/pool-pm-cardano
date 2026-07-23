@@ -122,8 +122,8 @@ fn resolve_datum<'a>(
     witness_datums: &'a HashMap<DatumHash, &'a PlutusData>,
 ) -> Option<DatumRef<'a>> {
     use pallas::ledger::primitives::conway::DatumOption;
-    match output.datum().map(|d| d.into()) {
-        Some(DatumOption::Data(data)) => Some(DatumRef::Owned(data.0)),
+    match output.datum() {
+        Some(DatumOption::Data(data)) => Some(DatumRef::Owned(data.0.unwrap())),
         Some(DatumOption::Hash(hash)) => witness_datums.get(&hash).map(|pd| DatumRef::Ref(pd)),
         None => None,
     }

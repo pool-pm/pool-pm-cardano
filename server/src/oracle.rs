@@ -53,7 +53,7 @@ pub fn extract_oracle(tx: &MultiEraTx<'_>) -> Option<TxAnnotation> {
             })
             .next();
         let Some(def) = def else { continue };
-        if let Some(DatumOption::Data(data)) = output.datum().map(Into::into) {
+        if let Some(DatumOption::Data(data)) = output.datum() {
             if let Some(info) = (def.decode)(&data.0) {
                 return Some(TxAnnotation::Oracle(info));
             }
