@@ -521,6 +521,11 @@
   .filter {
     display: flex;
     align-items: center;
+    /* The 3px gap is the raised frame between the recessed input and the square button —
+       matching the frame the padding gives on every other edge. It centers the arrow's
+       surround symmetrically and, being part of the panel, stays raised when the button
+       debosses on press. */
+    gap: 3px;
     height: 28px;
     box-sizing: border-box;
     max-width: 240px;
