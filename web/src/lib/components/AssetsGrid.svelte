@@ -379,29 +379,29 @@
     <div class="toolbar">
       <!-- Name filter — server-side, so results are complete for any collection size. On the
            grouped (top-level) grid it filters assets before grouping, so a tile keeps only its
-           matching assets and empty policies drop out. An embossed panel (matching the sort
-           button) holds a recessed input. -->
+           matching assets and empty policies drop out. One embossed panel holds the recessed
+           input on the left and the sort button as its right segment. -->
       <div class="filter">
         <input
           class="filter-input"
           type="text"
-          placeholder="Filter by name…"
+          placeholder="Filter by name"
           value={q}
           oninput={onFilterInput}
           aria-label="Filter assets by name"
         />
+        <button
+          class="sort-btn"
+          class:asc={order === 'asc'}
+          onclick={toggleOrder}
+          title={order === 'desc' ? 'Sorted high to low — click to reverse' : 'Sorted low to high — click to reverse'}
+          aria-label={`Sort order: ${order === 'desc' ? 'descending' : 'ascending'}`}
+        >
+          <svg class="sort-arrow" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+            <path d="M6 1.5 V10.5 M2.5 7 L6 10.5 L9.5 7" fill="none" stroke="currentColor" stroke-width="1.4" />
+          </svg>
+        </button>
       </div>
-      <button
-        class="sort-btn"
-        class:asc={order === 'asc'}
-        onclick={toggleOrder}
-        title={order === 'desc' ? 'Sorted high to low — click to reverse' : 'Sorted low to high — click to reverse'}
-        aria-label={`Sort order: ${order === 'desc' ? 'descending' : 'ascending'}`}
-      >
-        <svg class="sort-arrow" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
-          <path d="M6 1.5 V10.5 M2.5 7 L6 10.5 L9.5 7" fill="none" stroke="currentColor" stroke-width="1.4" />
-        </svg>
-      </button>
     </div>
   {/if}
   <div class="scroll" bind:this={scrollEl} bind:clientHeight={viewportH} onscroll={onScroll}>
@@ -514,57 +514,28 @@
     background: var(--surface);
   }
 
-  /* Both the sort button and the filter's outer container are the asset tiles' embossed
-     "stretched canvas" (.frame): sharp edges, lighter-top → darker-bottom gradient, a drop
-     shadow lifting them off the wall, top light-catch + underside shadow. Same fixed height so
-     they line up. The filter panel then holds a *recessed* input (below). */
-  .filter,
-  .sort-btn {
+  /* One embossed "stretched canvas" panel (the asset tiles' .frame): sharp edges, lighter-top →
+     darker-bottom gradient, a drop shadow lifting it off the wall, top light-catch + underside
+     shadow. It holds the recessed input on the left and the sort button as its right segment;
+     the 3px padding + gap are the raised frame showing between and around them. */
+  .filter {
+    display: flex;
+    align-items: center;
+    gap: 3px;
     height: 28px;
     box-sizing: border-box;
-    border: none;
+    max-width: 240px;
     border-radius: 0;
+    padding: 3px;
     background: linear-gradient(180deg, #17171c 0%, #0c0c0f 100%);
     box-shadow:
       0 6px 14px -5px rgb(0 0 0 / 0.6),
       inset 0 1px 0 rgb(255 255 255 / 0.08),
       inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
-    transition:
-      color 0.18s ease,
-      box-shadow 0.18s ease;
   }
 
-  .sort-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 0 10px;
-    color: rgb(255 255 255 / 0.55);
-    font-family: Inter, sans-serif;
-    font-size: 12px;
-    line-height: 1;
-    cursor: pointer;
-  }
-  .sort-btn:hover,
-  .sort-btn:focus-visible {
-    outline: none;
-    color: rgb(255 255 255 / 0.85);
-    /* Brighter top light-catch — the canvas "lit more". */
-    box-shadow:
-      0 6px 14px -5px rgb(0 0 0 / 0.6),
-      inset 0 1px 0 rgb(255 255 255 / 0.16),
-      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
-  }
-
-  /* The panel's inner padding is the raised border framing the recessed field. */
-  .filter {
-    display: flex;
-    align-items: center;
-    max-width: 220px;
-    padding: 3px;
-  }
-  /* Debossed input carved into the panel: inverted (darker-top → lighter-bottom) gradient, an
-     inner top shadow (the recess) + a faint lit bottom edge, no outer drop shadow. */
+  /* Recessed input carved into the panel (left, fills the room): inverted darker-top →
+     lighter-bottom gradient, an inner top shadow + faint lit bottom edge, no drop shadow. */
   .filter-input {
     flex: 1;
     min-width: 0;
@@ -590,6 +561,34 @@
     box-shadow:
       inset 0 2px 5px -1px rgb(0 0 0 / 0.75),
       inset 0 -1px 0 rgb(255 255 255 / 0.09);
+  }
+
+  /* Sort button: the panel's right segment — a raised sub-button (top light-catch + gradient,
+     no drop shadow since it lives inside the panel) so it reads as pressable next to the field. */
+  .sort-btn {
+    display: inline-flex;
+    align-items: center;
+    height: 100%;
+    padding: 0 8px;
+    border: none;
+    border-radius: 0;
+    color: rgb(255 255 255 / 0.55);
+    cursor: pointer;
+    background: linear-gradient(180deg, #1c1c22 0%, #101015 100%);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.1),
+      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
+    transition:
+      color 0.18s ease,
+      box-shadow 0.18s ease;
+  }
+  .sort-btn:hover,
+  .sort-btn:focus-visible {
+    outline: none;
+    color: rgb(255 255 255 / 0.85);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.18),
+      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
   }
   /* The arrow points down for descending; ascending flips it 180° (smoothly). */
   .sort-arrow {
