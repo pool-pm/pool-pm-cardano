@@ -27,6 +27,47 @@
     location.href = `/${id}`;
   }
 
+  // True while focus is in a text field, so the global "/" shortcut doesn't steal a
+  // slash the user is actually typing (including into our own search input).
+  function isEditable(el: EventTarget | null): boolean {
+    const n = el as HTMLElement | null;
+    return !!n && (n.tagName === 'INPUT' || n.tagName === 'TEXTAREA' || n.tagName === 'SELECT' || n.isContentEditable);
+  }
+
+  // Open (and focus) the bar; `seed` pre-fills the first typed character so a query can
+  // begin without focusing first. Caret goes to the end so the next keystrokes append.
+  function openSearch(seed = ''): void {
+    open = true;
+    if (seed) query = seed;
+    tick().then(() => {
+      inputEl?.focus();
+      if (seed) inputEl?.setSelectionRange(query.length, query.length);
+    });
+  }
+
+  // Keyboard entry points, active only when the bar is closed, no modifier is held, and
+  // focus isn't already in a text field (so browser/OS shortcuts and in-field typing are
+  // untouched):
+  //   "/"  — open an empty bar (the conventional site-search shortcut; unlike Ctrl/⌘-K it
+  //          isn't bound by the browser).
+  //   a supported starting character (letter, digit, or "$" for a handle) — open and seed
+  //          it, so you just start typing an address / ticker / handle.
+  // Registered once: reads of `open`/`inputEl` happen inside the handler, not as effect deps.
+  $effect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (open || e.ctrlKey || e.metaKey || e.altKey || isEditable(e.target)) return;
+      if (e.key === '/') {
+        e.preventDefault();
+        openSearch();
+      } else if (e.key.length === 1 && /[a-z0-9$_]/i.test(e.key)) {
+        e.preventDefault();
+        openSearch(e.key);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   // Compact a long bech32 address for the handle-result row (e.g. addr1q8e533…u6aldq).
   function shortAddr(a: string): string {
     return a.length > 22 ? `${a.slice(0, 12)}…${a.slice(-6)}` : a;
