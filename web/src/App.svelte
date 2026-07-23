@@ -56,6 +56,34 @@
     return `${base}${sep}dpr=${window.devicePixelRatio}`;
   }
 
+  // Whether the page we'd go back to is pool.pm itself. History entries can't be inspected
+  // (privacy), but this app navigates via full page loads, so `document.referrer` is the
+  // previous page — a same-origin referrer means Backspace-back stays on the site.
+  let backStaysOnSite = false;
+  try {
+    backStaysOnSite = !!document.referrer && new URL(document.referrer).origin === window.location.origin;
+  } catch {
+    backStaysOnSite = false;
+  }
+
+  // Backspace navigates back (the classic shortcut browsers dropped over form data-loss),
+  // but only when nothing editable is focused, so it never eats a keystroke mid-edit.
+  // Deliberately scoped to in-app history: it walks back through pool.pm and simply stops
+  // rather than ejecting to an external referrer on a stray press (the back button still
+  // does the standard, cross-site thing). Modifier combos are left to the OS/browser.
+  $effect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Backspace' || e.ctrlKey || e.metaKey || e.altKey || !backStaysOnSite) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable))
+        return;
+      e.preventDefault();
+      window.history.back();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   $effect(() => {
     // The standalone asset and policy pages are stateless HTTP views — no SSE. Handle
     // redirects and Not Found pages don't connect either (a `/events/$handle` or
