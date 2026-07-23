@@ -24,7 +24,6 @@
     grouped = false,
     subject = '',
     policyFilter,
-    sortLabel = 'Quantity',
   }: {
     endpoint: string;
     title: string;
@@ -32,9 +31,6 @@
     grouped?: boolean;
     subject?: string;
     policyFilter?: string;
-    // Primary sort axis named on the toggle button: 'Quantity' for owned grids,
-    // 'Minted' for the policy browse (which has no per-owner quantity).
-    sortLabel?: string;
   } = $props();
 
   // Uniform-grid geometry (px). A fixed cell size per render is what makes windowing
@@ -341,19 +337,19 @@
   <!-- Populated only on the owned-assets page (address/stake), where App connects
        the SSE feed; on policy pages both stores stay null so nothing renders. -->
   <SubjectCard stake={$stake} address={$address} />
-  <!-- Sort toggle: flips between descending (default) and ascending on the primary axis
-       (quantity for owned grids, mint date for the policy browse). Hidden until the first
-       page is in, so it doesn't flash on an empty/errored grid. -->
+  <!-- Sort toggle: flips between descending (default, high to low) and ascending. The
+       primary axis (quantity, then mint date) is deliberately not labelled — naming just
+       "Quantity" understated the tie-break. Hidden until the first page is in, so it
+       doesn't flash on an empty/errored grid. -->
   {#if hasLoaded}
     <div class="toolbar">
       <button
         class="sort-btn"
         class:asc={order === 'asc'}
         onclick={toggleOrder}
-        title={`${sortLabel}: ${order === 'desc' ? 'high to low' : 'low to high'} — click to reverse`}
-        aria-label={`Sort by ${sortLabel}, ${order === 'desc' ? 'descending' : 'ascending'}`}
+        title={order === 'desc' ? 'Sorted high to low — click to reverse' : 'Sorted low to high — click to reverse'}
+        aria-label={`Sort order: ${order === 'desc' ? 'descending' : 'ascending'}`}
       >
-        <span class="sort-text">{sortLabel}</span>
         <svg class="sort-arrow" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
           <path d="M6 1.5 V10.5 M2.5 7 L6 10.5 L9.5 7" fill="none" stroke="currentColor" stroke-width="1.4" />
         </svg>
@@ -364,6 +360,8 @@
     {#if error && empty}
       <div class="status">Could not load: {error}</div>
     {:else if !loading && empty}
+      <!-- A valid-but-empty subject (a policy before its first mint, an address that owns
+           nothing yet) is not an error and not "not found" — it may get assets later. -->
       <div class="status">No assets.</div>
     {:else}
       <!-- clientWidth is bound here (not on .scroll): .scroll carries the horizontal
@@ -489,9 +487,6 @@
     border-color: rgb(255 255 255 / 0.28);
     background: rgb(255 255 255 / 0.06);
     outline: none;
-  }
-  .sort-text {
-    letter-spacing: 0.02em;
   }
   /* The arrow points down for descending; ascending flips it 180° (smoothly). */
   .sort-arrow {
