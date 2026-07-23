@@ -12,14 +12,12 @@
     return s.length > 22 ? `${s.slice(0, 12)}…${s.slice(-6)}` : s;
   }
 
-  // Split a bech32 id into its human-readable prefix (addr/stake) and the truncated data
-  // part, so the header can show the prefix prominent (white) and the rest dimmer + smaller.
+  // Split a bech32 id into its human-readable prefix (addr/stake) and the rest, so the header
+  // can show the prefix prominent (white) and the rest dimmer + smaller. Shown in full (the id
+  // line wraps) — addresses are never abbreviated here.
   function idParts(bech32: string): { prefix: string; rest: string } {
     const m = /^(addr_test|addr|stake_test|stake)(1.+)$/.exec(bech32);
-    const prefix = m ? m[1] : '';
-    const body = m ? m[2] : bech32;
-    const rest = body.length > 16 ? `${body.slice(0, 9)}…${body.slice(-6)}` : body;
-    return { prefix, rest };
+    return m ? { prefix: m[1], rest: m[2] } : { prefix: '', rest: bech32 };
   }
 
   // `endpoint` is the paginated API URL (cursor is appended as `?cursor=`); `title`
@@ -620,9 +618,8 @@
   .subject-id {
     max-width: 58vw;
     line-height: 1.2;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    /* Addresses are shown in full — wrap the (unbroken) bech32 string instead of truncating. */
+    overflow-wrap: anywhere;
     user-select: all;
   }
   /* The identifying part (handle, or the "addr"/"stake" prefix) is white; the rest ($ sigil, or
