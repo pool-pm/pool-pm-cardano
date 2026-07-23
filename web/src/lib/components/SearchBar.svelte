@@ -10,10 +10,18 @@
 
   let query = $state('');
   let results = $state<SearchResult[]>([]);
+  let selected = $state(0); // highlighted row; Enter navigates to it
   let inputEl = $state<HTMLInputElement>();
   let containerEl = $state<HTMLElement>();
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   let searchGen = 0; // bumped per fetch; a late response with a stale gen is dropped
+
+  // A fresh result set always highlights the first row, so Enter goes there by default
+  // without arrowing. (Reads only `results`, so arrow-key moves don't reset it.)
+  $effect(() => {
+    void results;
+    selected = 0;
+  });
 
   function go(id: string) {
     location.href = `/${id}`;
@@ -73,7 +81,13 @@
 
   function onKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && results.length > 0) {
-      go(results[0].id);
+      go(results[Math.min(selected, results.length - 1)].id);
+    } else if (e.key === 'ArrowDown' && results.length > 0) {
+      e.preventDefault();
+      selected = Math.min(selected + 1, results.length - 1);
+    } else if (e.key === 'ArrowUp' && results.length > 0) {
+      e.preventDefault();
+      selected = Math.max(selected - 1, 0);
     } else if (e.key === 'Escape') {
       open = false;
     }
@@ -113,8 +127,8 @@
   </div>
   {#if open && results.length > 0}
     <div class="results">
-      {#each results as r (`${r.kind}:${r.id}:${r.label}`)}
-        <a class="result" href={`/${r.id}`}>
+      {#each results as r, i (`${r.kind}:${r.id}:${r.label}`)}
+        <a class="result" class:selected={i === selected} href={`/${r.id}`} onmouseenter={() => (selected = i)}>
           <span class="kind">{r.kind.toUpperCase()}</span>
           <span class="name" style:color={poolColor(r.id)}>
             {r.kind === 'pool' ? formatTicker(r.label) : r.kind === 'handle' ? `$${r.label}` : r.label}
@@ -185,7 +199,8 @@
     padding: 10px 14px;
     text-decoration: none;
   }
-  .result:hover {
+  .result:hover,
+  .result.selected {
     background: rgb(255 255 255 / 0.08);
   }
   /* Kind label first; fixed width so names line up. */
