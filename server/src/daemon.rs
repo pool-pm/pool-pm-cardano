@@ -147,87 +147,88 @@ pub fn run(args: Args) -> Result<(), Error> {
     let snapshot_path: PathBuf = [&args.output, &"snapshot.bin".to_string()].iter().collect();
     let snapshot_depth = args.snapshot_depth;
 
-    let (intersect, catchup_target) =
-        if let Some((snapshot, fi)) = State::load_snapshot(&snapshot_path, args.network.magic()) {
-            let snap_slot = snapshot.slot;
-            let snap_hash = snapshot.block_hash.clone().unwrap_or_default();
-            state.restore_from_snapshot(snapshot);
-            state.feed_index = fi;
-            {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
-                rt.block_on(state.populate_handles());
-                rt.block_on(state.populate_gov_titles());
-                rt.block_on(state.populate_address_balances());
-                rt.block_on(state.populate_asset_holdings());
-                rt.block_on(state.populate_pool_retirements());
-                rt.block_on(state.populate_block_counts());
-                rt.block_on(state.populate_drep_active());
-                state.populate_total_staked();
-            }
-
-            if let Some(snap) = state.current() {
-                info!(
-                    slot = snap_slot,
-                    hash = snap_hash.as_str(),
-                    pools = snap.pools.len(),
-                    delegators = snap
-                        .pool_delegators
-                        .values()
-                        .map(|d| d.len())
-                        .sum::<usize>(),
-                    dreps = snap.dreps.len(),
-                    drep_delegators = snap
-                        .drep_delegators
-                        .values()
-                        .map(|d| d.len())
-                        .sum::<usize>(),
-                    utxos = snap.utxos.len(),
-                    decimals = snap.decimals.len(),
-                    handles = snap.address_by_handle.len(),
-                    gov_actions = snap.gov_action_titles.len(),
-                    address_balances = snap.address_balances.len(),
-                    balances_populated = snap.address_balances_populated,
-                    "loaded snapshot, resuming"
-                );
-            }
-            state.log_memory("loaded snapshot");
-
-            // Estimate current tip from wall clock. If snapshot is >60s behind,
-            // set a catchup target so SSE waits before accepting connections.
-            let now_slot = genesis_config.shelley_known_slot
-                + (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs()
-                    .saturating_sub(genesis_config.shelley_known_time))
-                    / genesis_config.shelley_slot_length as u64;
-            let catchup_target = if now_slot > snap_slot + 60 {
-                Some(now_slot)
-            } else {
-                None
-            };
-            (IntersectConfig::Point(snap_slot, snap_hash), catchup_target)
-        } else {
-            // No snapshot — query tip from db-sync and start from 5 days ago
-            info!("no snapshot, starting from 5 days ago");
+    let (intersect, catchup_target) = if let Some((snapshot, fi, interner)) =
+        State::load_snapshot(&snapshot_path, args.network.magic())
+    {
+        let snap_slot = snapshot.slot;
+        let snap_hash = snapshot.block_hash.clone().unwrap_or_default();
+        state.restore_from_snapshot(snapshot, interner);
+        state.feed_index = fi;
+        {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap();
-            let tip_slot = rt
-                .block_on(State::boundary_block(&db_url, i64::MAX as u64))
-                .map(|(s, _)| s)
-                .unwrap_or(0);
-            if tip_slot == 0 {
-                warn!("no blocks in db-sync, starting from tip");
-                (IntersectConfig::Tip, None)
-            } else {
-                start_from_boundary(&db_url, tip_slot)
-            }
+            rt.block_on(state.populate_handles());
+            rt.block_on(state.populate_gov_titles());
+            rt.block_on(state.populate_address_balances());
+            rt.block_on(state.populate_asset_holdings());
+            rt.block_on(state.populate_pool_retirements());
+            rt.block_on(state.populate_block_counts());
+            rt.block_on(state.populate_drep_active());
+            state.populate_total_staked();
+        }
+
+        if let Some(snap) = state.current() {
+            info!(
+                slot = snap_slot,
+                hash = snap_hash.as_str(),
+                pools = snap.pools.len(),
+                delegators = snap
+                    .pool_delegators
+                    .values()
+                    .map(|d| d.len())
+                    .sum::<usize>(),
+                dreps = snap.dreps.len(),
+                drep_delegators = snap
+                    .drep_delegators
+                    .values()
+                    .map(|d| d.len())
+                    .sum::<usize>(),
+                utxos = snap.utxos.len(),
+                decimals = snap.decimals.len(),
+                handles = snap.address_by_handle.len(),
+                gov_actions = snap.gov_action_titles.len(),
+                address_balances = snap.address_balances.len(),
+                balances_populated = snap.address_balances_populated,
+                "loaded snapshot, resuming"
+            );
+        }
+        state.log_memory("loaded snapshot");
+
+        // Estimate current tip from wall clock. If snapshot is >60s behind,
+        // set a catchup target so SSE waits before accepting connections.
+        let now_slot = genesis_config.shelley_known_slot
+            + (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                .saturating_sub(genesis_config.shelley_known_time))
+                / genesis_config.shelley_slot_length as u64;
+        let catchup_target = if now_slot > snap_slot + 60 {
+            Some(now_slot)
+        } else {
+            None
         };
+        (IntersectConfig::Point(snap_slot, snap_hash), catchup_target)
+    } else {
+        // No snapshot — query tip from db-sync and start from 5 days ago
+        info!("no snapshot, starting from 5 days ago");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tip_slot = rt
+            .block_on(State::boundary_block(&db_url, i64::MAX as u64))
+            .map(|(s, _)| s)
+            .unwrap_or(0);
+        if tip_slot == 0 {
+            warn!("no blocks in db-sync, starting from tip");
+            (IntersectConfig::Tip, None)
+        } else {
+            start_from_boundary(&db_url, tip_slot)
+        }
+    };
 
     let state = Arc::new(RwLock::new(state));
 

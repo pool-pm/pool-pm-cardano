@@ -71,7 +71,11 @@ pub struct BlockSnapshot {
     /// populated at `reset()` from db-sync, serialized into the snapshot (warm resume skips
     /// the populate), maintained per block by the sink, and — being a snapshot field —
     /// reverted automatically on rollback.
-    #[serde(default)]
+    ///
+    /// Skipped by the derive: (de)serialized manually in [`write_snapshot`] / [`load_snapshot`]
+    /// so load can **intern each key as it streams** (never materializing 14.8M un-shared
+    /// `Arc<AddrKey>`), and so keys go on the wire deref'd (no `Arc`, no serde `rc` feature).
+    #[serde(skip)]
     pub asset_holdings: AssetHoldings,
     /// True iff `asset_holdings` was fully populated from db-sync (by `reset()` or
     /// `populate_asset_holdings`). False on snapshots saved before the field existed,
@@ -129,16 +133,21 @@ impl AddrKey {
 /// harmlessly reused. Grows with distinct token-holding addresses ever seen; never evicted.
 pub type AddrInterner = std::collections::HashMap<AddrKey, Arc<AddrKey>>;
 
-/// Return the shared `Arc<AddrKey>` for `(cred, addr)`, creating and caching it on first use.
-/// Every holdings *mutation* routes through this so all of an address's tokens share one Arc.
-fn intern_addr(interner: &mut AddrInterner, cred: Option<&[u8]>, addr: &[u8]) -> Arc<AddrKey> {
-    let k = AddrKey::new(cred, addr);
+/// Return the shared `Arc<AddrKey>` for an owned `AddrKey`, creating and caching it on first
+/// use. The dedup point every mutation and the streaming snapshot load route through.
+fn intern_owned(interner: &mut AddrInterner, k: AddrKey) -> Arc<AddrKey> {
     if let Some(a) = interner.get(&k) {
         return a.clone();
     }
     let arc = Arc::new(k.clone());
     interner.insert(k, arc.clone());
     arc
+}
+
+/// Return the shared `Arc<AddrKey>` for `(cred, addr)`. Every holdings *mutation* routes
+/// through this so all of an address's tokens share one Arc.
+fn intern_addr(interner: &mut AddrInterner, cred: Option<&[u8]>, addr: &[u8]) -> Arc<AddrKey> {
+    intern_owned(interner, AddrKey::new(cred, addr))
 }
 
 /// A held token quantity. `u128`, because a per-address sum across UTXOs can exceed `u64`
@@ -570,10 +579,64 @@ impl BlockSnapshot {
 /// `Arc<AddrKey>` (wire shape unchanged per entry, but re-interned on load).
 const SNAPSHOT_FORMAT: u32 = 7;
 
-/// Serialize `(snap, feed_index, magic, format)` and write it atomically (temp file +
-/// rename, so a crash mid-write leaves the previous snapshot intact). Free fn so it can
-/// run on a `spawn_blocking` thread from owned clones, without the `chain_state` lock or
-/// `&self`. Returns the persisted slot.
+/// Serializes [`BlockSnapshot::asset_holdings`] as a plain msgpack map with the key `(cred,
+/// addr)` **deref'd off its `Arc`** — so the wire form carries no `Arc` (no serde `rc`
+/// feature) and pairs with [`HoldingsSeed`], which re-interns on the way back in.
+struct HoldingsSer<'a>(&'a AssetHoldings);
+
+impl serde::Serialize for HoldingsSer<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut m = s.serialize_map(Some(self.0.len()))?;
+        for ((arc, aid), held) in self.0.iter() {
+            // Key on the wire: `(AddrKey, AssetId)` — the `Arc` is transparent.
+            m.serialize_entry(&(arc.as_ref(), aid), held)?;
+        }
+        m.end()
+    }
+}
+
+/// Deserializes the holdings map produced by [`HoldingsSer`], **interning each key as it
+/// streams**: one owned `AddrKey` is read per entry and immediately collapsed onto the shared
+/// `Arc` for that address, so the un-shared full-size map is never materialized (the warm-
+/// resume RSS spike the naive `Arc`-per-entry decode would cause). Seeds `interner`.
+struct HoldingsSeed<'a>(&'a mut AddrInterner);
+
+impl<'de> serde::de::DeserializeSeed<'de> for HoldingsSeed<'_> {
+    type Value = AssetHoldings;
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<AssetHoldings, D::Error> {
+        struct V<'a>(&'a mut AddrInterner);
+        impl<'de> serde::de::Visitor<'de> for V<'_> {
+            type Value = AssetHoldings;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map of ((cred, addr), policy++name) → Held")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<AssetHoldings, A::Error> {
+                let mut out: AssetHoldings = OrdMap::new();
+                while let Some(((addr_key, aid), held)) =
+                    map.next_entry::<(AddrKey, AssetId), Held>()?
+                {
+                    let arc = intern_owned(self.0, addr_key);
+                    out.insert((arc, aid), held);
+                }
+                Ok(out)
+            }
+        }
+        d.deserialize_map(V(self.0))
+    }
+}
+
+/// Serialize the snapshot atomically (temp file + rename, so a crash mid-write leaves the
+/// previous snapshot intact). Free fn so it can run on a `spawn_blocking` thread from owned
+/// clones, without the `chain_state` lock or `&self`. Returns the persisted slot.
+///
+/// The file is a sequence of msgpack values: **`format`, `magic`** (first, so
+/// [`load_snapshot`] can reject a stale/foreign snapshot before reading the multi-GB map),
+/// then the `snapshot` (its `asset_holdings` skipped by the derive), then `asset_holdings`
+/// (via [`HoldingsSer`]), then the `feed_index`.
 ///
 /// Serializes **straight into a buffered file writer** rather than into one big `Vec<u8>`:
 /// the whole-state buffer would be a multi-GB transient (~half the live set) stacked on top
@@ -588,7 +651,11 @@ pub fn write_snapshot(
     use std::io::Write;
     let tmp = path.with_extension("tmp");
     let mut wr = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
-    rmp_serde::encode::write(&mut wr, &(snap, feed_index, network_magic, SNAPSHOT_FORMAT))?;
+    rmp_serde::encode::write(&mut wr, &SNAPSHOT_FORMAT)?;
+    rmp_serde::encode::write(&mut wr, &network_magic)?;
+    rmp_serde::encode::write(&mut wr, snap)?;
+    rmp_serde::encode::write(&mut wr, &HoldingsSer(&snap.asset_holdings))?;
+    rmp_serde::encode::write(&mut wr, feed_index)?;
     wr.flush()?;
     wr.into_inner()?.sync_all()?;
     std::fs::rename(&tmp, path)?;
@@ -1959,24 +2026,9 @@ impl State {
     }
 
     /// Restore state from a previously saved snapshot.
-    pub fn restore_from_snapshot(&mut self, mut snapshot: BlockSnapshot) {
-        // serde (rc feature) rebuilds a *fresh* `Arc<AddrKey>` per entry — sharing is lost on
-        // the wire — so re-intern: collapse all of an address's tokens back onto one shared
-        // Arc and seed the live interner. One-time O(n) rebuild at load; the map order is
-        // unchanged (same AddrKey values), so `collect` preserves the sort.
-        let mut interner = AddrInterner::new();
-        let reinterned: AssetHoldings = snapshot
-            .asset_holdings
-            .iter()
-            .map(|((arc, aid), held)| {
-                let shared = interner
-                    .entry((**arc).clone())
-                    .or_insert_with(|| arc.clone())
-                    .clone();
-                ((shared, aid.clone()), *held)
-            })
-            .collect();
-        snapshot.asset_holdings = reinterned;
+    /// Install a loaded snapshot + its interner (built by [`load_snapshot`], which already
+    /// interned each holdings key as it streamed — nothing to rebuild here).
+    pub fn restore_from_snapshot(&mut self, snapshot: BlockSnapshot, interner: AddrInterner) {
         self.addr_interner = interner;
         self.history.clear();
         self.history.push(snapshot);
@@ -2009,12 +2061,20 @@ impl State {
         (snap, self.feed_index.clone(), slot)
     }
 
-    /// Load snapshot + feed_index from disk. Validates network magic matches.
+    /// Load `(snapshot, feed_index, interner)` from disk. Validates format + magic **before**
+    /// reading the multi-GB holdings map, so a stale/foreign snapshot is rejected cheaply
+    /// (no ~10 GB deserialize-then-drop, whose freed pages glibc would retain).
     ///
     /// Deserializes **straight from a buffered file reader** rather than reading the whole
     /// file into a `Vec<u8>` first: that byte buffer would be a multi-GB transient stacked
-    /// on the structures being built (the startup RSS spike). The `BufReader` streams it.
-    pub fn load_snapshot(path: &Path, network_magic: u64) -> Option<(BlockSnapshot, FeedIndex)> {
+    /// on the structures being built (the startup RSS spike). The `BufReader` streams it, and
+    /// [`HoldingsSeed`] interns each holdings key as it arrives (no un-shared full map).
+    pub fn load_snapshot(
+        path: &Path,
+        network_magic: u64,
+    ) -> Option<(BlockSnapshot, FeedIndex, AddrInterner)> {
+        use serde::de::DeserializeSeed;
+        use serde::Deserialize;
         let file = match std::fs::File::open(path) {
             Ok(file) => file,
             Err(e) => {
@@ -2024,26 +2084,49 @@ impl State {
         };
         tracing::info!("loading snapshot from {}...", path.display());
         let rd = std::io::BufReader::new(file);
-        match rmp_serde::from_read::<_, (BlockSnapshot, FeedIndex, u64, u32)>(rd) {
-            Ok((snap, fi, magic, format)) => {
-                if magic != network_magic {
-                    tracing::warn!(
-                        "snapshot network mismatch: snapshot={}, expected={}",
-                        magic,
-                        network_magic
-                    );
-                    return None;
-                }
-                if format != SNAPSHOT_FORMAT {
-                    tracing::warn!(
-                        "snapshot format mismatch: snapshot={}, expected={} — rebuilding from db-sync",
-                        format,
-                        SNAPSHOT_FORMAT
-                    );
-                    return None;
-                }
-                Some((snap, fi))
+        let mut de = rmp_serde::Deserializer::new(rd);
+
+        // Read the guards first — cheap to reject before touching the big map.
+        let format = match u32::deserialize(&mut de) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!("failed to read snapshot format: {} — rebuilding", e);
+                return None;
             }
+        };
+        if format != SNAPSHOT_FORMAT {
+            tracing::warn!(
+                "snapshot format mismatch: snapshot={}, expected={} — rebuilding from db-sync",
+                format,
+                SNAPSHOT_FORMAT
+            );
+            return None;
+        }
+        match u64::deserialize(&mut de) {
+            Ok(magic) if magic == network_magic => {}
+            Ok(magic) => {
+                tracing::warn!(
+                    "snapshot network mismatch: snapshot={}, expected={}",
+                    magic,
+                    network_magic
+                );
+                return None;
+            }
+            Err(e) => {
+                tracing::warn!("failed to read snapshot magic: {}", e);
+                return None;
+            }
+        }
+
+        let mut interner = AddrInterner::new();
+        let result = (|| -> Result<(BlockSnapshot, FeedIndex), rmp_serde::decode::Error> {
+            let mut snap = BlockSnapshot::deserialize(&mut de)?; // asset_holdings skipped → empty
+            snap.asset_holdings = HoldingsSeed(&mut interner).deserialize(&mut de)?;
+            let fi = FeedIndex::deserialize(&mut de)?;
+            Ok((snap, fi))
+        })();
+        match result {
+            Ok((snap, fi)) => Some((snap, fi, interner)),
             Err(e) => {
                 tracing::warn!("failed to deserialize snapshot: {}", e);
                 None
@@ -2382,7 +2465,7 @@ mod tests {
             .insert("txg#0".into(), "Title".into());
 
         let mut state = State::new(Url::parse("postgresql:///test").unwrap());
-        state.restore_from_snapshot(initial.clone());
+        state.restore_from_snapshot(initial.clone(), AddrInterner::new());
 
         // ---- The fake block: exercises every apply_block input. ----
         let produced = vec![((txh2.clone(), 0i16), txout(3_000_000, &addr3, p2n2(7)))];
@@ -2560,7 +2643,7 @@ mod tests {
             ..BlockSnapshot::default()
         };
         let mut state = State::new(Url::parse("postgresql:///test").unwrap());
-        state.restore_from_snapshot(initial);
+        state.restore_from_snapshot(initial, AddrInterner::new());
 
         // The same (txh, 0) UTXO is both produced and consumed in this block; the sink emits
         // matching +/- stake deltas for it.
@@ -2644,7 +2727,7 @@ mod tests {
             .asset_holdings
             .insert(leaf(&addr_a, &tok), Held::new(1, 111));
         let mut state = State::new(Url::parse("postgresql:///test").unwrap());
-        state.restore_from_snapshot(initial);
+        state.restore_from_snapshot(initial, AddrInterner::new());
 
         // Block at time 999: A spends its TOK to B (transfer) and mints NEW to itself.
         let produced = vec![
@@ -2754,17 +2837,21 @@ mod tests {
         // Wrong network magic → rejected.
         assert!(State::load_snapshot(&path, magic + 1).is_none());
 
-        // Correct magic → the entire snapshot round-trips, including the >u64 holding.
-        let (loaded, loaded_fi) = State::load_snapshot(&path, magic).unwrap();
+        // Correct magic → the entire snapshot round-trips, including the >u64 holding, and the
+        // interned key is shared (one Arc for the address, seeded into the returned interner).
+        let (loaded, loaded_fi, interner) = State::load_snapshot(&path, magic).unwrap();
         assert!(loaded == snap, "snapshot did not round-trip exactly");
         let loaded_held = loaded.asset_holdings.get(&hkey).unwrap();
         assert_eq!(loaded_held.qty(), big);
         assert_eq!(loaded_held.mint_time, 1_700_000_000);
         assert_eq!(loaded_fi.pool_minted_blocks(&[0x01; 28]).len(), 1);
+        assert_eq!(interner.len(), 1, "the one address interned once");
 
-        // A snapshot tagged with a different SNAPSHOT_FORMAT → rejected (forces rebuild).
-        let bytes = rmp_serde::to_vec(&(&snap, &fi, magic, SNAPSHOT_FORMAT + 1)).unwrap();
-        std::fs::write(&path, &bytes).unwrap();
+        // A snapshot tagged with a different SNAPSHOT_FORMAT → rejected (forces rebuild). The
+        // format is the first value in the file, so a bad one is rejected before the map reads.
+        let mut bad = Vec::new();
+        rmp_serde::encode::write(&mut bad, &(SNAPSHOT_FORMAT + 1)).unwrap();
+        std::fs::write(&path, &bad).unwrap();
         assert!(State::load_snapshot(&path, magic).is_none());
 
         let _ = std::fs::remove_file(&path);
