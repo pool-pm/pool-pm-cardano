@@ -193,6 +193,7 @@ pub fn run(args: Args) -> Result<(), Error> {
                     "loaded snapshot, resuming"
                 );
             }
+            state.log_memory("loaded snapshot");
 
             // Estimate current tip from wall clock. If snapshot is >60s behind,
             // set a catchup target so SSE waits before accepting connections.

@@ -314,6 +314,248 @@ impl BlockSnapshot {
             "in-memory map sizes",
         );
     }
+
+    /// Detailed per-field memory accounting: for every map, the exact **content** bytes it
+    /// owns — `inline` (the `(K, V)` pairs stored in the container's own nodes, i.e.
+    /// `entries * size_of::<(K, V)>()`) plus `heap` (bytes each key/value points to:
+    /// `Vec`/`String` capacities, `Box<[u8]>` lengths). This is walked, not guessed. It
+    /// **excludes** container node overhead (imbl B-tree/HAMT pointers and partially-filled
+    /// chunks, `std::HashMap` load-factor slack); the gap from the `total` here to RSS is
+    /// that overhead + allocator slack + the versioned `history` diffs of older snapshots.
+    /// O(total entries) — a one-time diagnostic after the snapshot is loaded or rebuilt,
+    /// never on the hot path (unlike [`log_sizes`], which skips the big leaf walks).
+    pub fn log_memory(&self, label: &str) {
+        use std::mem::size_of;
+        let mb = |b: usize| b / (1024 * 1024);
+
+        // --- flat maps of raw-bytes keys to a scalar / small value ---
+        // heap of the composite key + value, summed over entries; inline added per field.
+        let sum_vec_i64 = |m: &HashMap<Vec<u8>, i64>| -> usize {
+            m.len() * size_of::<(Vec<u8>, i64)>()
+                + m.iter().map(|(k, _)| k.capacity()).sum::<usize>()
+        };
+        let stakes_b = sum_vec_i64(&self.stakes);
+        let rewards_b = sum_vec_i64(&self.rewards);
+        let addr_bal_b = sum_vec_i64(&self.address_balances);
+
+        // delegations: Vec<u8> key -> Vec<u8> target
+        let sum_vec_vec = |m: &HashMap<Vec<u8>, Vec<u8>>| -> usize {
+            m.len() * size_of::<(Vec<u8>, Vec<u8>)>()
+                + m.iter()
+                    .map(|(k, v)| k.capacity() + v.capacity())
+                    .sum::<usize>()
+        };
+        let pool_deleg_b = sum_vec_vec(&self.pool_delegations);
+        let drep_deleg_b = sum_vec_vec(&self.drep_delegations);
+
+        // delegators: Vec<u8> key -> HashSet<Vec<u8>> members
+        let sum_deleg_sets = |m: &HashMap<Vec<u8>, HashSet<Vec<u8>>>| -> (usize, usize) {
+            let mut members = 0usize;
+            let mut bytes = m.len() * size_of::<(Vec<u8>, HashSet<Vec<u8>>)>();
+            for (k, set) in m.iter() {
+                bytes += k.capacity() + set.len() * size_of::<Vec<u8>>();
+                for member in set.iter() {
+                    bytes += member.capacity();
+                }
+                members += set.len();
+            }
+            (bytes, members)
+        };
+        let (pool_delegators_b, pool_delegator_members) = sum_deleg_sets(&self.pool_delegators);
+        let (drep_delegators_b, drep_delegator_members) = sum_deleg_sets(&self.drep_delegators);
+
+        // utxos: (txid, ix) -> TxOutput { address, nested PolicyAssets }
+        let mut utxos_b = self.utxos.len() * size_of::<((Vec<u8>, i16), TxOutput)>();
+        for ((txid, _ix), out) in self.utxos.iter() {
+            utxos_b += txid.capacity() + out.address.capacity();
+            utxos_b += out.assets.capacity() * size_of::<(Vec<u8>, Vec<(Vec<u8>, u64)>)>();
+            for (policy, names) in out.assets.iter() {
+                utxos_b += policy.capacity() + names.capacity() * size_of::<(Vec<u8>, u64)>();
+                for (name, _q) in names.iter() {
+                    utxos_b += name.capacity();
+                }
+            }
+        }
+
+        // pools: String ticker/hash key -> Pool { hash_raw, ticker }
+        let mut pools_b = self.pools.len() * size_of::<(String, Pool)>();
+        for (k, p) in self.pools.iter() {
+            pools_b += k.capacity() + p.hash_raw.capacity();
+            pools_b += p.ticker.as_ref().map_or(0, |t| t.capacity());
+        }
+
+        // dreps: Vec<u8> -> DRep { hash_bytes, given_name }
+        let mut dreps_b = self.dreps.len() * size_of::<(Vec<u8>, DRep)>();
+        for (k, d) in self.dreps.iter() {
+            dreps_b += k.capacity() + d.hash_bytes.capacity();
+            dreps_b += d.given_name.as_ref().map_or(0, |n| n.capacity());
+        }
+
+        // string-keyed metadata maps
+        let mut decimals_b = self.decimals.len() * size_of::<(String, u8)>();
+        for (k, _) in self.decimals.iter() {
+            decimals_b += k.capacity();
+        }
+        let mut handles_b = self.handle_by_address.len() * size_of::<(String, Vec<String>)>();
+        for (k, v) in self.handle_by_address.iter() {
+            handles_b += k.capacity() + v.capacity() * size_of::<String>();
+            for h in v.iter() {
+                handles_b += h.capacity();
+            }
+        }
+        let mut addr_by_handle_b = self.address_by_handle.len() * size_of::<(String, String)>();
+        for (k, v) in self.address_by_handle.iter() {
+            addr_by_handle_b += k.capacity() + v.capacity();
+        }
+        let mut gov_titles_b = self.gov_action_titles.len() * size_of::<(String, String)>();
+        for (k, v) in self.gov_action_titles.iter() {
+            gov_titles_b += k.capacity() + v.capacity();
+        }
+
+        // asset_holdings — the dominant field; break it out (see log_memory_holdings).
+        let (ah_entries, ah_inline, ah_key_heap, ah_held_inline) = self.holdings_memory();
+        let ah_b = ah_inline + ah_key_heap;
+
+        let total = stakes_b
+            + rewards_b
+            + addr_bal_b
+            + pool_deleg_b
+            + drep_deleg_b
+            + pool_delegators_b
+            + drep_delegators_b
+            + utxos_b
+            + pools_b
+            + dreps_b
+            + decimals_b
+            + handles_b
+            + addr_by_handle_b
+            + gov_titles_b
+            + ah_b;
+
+        tracing::info!(
+            label,
+            rss_mb = rss_mb(),
+            total_content_mb = mb(total),
+            utxos_mb = mb(utxos_b),
+            asset_holdings_mb = mb(ah_b),
+            stakes_mb = mb(stakes_b),
+            rewards_mb = mb(rewards_b),
+            address_balances_mb = mb(addr_bal_b),
+            pool_delegations_mb = mb(pool_deleg_b),
+            pool_delegators_mb = mb(pool_delegators_b),
+            drep_delegations_mb = mb(drep_deleg_b),
+            drep_delegators_mb = mb(drep_delegators_b),
+            pools_mb = mb(pools_b),
+            dreps_mb = mb(dreps_b),
+            decimals_mb = mb(decimals_b),
+            handles_mb = mb(handles_b),
+            address_by_handle_mb = mb(addr_by_handle_b),
+            gov_titles_mb = mb(gov_titles_b),
+            pool_delegator_members,
+            drep_delegator_members,
+            "memory: snapshot fields (content bytes: inline + heap, excl. node overhead)",
+        );
+
+        // asset_holdings breakdown — the field the 128-bit repack targets. `held_inline` is
+        // the value's share (`entries * size_of::<Held>()`); shrinking `Held` moves only that.
+        tracing::info!(
+            label,
+            entries = ah_entries,
+            total_mb = mb(ah_b),
+            inline_mb = mb(ah_inline),
+            key_heap_mb = mb(ah_key_heap),
+            held_inline_mb = mb(ah_held_inline),
+            held_bytes = size_of::<Held>(),
+            key_inline_bytes = size_of::<HeldKey>(),
+            bytes_per_entry = if ah_entries > 0 { ah_b / ah_entries } else { 0 },
+            "memory: asset_holdings (leaf = Held; key = ((cred, addr), policy++name))",
+        );
+
+        self.log_holdings_interning(label);
+    }
+
+    /// What-if for interning the `(cred, addr)` key: since `asset_holdings` is sorted by
+    /// `(cred, addr, policy, name)`, all entries sharing a `(cred, addr)` are **adjacent**, so
+    /// one O(entries)/O(1)-memory pass counts distinct address keys and the `(cred, addr)` heap
+    /// paid **now** (per entry) vs **interned** (once per distinct). `policy++name` heap is
+    /// unchanged by this interning (still one `AssetId` per entry). Also reports the live
+    /// small-allocation counts before/after — the dominant hidden RSS cost (~3 allocs/entry
+    /// today: cred, addr, assetid). Diagnostic only; drives the intern-or-not decision.
+    fn log_holdings_interning(&self, label: &str) {
+        use std::mem::size_of;
+        let mb = |b: usize| b / (1024 * 1024);
+        let entries = self.asset_holdings.len();
+
+        let mut distinct_addr_keys = 0usize;
+        let mut cred_addr_now = 0usize; // Σ over all entries (what we pay today)
+        let mut cred_addr_interned = 0usize; // Σ over distinct (cred, addr) (paid once)
+        let mut assetid_heap = 0usize; // unchanged by (cred, addr) interning
+        let mut prev: Option<&AssetKey> = None;
+        for ((akey, aid), _held) in self.asset_holdings.iter() {
+            let this = akey.0.as_ref().map_or(0, |c| c.capacity()) + akey.1.capacity();
+            cred_addr_now += this;
+            assetid_heap += aid.len();
+            if prev != Some(akey) {
+                distinct_addr_keys += 1;
+                cred_addr_interned += this;
+                prev = Some(akey);
+            }
+        }
+
+        // Key inline: today ((Option<Vec>, Vec), Box) = 64 B/entry. Interned (Arc<AddrKey>,
+        // AssetId): a thin `Arc` (8 B) + the `Box<[u8]>` assetid (16 B) = 24 B/entry.
+        const KEY_INLINE_INTERNED: usize = 8 + size_of::<AssetId>();
+        let inline_now = entries * size_of::<HeldKey>();
+        let inline_interned = entries * KEY_INLINE_INTERNED;
+
+        // Content bytes moved by interning = (per-entry inline + heap) collapsed to per-distinct.
+        // (Interned pool also costs ~1 Arc control block / distinct + the interner side-map;
+        // both scale with `distinct`, small vs the per-entry savings — computed in analysis.)
+        let saved_inline = inline_now.saturating_sub(inline_interned);
+        let saved_heap = cred_addr_now.saturating_sub(cred_addr_interned);
+
+        tracing::info!(
+            label,
+            entries,
+            distinct_addr_keys,
+            dedup_ratio = if distinct_addr_keys > 0 {
+                entries as f64 / distinct_addr_keys as f64
+            } else {
+                0.0
+            },
+            cred_addr_heap_now_mb = mb(cred_addr_now),
+            cred_addr_heap_interned_mb = mb(cred_addr_interned),
+            assetid_heap_mb = mb(assetid_heap),
+            key_inline_now_bytes = size_of::<HeldKey>(),
+            key_inline_interned_bytes = KEY_INLINE_INTERNED,
+            saved_inline_mb = mb(saved_inline),
+            saved_cred_addr_heap_mb = mb(saved_heap),
+            allocs_now = 3 * entries,
+            allocs_interned = entries + distinct_addr_keys,
+            "memory: asset_holdings interning what-if ((cred, addr) → Arc, byte-order kept)",
+        );
+    }
+
+    /// Walk `asset_holdings` once, returning `(entries, inline_bytes, key_heap_bytes,
+    /// held_inline_bytes)`. `inline` = `entries * size_of::<(HeldKey, Held)>()` (the pair
+    /// stored in imbl nodes); `key_heap` = the credential + payment-address + `policy++name`
+    /// bytes each key points to (`Held` is `Copy`, no heap); `held_inline` = the value's
+    /// share of `inline` (`entries * size_of::<Held>()`), isolated so the effect of a
+    /// smaller leaf is visible.
+    fn holdings_memory(&self) -> (usize, usize, usize, usize) {
+        use std::mem::size_of;
+        let entries = self.asset_holdings.len();
+        let mut key_heap = 0usize;
+        for ((akey, aid), _held) in self.asset_holdings.iter() {
+            if let Some(cred) = &akey.0 {
+                key_heap += cred.capacity();
+            }
+            key_heap += akey.1.capacity() + aid.len();
+        }
+        let inline = entries * size_of::<(HeldKey, Held)>();
+        let held_inline = entries * size_of::<Held>();
+        (entries, inline, key_heap, held_inline)
+    }
 }
 
 /// On-disk snapshot format version. Bump on any breaking change to a persisted field's
@@ -607,6 +849,24 @@ impl State {
             pool_meta_cursor: 0,
             drep_meta_cursor: 0,
         }
+    }
+
+    /// Detailed per-field memory breakdown of everything held in memory: the tip snapshot's
+    /// maps (via [`BlockSnapshot::log_memory`]), the [`FeedIndex`], and the `history` depth.
+    /// The per-field bytes are for the **tip** snapshot; the older `history` snapshots share
+    /// structure (imbl O(1) clone) and add only their per-block diffs, so they are reported
+    /// as a depth, not summed. Call once after the snapshot is loaded or rebuilt.
+    pub fn log_memory(&self, label: &str) {
+        if let Some(snap) = self.history.last() {
+            snap.log_memory(label);
+        }
+        self.feed_index.log_memory(label);
+        tracing::info!(
+            label,
+            history_snapshots = self.history.len(),
+            "memory: state (per-field bytes are the tip snapshot; history entries share \
+             structure and add only per-block diffs)",
+        );
     }
 
     /// Populate `address_balances` from db-sync if the loaded snapshot wasn't
@@ -1265,6 +1525,7 @@ impl State {
         if let Some(snap) = self.history.last() {
             snap.log_sizes("reset complete");
         }
+        self.log_memory("reset complete");
         Ok(())
     }
 

@@ -38,6 +38,77 @@ impl FeedIndex {
         Self::default()
     }
 
+    /// Per-field **content** bytes (inline `(K, V)` + heap the keys/values point to),
+    /// matching [`crate::state::BlockSnapshot::log_memory`]; excludes `std::HashMap` node
+    /// overhead. O(entries) — one-time, run alongside the snapshot memory log.
+    pub fn log_memory(&self, label: &str) {
+        use std::mem::size_of;
+        let mb = |b: usize| b / (1024 * 1024);
+
+        // HashMap<Vec<u8>, Vec<BlockRef>> — each BlockRef owns a `hash` String.
+        let sum_blockrefs = |m: &HashMap<Vec<u8>, Vec<BlockRef>>| -> (usize, usize) {
+            let mut refs = 0usize;
+            let mut bytes = m.len() * size_of::<(Vec<u8>, Vec<BlockRef>)>();
+            for (k, v) in m.iter() {
+                bytes += k.capacity() + v.capacity() * size_of::<BlockRef>();
+                for br in v.iter() {
+                    bytes += br.hash.capacity();
+                }
+                refs += v.len();
+            }
+            (bytes, refs)
+        };
+        let (pool_minted_b, _) = sum_blockrefs(&self.pool_minted);
+        let (pool_stake_b, _) = sum_blockrefs(&self.pool_stake_change);
+        let (drep_stake_b, _) = sum_blockrefs(&self.drep_stake_change);
+
+        // Vec<DelegationEntry> — each owns two Strings and up to three Vec<u8>.
+        let sum_events = |v: &Vec<DelegationEntry>| -> usize {
+            let mut bytes = v.capacity() * size_of::<DelegationEntry>();
+            for e in v.iter() {
+                bytes += e.block_hash.capacity() + e.tx_hash.capacity() + e.cred.capacity();
+                bytes += e.from.as_ref().map_or(0, |b| b.capacity());
+                bytes += e.to.as_ref().map_or(0, |b| b.capacity());
+            }
+            bytes
+        };
+        let pool_events_b = sum_events(&self.delegation_events);
+        let drep_events_b = sum_events(&self.drep_delegation_events);
+
+        // HashMap<Vec<u8>, Vec<usize>> — index into the events vecs.
+        let sum_index = |m: &HashMap<Vec<u8>, Vec<usize>>| -> usize {
+            m.len() * size_of::<(Vec<u8>, Vec<usize>)>()
+                + m.iter()
+                    .map(|(k, v)| k.capacity() + v.capacity() * size_of::<usize>())
+                    .sum::<usize>()
+        };
+        let pool_index_b = sum_index(&self.pool_delegation_index);
+        let drep_index_b = sum_index(&self.drep_delegation_index);
+
+        let total = pool_minted_b
+            + pool_stake_b
+            + drep_stake_b
+            + pool_events_b
+            + drep_events_b
+            + pool_index_b
+            + drep_index_b;
+
+        tracing::info!(
+            label,
+            total_content_mb = mb(total),
+            pool_minted_mb = mb(pool_minted_b),
+            pool_stake_change_mb = mb(pool_stake_b),
+            drep_stake_change_mb = mb(drep_stake_b),
+            pool_events = self.delegation_events.len(),
+            pool_events_mb = mb(pool_events_b),
+            drep_events = self.drep_delegation_events.len(),
+            drep_events_mb = mb(drep_events_b),
+            pool_index_mb = mb(pool_index_b),
+            drep_index_mb = mb(drep_index_b),
+            "memory: feed_index (content bytes: inline + heap, excl. node overhead)",
+        );
+    }
+
     pub fn add_pool_minted(&mut self, pool_hash: Vec<u8>, block_ref: BlockRef) {
         self.pool_minted
             .entry(pool_hash)
