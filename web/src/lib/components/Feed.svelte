@@ -27,18 +27,21 @@
   // spacing, coloring, and whether the per-block minting-pool ticker is shown.
   const isSubjectFeed = $derived(!!($pool || $drep || $stake || $address));
 
-  // On a pool feed, number each block by the pool's lifetime index: the newest block section
-  // is #blocks (from the Pool header, which the server re-emits on every mint and rollback),
-  // each older one one less. Pool feeds never paginate, so their sections are always the most
-  // recent blocks contiguous from the tip — decrementing from the newest is exact. Empty (so
-  // inert) on non-pool feeds, where `$pool` is null. Recomputes when sections or blocks change.
+  // On a pool feed, number each block the pool *minted* by its lifetime index: the newest
+  // minted block is #blocks (from the Pool header, which the server re-emits on every mint and
+  // rollback), each older one one less. Only the pool's own blocks count — a pool feed also
+  // shows blocks minted by *other* pools that changed this pool's stake (pool_id !== the feed
+  // pool); those are skipped and don't consume a number. Pool feeds never paginate, so the
+  // minted sections are always the newest contiguous from the tip, making the decrement exact.
+  // Empty (inert) on non-pool feeds, where `$pool` is null. Recomputes on section/blocks change.
   const poolBlockNumbers = $derived.by(() => {
     const map = new Map<string, number>();
     const total = $pool?.blocks;
-    if (total == null) return map;
+    const poolId = $pool?.pool_id;
+    if (total == null || poolId == null) return map;
     let k = 0;
     for (const s of $sections) {
-      if (s.block) {
+      if (s.block?.pool_id === poolId) {
         map.set(s.id, total - k);
         k++;
       }
@@ -516,7 +519,7 @@
             <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
               >{formatTicker(
                 section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '',
-              )}{#if pn != null && pn > 0}<span class="pool-block-no"> #{pn}</span>{/if}</a
+              )}{#if pn != null && pn > 0}<span class="pool-block-no">&nbsp;#{pn}</span>{/if}</a
             >
           {:else if section.txs.length > 0}
             <!-- Hide the MEMPOOL label while the mempool is empty (no pending txs). -->
