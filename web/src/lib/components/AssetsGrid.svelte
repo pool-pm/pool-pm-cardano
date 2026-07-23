@@ -379,16 +379,18 @@
     <div class="toolbar">
       <!-- Name filter — server-side, so results are complete for any collection size. On the
            grouped (top-level) grid it filters assets before grouping, so a tile keeps only its
-           matching assets and empty policies drop out. `margin-right: auto` pushes it left of
-           the sort button. -->
-      <input
-        class="filter-input"
-        type="text"
-        placeholder="Filter by name…"
-        value={q}
-        oninput={onFilterInput}
-        aria-label="Filter assets by name"
-      />
+           matching assets and empty policies drop out. An embossed panel (matching the sort
+           button) holds a recessed input. -->
+      <div class="filter">
+        <input
+          class="filter-input"
+          type="text"
+          placeholder="Filter by name…"
+          value={q}
+          oninput={onFilterInput}
+          aria-label="Filter assets by name"
+        />
+      </div>
       <button
         class="sort-btn"
         class:asc={order === 'asc'}
@@ -512,37 +514,36 @@
     background: var(--surface);
   }
 
-  /* Shared frame: sharp edges, no border, same fixed height + border-box so filter and sort
-     line up exactly. The lighting differs — the button is embossed (raised), the input
-     debossed (recessed) — since a text field reads better carved into the wall than proud. */
-  .filter-input,
+  /* Both the sort button and the filter's outer container are the asset tiles' embossed
+     "stretched canvas" (.frame): sharp edges, lighter-top → darker-bottom gradient, a drop
+     shadow lifting them off the wall, top light-catch + underside shadow. Same fixed height so
+     they line up. The filter panel then holds a *recessed* input (below). */
+  .filter,
   .sort-btn {
     height: 28px;
     box-sizing: border-box;
-    font-family: Inter, sans-serif;
-    font-size: 12px;
     border: none;
     border-radius: 0;
+    background: linear-gradient(180deg, #17171c 0%, #0c0c0f 100%);
+    box-shadow:
+      0 6px 14px -5px rgb(0 0 0 / 0.6),
+      inset 0 1px 0 rgb(255 255 255 / 0.08),
+      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
     transition:
       color 0.18s ease,
       box-shadow 0.18s ease;
   }
 
-  /* Embossed "stretched canvas" (the asset tiles' .frame): lighter-top → darker-bottom
-     gradient, a drop shadow lifting it off the wall, top light-catch + underside shadow. */
   .sort-btn {
     display: inline-flex;
     align-items: center;
     gap: 6px;
     padding: 0 10px;
     color: rgb(255 255 255 / 0.55);
+    font-family: Inter, sans-serif;
+    font-size: 12px;
     line-height: 1;
     cursor: pointer;
-    background: linear-gradient(180deg, #17171c 0%, #0c0c0f 100%);
-    box-shadow:
-      0 6px 14px -5px rgb(0 0 0 / 0.6),
-      inset 0 1px 0 rgb(255 255 255 / 0.08),
-      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
   }
   .sort-btn:hover,
   .sort-btn:focus-visible {
@@ -555,26 +556,39 @@
       inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
   }
 
-  /* Debossed: the inverse — darker-top → lighter-bottom gradient, an inner top shadow (the
-     recess) and a faint lit bottom edge, no outer drop shadow. Reads as carved in. */
-  .filter-input {
-    min-width: 0;
+  /* The panel's inner padding is the raised border framing the recessed field. */
+  .filter {
+    display: flex;
+    align-items: center;
     max-width: 220px;
-    padding: 0 12px;
+    padding: 3px;
+  }
+  /* Debossed input carved into the panel: inverted (darker-top → lighter-bottom) gradient, an
+     inner top shadow (the recess) + a faint lit bottom edge, no outer drop shadow. */
+  .filter-input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 0 9px;
+    border: none;
+    border-radius: 0;
     color: rgb(255 255 255 / 0.85);
-    background: linear-gradient(180deg, #0a0a0d 0%, #141419 100%);
+    font-family: Inter, sans-serif;
+    font-size: 12px;
+    outline: none;
+    background: linear-gradient(180deg, #08080a 0%, #131318 100%);
     box-shadow:
-      inset 0 2px 4px -1px rgb(0 0 0 / 0.6),
+      inset 0 2px 4px -1px rgb(0 0 0 / 0.7),
       inset 0 -1px 0 rgb(255 255 255 / 0.05);
+    transition: box-shadow 0.18s ease;
   }
   .filter-input::placeholder {
     color: rgb(255 255 255 / 0.4);
   }
   .filter-input:focus {
-    outline: none;
-    /* Deepen the recess a touch and brighten the bottom lit edge on focus. */
     box-shadow:
-      inset 0 2px 5px -1px rgb(0 0 0 / 0.65),
+      inset 0 2px 5px -1px rgb(0 0 0 / 0.75),
       inset 0 -1px 0 rgb(255 255 255 / 0.09);
   }
   /* The arrow points down for descending; ascending flips it 180° (smoothly). */
