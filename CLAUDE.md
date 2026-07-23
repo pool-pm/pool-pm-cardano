@@ -131,22 +131,47 @@ variants equally testable (pure function over the event lists).
 ### Per-address asset holdings (flat composite-key map)
 
 `asset_holdings` (`state/mod.rs`) tracks every UTXO-held token in a single flat
-`imbl::OrdMap<HeldKey, Qty>`, keyed by the composite `((cred, addr), policy++name)`. A
-single large map keeps `imbl`'s fixed-capacity node chunks densely packed. Any change here
-must preserve these properties:
+`imbl::OrdMap<HeldKey, Held>`, where `HeldKey = (Arc<AddrKey>, policy++name)` sorts as the
+composite `(cred, addr, policy, name)`. A single large map keeps `imbl`'s fixed-capacity node
+chunks densely packed. The ~15M-entry map is the dominant memory user, so the layout is
+tuned hard (mainnet cold-reset RSS ~8.5 GB); any change here must preserve these properties:
 
 - **Reads are prefix range scans** over the sorted composite key: an address's tokens are
-  the contiguous `((cred, addr), …)` range (`addr_range`); a stake credential's are the
+  the contiguous `(cred, addr, …)` range (`addr_range`); a stake credential's are the
   `(Some(cred), …)` range (`cred_range`), deduping/summing the same asset across the
   credential's addresses. No per-address sub-map to index into.
 - **Whale-safe mutation & diffs**: a block only moves a few tokens, so `bump_one` is an
   O(log n) point op (prune the entry at qty 0), and live grid deltas walk `prev.diff(curr)`
   (O(block changes), structural) filtered by the subject's key prefix — never an
   O(total holdings) scan per block.
-- **Exact quantities**: the leaf `Qty` is a `u128` with variable-length serde (1 byte for
-  small values, a `(lo, hi)` pair above `u64`) — no clamping.
-- **Rollback is automatic** (the map lives in `BlockSnapshot` history); bump
+- **Interned `(cred, addr)` key**: all of one address's tokens share a single `Arc<AddrKey>`,
+  so the credential + payment-address bytes (and their allocations) are stored once, not once
+  per held token (~11× dedup on mainnet — 1.3M distinct addresses over 15M entries; ~1.5 GB
+  saved). `AddrKey`'s derived `Ord` reproduces the old `(cred, addr)` byte order, and
+  `Arc<T>`'s by-value `Ord` delegates to it — so the sort the range scans depend on is
+  unchanged. The interner (`AddrInterner` in `State`, **not** in `BlockSnapshot`) is rebuilt
+  at reset, seeded during the streamed db-sync build, and re-interned as the snapshot streams
+  in on load; it's rollback-safe because it only grows and its entries are content-addressed.
+  Every mutation and every range/point lookup builds its key through `intern_addr` /
+  `AddrKey::from_query` — compare by **value** (`k.as_ref() == &target`), never `Arc::ptr_eq`
+  (prev and curr snapshots may hold distinct Arcs for the same address).
+- **Packed 128-bit leaf**: `Held` is a `u128` packed as `(mint_slot:30 | qty:98)`, stored as
+  two `u64` (align 8, 16 bytes — a bare `u128` is align 16 and would just re-pad the align-8
+  key, erasing the saving; a `const` assert locks size/align). The low 98 bits are the exact
+  quantity (a `u128`, far beyond any real supply < 2^64 — no clamping); the high 30 bits are
+  the asset's first-mint **slot**, used only to sort the owned grid (monotonic with time; not
+  displayed — the asset-info popup's mint dates come from a separate db query). Serde stays
+  variable-length: `(mint_slot, Qty)` where `Qty` is 1 byte for small values, a `(lo, hi)`
+  pair above `u64`.
+- **Rollback is automatic** (the map lives in `BlockSnapshot` history). The map is
+  `#[serde(skip)]` and (de)serialized manually in `write_snapshot` / `load_snapshot`: keys go
+  on the wire deref'd off their `Arc` (`HoldingsSer`), and load interns each key **as it
+  streams** (`HoldingsSeed`) so the un-shared full map is never materialized. Bump
   `SNAPSHOT_FORMAT` on any persisted-shape change so old snapshots rebuild from db-sync.
+
+`BlockSnapshot::log_memory` / `State::log_memory` (called after reset and warm resume) print
+a per-field byte breakdown — content bytes, the `asset_holdings` inline/heap split, and the
+`addr_interner` size — for reasoning about this layout; RSS is the ground truth.
 
 ## Runtime Configuration
 
@@ -165,6 +190,8 @@ Requires a running cardano-db-sync PostgreSQL database for the target network.
 ### Snapshot Persistence
 
 On startup, the server tries to load `{output}/snapshot.bin`. If found, it restores the in-memory state and requests the node to resume from the snapshot's slot/block hash (`IntersectConfig::Point`). If the snapshot is missing, corrupt, or the node rejects the intersection point (e.g., snapshot too old), the server falls back to starting from tip with a full reset from db-sync.
+
+The snapshot file is a sequence of msgpack values that **lead with `(format, magic)`**, validated before the multi-GB `asset_holdings` map is read — so a stale (`SNAPSHOT_FORMAT` bumped) or foreign-network snapshot is rejected cheaply, without deserializing ~10 GB only to drop it (freed pages the allocator would retain).
 
 Snapshots are saved:
 - Immediately after a reset (so a restart doesn't repeat the expensive db-sync queries)

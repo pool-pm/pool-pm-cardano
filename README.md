@@ -62,10 +62,11 @@ environment.
 ## Hardware
 
 The indexer keeps full per-address state in memory. On **mainnet** the steady-state
-resident set is roughly **~12 GB**, so budget **≥ 16 GB RAM** for the indexer alone. A
-complete node + db-sync stack additionally needs a large PostgreSQL (≈ 1 TB NVMe for
-mainnet), so a single-host deployment realistically wants **64 GB+ RAM** and fast SSD/NVMe
-storage.
+resident set is roughly **~10 GB** (the ~15M-entry asset-holdings map dominates; its
+`(cred, addr)` keys are interned and its leaf is a packed 128-bit value to keep it compact),
+so budget **≥ 16 GB RAM** for the indexer alone. A complete node + db-sync stack additionally
+needs a large PostgreSQL (≈ 1 TB NVMe for mainnet), so a single-host deployment realistically
+wants **64 GB+ RAM** and fast SSD/NVMe storage.
 
 ## cardano-db-sync configuration
 
