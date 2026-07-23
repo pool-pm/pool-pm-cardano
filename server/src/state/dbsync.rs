@@ -393,6 +393,10 @@ impl DbSync {
         cursor: Option<i64>,
         limit: i64,
         ascending: bool,
+        // Optional lowercased name substring. Matched (only when non-NULL) against the
+        // escape-encoded name via the same `$N IS NULL OR …` short-circuit as the cursor, so an
+        // unfiltered call keeps the exact plan/bitmap-scan and cost as before.
+        name_filter: Option<&str>,
     ) -> Result<Vec<(i64, String, Vec<u8>)>, sqlx::Error> {
         // MATERIALIZED CTE inhibits the planner from pushing the outer
         // `ORDER BY id DESC LIMIT N` into a backward pkey scan that filters by
@@ -414,13 +418,15 @@ impl DbSync {
                     FROM multi_asset
                     WHERE policy = $1 AND ($2::bigint IS NULL OR id > $2)
                     AND substring(name from 1 for 4) != '\x000643b0'
+                    AND ($4::text IS NULL OR position($4 in lower(encode(name, 'escape'))) > 0)
                 )
                 SELECT id, "fingerprint!", "name!" FROM filtered
                 ORDER BY id ASC
                 LIMIT $3"#,
                 policy,
                 cursor,
-                limit
+                limit,
+                name_filter
             )
             .fetch_all(&self.db)
             .await?
@@ -437,13 +443,15 @@ impl DbSync {
                     -- user token renders the same image, so they'd otherwise show
                     -- as duplicates.
                     AND substring(name from 1 for 4) != '\x000643b0'
+                    AND ($4::text IS NULL OR position($4 in lower(encode(name, 'escape'))) > 0)
                 )
                 SELECT id, "fingerprint!", "name!" FROM filtered
                 ORDER BY id DESC
                 LIMIT $3"#,
                 policy,
                 cursor,
-                limit
+                limit,
+                name_filter
             )
             .fetch_all(&self.db)
             .await?

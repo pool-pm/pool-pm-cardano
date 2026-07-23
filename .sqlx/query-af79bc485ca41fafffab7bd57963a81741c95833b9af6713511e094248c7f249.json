@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT m.ident AS \"ident!\", EXTRACT(EPOCH FROM MIN(b.time))::bigint AS \"first_mint!\"\n               FROM ma_tx_mint m\n               JOIN tx t ON t.id = m.tx_id\n               JOIN block b ON b.id = t.block_id\n               GROUP BY m.ident",
+  "query": "SELECT m.ident AS \"ident!\", MIN(b.slot_no)::bigint AS \"first_mint!\"\n               FROM ma_tx_mint m\n               JOIN tx t ON t.id = m.tx_id\n               JOIN block b ON b.id = t.block_id\n               GROUP BY m.ident",
   "describe": {
     "columns": [
       {
@@ -22,5 +22,5 @@
       null
     ]
   },
-  "hash": "f8870f31b93b370ba3ab9ad36bf93805e1336eecc46580bd38c9c25aa08e5ba2"
+  "hash": "af79bc485ca41fafffab7bd57963a81741c95833b9af6713511e094248c7f249"
 }

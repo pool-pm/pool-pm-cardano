@@ -72,6 +72,21 @@
   let order = $state<'desc' | 'asc'>(
     new URLSearchParams(window.location.search).get('order') === 'asc' ? 'asc' : 'desc',
   );
+  // Name filter (flat grids only), sent to the server as `?q=` and mirrored in the URL so it
+  // survives Back. The server filters the full set, so results are complete regardless of size.
+  let q = $state(new URLSearchParams(window.location.search).get('q') ?? '');
+  let filterTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // Mirror sort order + name filter into the page URL (replaceState — no new history entry),
+  // so returning to this grid (e.g. Back from an asset) restores both.
+  function persistUrl() {
+    const url = new URL(window.location.href);
+    if (order === 'desc') url.searchParams.delete('order');
+    else url.searchParams.set('order', order);
+    if (q.trim()) url.searchParams.set('q', q.trim());
+    else url.searchParams.delete('q');
+    history.replaceState(history.state, '', url);
+  }
   let scrollEl = $state<HTMLElement | undefined>();
   // True once a first page has arrived; keeps the sort toolbar mounted across a
   // toggle-triggered reload (when the lists momentarily empty) so it doesn't flash out.
@@ -153,6 +168,7 @@
       const params = new URLSearchParams();
       if (cursor !== undefined) params.set('cursor', String(cursor));
       if (order !== 'desc') params.set('order', order);
+      if (q.trim()) params.set('q', q.trim());
       const qs = params.toString();
       const url = qs ? `${endpoint}?${qs}` : endpoint;
       const res = await fetch(url);
@@ -186,17 +202,12 @@
     }
   }
 
-  // Flip the sort direction and reload from page 1: the order is a server-side sort, so
-  // the whole result set changes and the accumulated pages/cursor are discarded. Clearing
-  // the lists drops loadedRows to 0, which re-arms the prefetch effect to fetch page 1
-  // with the new order. Live-dedup sets and scroll position reset too.
-  function toggleOrder() {
-    order = order === 'desc' ? 'asc' : 'desc';
-    // Mirror into the URL (replaceState — no new history entry) so Back restores this order.
-    const url = new URL(window.location.href);
-    if (order === 'desc') url.searchParams.delete('order');
-    else url.searchParams.set('order', order);
-    history.replaceState(history.state, '', url);
+  // Reload from page 1: the sort and the name filter are both server-side, so the whole
+  // result set changes and the accumulated pages/cursor are discarded. Clearing the lists
+  // drops loadedRows to 0, which re-arms the prefetch effect. Live-dedup sets and scroll
+  // position reset too. Kicks page 1 synchronously so the grid never flashes "No assets."
+  // between the reset and the prefetch effect; loadMore's guard dedupes the effect's call.
+  function resetAndReload() {
     generation++;
     assets = [];
     groups = [];
@@ -209,9 +220,24 @@
     broken.clear();
     if (scrollEl) scrollEl.scrollTop = 0;
     scrollTop = 0;
-    // Kick page 1 synchronously (sets `loading`) so the grid never flashes "No assets."
-    // between the reset and the prefetch effect; loadMore's guard dedupes the effect's call.
     loadMore();
+  }
+
+  function toggleOrder() {
+    order = order === 'desc' ? 'asc' : 'desc';
+    persistUrl();
+    resetAndReload();
+  }
+
+  // Debounce the name filter: apply after typing settles, then persist to the URL and reload
+  // page 1 with the new `?q=`.
+  function onFilterInput(e: Event) {
+    q = (e.currentTarget as HTMLInputElement).value;
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(() => {
+      persistUrl();
+      resetAndReload();
+    }, 250);
   }
 
   // Keep the buffer ahead: refetch whenever the rendered window (grown by scroll,
@@ -351,6 +377,18 @@
        doesn't flash on an empty/errored grid. -->
   {#if hasLoaded}
     <div class="toolbar">
+      {#if !grouped}
+        <!-- Name filter (flat grids only) — server-side, so results are complete for any
+             collection size. `margin-right: auto` pushes it left of the sort button. -->
+        <input
+          class="filter-input"
+          type="text"
+          placeholder="Filter by name…"
+          value={q}
+          oninput={onFilterInput}
+          aria-label="Filter assets by name"
+        />
+      {/if}
       <button
         class="sort-btn"
         class:asc={order === 'asc'}
@@ -464,10 +502,38 @@
      Sits between the header card and the scrolling grid. */
   .toolbar {
     display: flex;
+    align-items: center;
+    gap: 8px;
     justify-content: flex-end;
     padding: 4px 20px 8px;
     box-sizing: border-box;
     background: var(--surface);
+  }
+
+  /* Name filter: same subtle-pill look as the sort button; pushed to the left of it. */
+  .filter-input {
+    margin-right: auto;
+    min-width: 0;
+    max-width: 220px;
+    padding: 5px 10px;
+    border: 1px solid rgb(255 255 255 / 0.12);
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.03);
+    color: rgb(255 255 255 / 0.85);
+    font-family: Inter, sans-serif;
+    font-size: 12px;
+    line-height: 1;
+    outline: none;
+    transition:
+      border-color 0.18s ease,
+      background 0.18s ease;
+  }
+  .filter-input::placeholder {
+    color: rgb(255 255 255 / 0.4);
+  }
+  .filter-input:focus {
+    border-color: rgb(255 255 255 / 0.28);
+    background: rgb(255 255 255 / 0.06);
   }
 
   /* Subtle pill on the dark wall: hairline border, muted text, brightens on hover. */

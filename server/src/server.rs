@@ -2950,6 +2950,18 @@ struct PolicyQuery {
     cursor: Option<i64>,
     /// `desc` (default) or `asc` — the assets grid's sort direction.
     order: Option<String>,
+    /// Optional case-insensitive substring filter on the asset name. Absent/empty = no
+    /// filter (unchanged query path); only sent by the flat grids when the box is non-empty.
+    q: Option<String>,
+}
+
+/// Normalize a `?q=` name filter: trimmed + lowercased, `None` when absent or empty (so the
+/// unfiltered query path is taken untouched).
+fn name_filter(q: &Option<String>) -> Option<String> {
+    q.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase)
 }
 
 #[derive(serde::Serialize)]
@@ -3110,6 +3122,7 @@ async fn policy_assets(
             query.cursor,
             POLICY_PAGE_SIZE,
             !is_descending(&query.order),
+            name_filter(&query.q).as_deref(),
         )
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
@@ -3279,6 +3292,13 @@ async fn owned_assets_by_policy(
 
     let (mut held, decimals) = collect_held(&state, &filter).await?;
     held.retain(|(p, _, _, _)| *p == policy);
+    // Optional name filter (only when the box is non-empty): the full per-policy held set is
+    // already in memory, so this is an extra in-place pass — nothing when unfiltered.
+    if let Some(q) = name_filter(&query.q) {
+        held.retain(|(_, name, _, _)| {
+            decode_asset_name(name).is_some_and(|n| n.to_lowercase().contains(&q))
+        });
+    }
     // Sort by (quantity, mint_time, name) — name makes it a total order for stable offset
     // pagination; reversed for the default descending (highest qty / newest mint first).
     let descending = is_descending(&query.order);
