@@ -504,15 +504,16 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    justify-content: flex-end;
+    /* Center the [filter][sort] group as a whole; the sort button sits directly right of the
+       filter (separated by the gap above). */
+    justify-content: center;
     padding: 4px 20px 8px;
     box-sizing: border-box;
     background: var(--surface);
   }
 
-  /* Name filter: same subtle-pill look as the sort button; pushed to the left of it. */
+  /* Name filter: same subtle-pill look as the sort button, immediately to its left. */
   .filter-input {
-    margin-right: auto;
     min-width: 0;
     max-width: 220px;
     padding: 5px 10px;
