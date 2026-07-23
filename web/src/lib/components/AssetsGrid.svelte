@@ -622,8 +622,11 @@
   .subject-id {
     max-width: 58vw;
     line-height: 1.2;
-    /* Addresses are shown in full — wrap the (unbroken) bech32 string instead of truncating. */
-    overflow-wrap: anywhere;
+    /* Keep the id on one line: show it in full when it fits, else clip with an ellipsis rather
+       than wrapping. The whole bech32 is still in the DOM, so user-select:all copies it in full. */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
     user-select: all;
   }
   /* The identifying part (handle, or the "addr"/"stake" prefix) is white; the rest ($ sigil, or
