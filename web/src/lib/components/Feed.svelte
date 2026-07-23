@@ -487,9 +487,8 @@
                  nowrap header row would widen it). The count is for `$pool.epoch`; once the
                  displayed epoch rolls past it, show 0 until the pool's next mint re-emits. -->
             {@const cur = epochInfo($config.genesis).epoch}
-            <div class="epoch-blocks">
-              {cur === $pool.epoch ? $pool.epoch_blocks : 0} blocks
-            </div>
+            {@const n = cur === $pool.epoch ? $pool.epoch_blocks : 0}
+            <div class="epoch-blocks">{n} block{n > 1 ? 's' : ''}</div>
           {/if}
           {#if section.block}
             <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
