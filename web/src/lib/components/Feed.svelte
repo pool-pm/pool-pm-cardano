@@ -473,12 +473,6 @@
             {#if isMempool && $config?.genesis}
               {@const ei = epochInfo($config.genesis)}
               <span class="block-meta">Epoch {ei.epoch}</span>
-              {#if $pool}
-                <!-- Blocks the pool minted this epoch (server-counted, exact). The count is
-                     for `$pool.epoch`; once the displayed epoch rolls past it, show 0 until
-                     the pool's next mint re-emits a fresh count. -->
-                <span class="block-meta">{ei.epoch === $pool.epoch ? $pool.epoch_blocks : 0} blocks</span>
-              {/if}
               <span class="block-meta">{formatTimeLeft(ei.epochEnd)}</span>
             {:else if section.block}
               <span class="block-meta block-when">{formatDate(section.block.timestamp)}</span>
@@ -487,6 +481,16 @@
               </span>
             {/if}
           </div>
+          {#if isMempool && $pool && $config?.genesis}
+            <!-- Blocks this pool minted in the current epoch (server-counted, exact). On its
+                 own centered line so the empty-mempool width stays ~1 tx (adding it to the
+                 nowrap header row would widen it). The count is for `$pool.epoch`; once the
+                 displayed epoch rolls past it, show 0 until the pool's next mint re-emits. -->
+            {@const cur = epochInfo($config.genesis).epoch}
+            <div class="epoch-blocks">
+              {cur === $pool.epoch ? $pool.epoch_blocks : 0} blocks
+            </div>
+          {/if}
           {#if section.block}
             <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
               >{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</a
@@ -634,6 +638,16 @@
   .block-meta {
     color: var(--meta-color, rgb(0 0 0 / 0.5));
     font-size: 10px;
+  }
+
+  /* Pool's current-epoch block count: its own centered line below the header (and above
+     MEMPOOL), so the empty-mempool width stays ~1 tx rather than widening the header row. */
+  .epoch-blocks {
+    text-align: center;
+    white-space: nowrap;
+    color: var(--meta-color, rgb(0 0 0 / 0.5));
+    font-size: 10px;
+    line-height: 1;
   }
 
   /* The block date and time read a touch heavier than the rest of the meta line. */
