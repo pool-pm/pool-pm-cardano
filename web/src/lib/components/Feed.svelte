@@ -494,7 +494,8 @@
             <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
               >{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</a
             >
-          {:else}
+          {:else if section.txs.length > 0}
+            <!-- Hide the MEMPOOL label while the mempool is empty (no pending txs). -->
             <span class="block-ticker">MEMPOOL</span>
           {/if}
 
