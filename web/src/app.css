@@ -59,3 +59,39 @@ code,
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
   font-size: 12px;
 }
+
+/* Minimalist scrollbars, app-wide: thin, no arrows, a subtle rounded thumb on a transparent
+   track. Firefox has no arrow buttons and only exposes scrollbar-width/color; WebKit/Chromium
+   uses the pseudo-elements, where ::-webkit-scrollbar-button hides the up/down arrows it draws
+   on Windows/Linux. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 0.22) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  /* The transparent border + padding-box clip insets the fill, so the thumb reads as a thin
+     floating bar rather than filling the full 8px track. */
+  background: rgb(255 255 255 / 0.22);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(255 255 255 / 0.38);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
