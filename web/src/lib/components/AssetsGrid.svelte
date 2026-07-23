@@ -512,18 +512,20 @@
     background: var(--surface);
   }
 
-  /* Name filter: same subtle-pill look as the sort button, immediately to its left. */
+  /* Name filter: same look as the sort button, immediately to its left. Fixed height +
+     border-box so it matches the button exactly (a bare input's intrinsic height differs). */
   .filter-input {
+    height: 28px;
+    box-sizing: border-box;
     min-width: 0;
     max-width: 220px;
-    padding: 5px 10px;
+    padding: 0 12px;
     border: 1px solid rgb(255 255 255 / 0.12);
-    border-radius: 999px;
+    border-radius: 8px;
     background: rgb(255 255 255 / 0.03);
     color: rgb(255 255 255 / 0.85);
     font-family: Inter, sans-serif;
     font-size: 12px;
-    line-height: 1;
     outline: none;
     transition:
       border-color 0.18s ease,
@@ -537,14 +539,17 @@
     background: rgb(255 255 255 / 0.06);
   }
 
-  /* Subtle pill on the dark wall: hairline border, muted text, brightens on hover. */
+  /* Matching rounded-rectangle control: hairline border, muted text, brightens on hover.
+     Same fixed height as the filter so the two line up exactly. */
   .sort-btn {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 5px 10px;
+    height: 28px;
+    box-sizing: border-box;
+    padding: 0 10px;
     border: 1px solid rgb(255 255 255 / 0.12);
-    border-radius: 999px;
+    border-radius: 8px;
     background: rgb(255 255 255 / 0.03);
     color: rgb(255 255 255 / 0.55);
     font-family: Inter, sans-serif;
