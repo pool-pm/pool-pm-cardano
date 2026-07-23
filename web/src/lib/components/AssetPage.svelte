@@ -19,7 +19,9 @@
   let placardHeight = $state(0); // measured, so the media reserves room above the placard
   let metaHeight = $state(0); // measured, so the media reserves room below the metadata
   let current = $state(0); // which media is on screen (one at a time); onMount applies initialIndex
-  let metaOpen = $state(true); // the top-left metadata; a click toggles it (media reclaims the space)
+  // The top-left metadata panel; a tap toggles it (the media reclaims the space). Hidden by
+  // default on mobile (coarse pointer), where it can eat most of the screen; shown on desktop.
+  let metaOpen = $state(!window.matchMedia('(pointer: coarse)').matches);
 
   // Reserved gaps so the media never touches the chrome around it.
   const MEDIA_TOP_GAP = 14; // below the top band (corner icons / metadata)
