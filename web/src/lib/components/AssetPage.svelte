@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { fade } from 'svelte/transition';
+  import { innerWidth, innerHeight } from 'svelte/reactivity/window';
   import '@nftcdn/media-player/nftcdn-media-player.js';
   import type { AssetMedia, AssetMediaResponse } from '../types';
 
@@ -19,20 +20,15 @@
   let placardHeight = $state(0); // measured, so the media reserves room above the placard
   let metaHeight = $state(0); // measured, so the media reserves room below the metadata
   let current = $state(0); // which media is on screen (one at a time); onMount applies initialIndex
-  // The top-left metadata panel; a tap toggles it (the media reclaims the space). Hidden by
-  // default in a small window — narrow (the panel wraps tall) or short (it crowds the media) —
-  // and shown otherwise. Keyed on window size, not device type, so a small desktop window
-  // behaves like a phone and a roomy tablet keeps it open. The default re-evaluates live on
-  // resize / orientation change until the user toggles it, after which their choice sticks.
-  const metaSmall = window.matchMedia('(max-width: 720px), (max-height: 600px)');
-  let metaOpen = $state(!metaSmall.matches);
-  let metaUserSet = false; // set once the user taps — then stop tracking the window size
+  // The top-left metadata panel; a tap toggles it (the media reclaims the space). Follows the
+  // window size (not device type): hidden in a small window — narrow (<=720px, the panel wraps
+  // tall) or short (<=600px, it crowds the media) — and shown otherwise, live on resize /
+  // orientation change via the reactive `innerWidth`/`innerHeight`. A tap toggles it in the
+  // meantime; the size rule re-applies on the next threshold crossing.
+  const metaSmall = $derived((innerWidth.current ?? Infinity) <= 720 || (innerHeight.current ?? Infinity) <= 600);
+  let metaOpen = $state(true);
   $effect(() => {
-    function onChange() {
-      if (!metaUserSet) metaOpen = !metaSmall.matches;
-    }
-    metaSmall.addEventListener('change', onChange);
-    return () => metaSmall.removeEventListener('change', onChange);
+    metaOpen = !metaSmall;
   });
 
   // Reserved gaps so the media never touches the chrome around it.
@@ -166,7 +162,6 @@
       const t = e.target as Element | null;
       if (t?.closest?.('.home-logo') || t?.closest?.('.search') || t?.closest?.('.meta-panel')) return;
       metaOpen = !metaOpen;
-      metaUserSet = true; // manual choice wins from here — stop auto-tracking window size
     }
     document.addEventListener('click', onClick, true);
     return () => document.removeEventListener('click', onClick, true);
