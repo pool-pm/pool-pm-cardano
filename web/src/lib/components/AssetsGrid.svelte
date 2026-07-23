@@ -623,7 +623,10 @@
     max-width: 58vw;
     line-height: 1.2;
     /* Keep the id on one line: show it in full when it fits, else clip with an ellipsis rather
-       than wrapping. The whole bech32 is still in the DOM, so user-select:all copies it in full. */
+       than wrapping. The whole bech32 is still in the DOM, so user-select:all copies it in full.
+       The base colour is the dim grey of the address body so the ellipsis (which takes this
+       element's colour, not the spans') matches the truncated end, not the white prefix. */
+    color: rgb(255 255 255 / 0.45);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
