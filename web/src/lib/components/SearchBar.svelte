@@ -246,7 +246,8 @@
     padding: 10px 14px;
     text-decoration: none;
   }
-  .result:hover,
+  /* Highlight is driven solely by `selected` (updated by keyboard and by mouse movement) —
+     no `:hover`, which would double-highlight the hovered row alongside the selected one. */
   .result.selected {
     background: rgb(255 255 255 / 0.08);
   }
