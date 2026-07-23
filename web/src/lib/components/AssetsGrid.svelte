@@ -70,8 +70,8 @@
   const GROUP_SAMPLES = 5; // max sample cards in a stack — must match the server
   const BUFFER_ROWS = 4; // extra rows rendered above/below the viewport
   const PREFETCH_ROWS = 6; // fetch the next page once the buffer gets this close to the end
-  const VPAD = 8; // breathing room above the first row / below the last (the tile's own quantity
-  // band adds visual space above the artwork, so a full GAP here reads as too much)
+  const VPAD = 16; // breathing room above the first row / below the last (= GAP, so the toolbar
+  // and the subject's last line sit exactly one inter-tile gap above the first row)
   const SIDE_PAD = 20; // grid inline padding; the header aligns its edges to this (see .scroll)
   const FAST_SCROLL_PX_PER_MS = 3; // above this fling speed, defer image loads
   const SCROLL_SETTLE_MS = 120; // load the settled view this long after scrolling stops
@@ -406,71 +406,75 @@
   <div class="assets-head" style="padding-left:{headPadLeft}px; padding-right:{headPadRight}px">
     {#if $address}
       {@const id = idParts($address.address)}
+      {@const stakedDiff =
+        $address.stake_address &&
+        $address.stake_assets_count != null &&
+        $address.stake_assets_count !== $address.assets_count}
+      <!-- Top-left info, top→bottom: balance, handle/address, pool+DRep, staked value, assets.
+           The subject is bottom-anchored (align-items:flex-end) so this last "assets" line lines
+           up with the toolbar's bottom, both one GAP above the grid. -->
       <div class="subject">
-        <!-- Handle when held ($ dimmer than the name); otherwise the address with its "addr"
-             prefix prominent and the rest dimmer + smaller. -->
+        {#if $address.balance}<div class="subject-balance">{formatAda($address.balance)}</div>{/if}
         <div class="subject-id" title={$address.address}>
           {#if $address.handle}<span class="id-weak">$</span><span class="id-strong">{$address.handle}</span
             >{:else}<span class="id-strong">{id.prefix}</span><span class="id-weak">{id.rest}</span>{/if}
         </div>
-        {#if $address.balance}<div class="subject-balance">{formatAda($address.balance)}</div>{/if}
-        <dl class="subject-meta">
-          {#if $address.pool_id}
-            <a class="meta-row" href="/{$address.pool_id}">
-              <dt>pool</dt>
-              <dd>{$address.pool_ticker ? formatTicker($address.pool_ticker) : shortId($address.pool_id)}</dd>
-            </a>
-          {/if}
-          {#if $address.drep_id}
-            <a class="meta-row" href="/{$address.drep_id}">
-              <dt>drep</dt>
-              <dd>{$address.drep_name ?? shortId($address.drep_id)}</dd>
-            </a>
-          {/if}
-          <div class="meta-row">
-            <dt>assets</dt>
-            <dd>{$address.assets_count}</dd>
+        {#if $address.pool_id || $address.drep_id}
+          <div class="subject-deleg">
+            {#if $address.pool_id}
+              <a class="info" href="/{$address.pool_id}"
+                ><span class="lbl">pool</span><span class="val"
+                  >{$address.pool_ticker ? formatTicker($address.pool_ticker) : shortId($address.pool_id)}</span
+                ></a
+              >
+            {/if}
+            {#if $address.drep_id}
+              <a class="info" href="/{$address.drep_id}"
+                ><span class="lbl">drep</span><span class="val">{$address.drep_name ?? shortId($address.drep_id)}</span
+                ></a
+              >
+            {/if}
           </div>
-          {#if $address.stake_address && $address.stake_assets_count && $address.stake_assets_count !== $address.assets_count}
-            <a class="meta-row" href="/{$address.stake_address}/assets">
-              <dt>staked assets</dt>
-              <dd>{$address.stake_assets_count}</dd>
-            </a>
-          {/if}
-          {#if $address.stake_address && $address.stake_value && $address.stake_value !== $address.balance}
-            <a class="meta-row" href="/{$address.stake_address}">
-              <dt>stake</dt>
-              <dd>{formatAda($address.stake_value)}</dd>
-            </a>
-          {/if}
-        </dl>
+        {/if}
+        {#if $address.stake_address && $address.stake_value && $address.stake_value !== $address.balance}
+          <a class="info" href="/{$address.stake_address}"
+            ><span class="lbl">stake</span><span class="val">{formatAda($address.stake_value)}</span></a
+          >
+        {/if}
+        <div class="subject-assets">
+          <span class="lbl">assets</span><span class="val">{$address.assets_count}</span>
+          {#if stakedDiff}<span class="slash">/</span><a class="info staked" href="/{$address.stake_address}/assets"
+              ><span class="val">{$address.stake_assets_count}</span><span class="lbl">staked</span></a
+            >{/if}
+        </div>
       </div>
     {:else if $stake}
       {@const id = idParts($stake.stake_address)}
       {@const stakeTotal = (BigInt($stake.balance ?? '0') + BigInt($stake.rewards ?? '0')).toString()}
       <div class="subject">
+        <div class="subject-balance">{formatAda(stakeTotal)}</div>
         <div class="subject-id" title={$stake.stake_address}>
           <span class="id-strong">{id.prefix}</span><span class="id-weak">{id.rest}</span>
         </div>
-        <div class="subject-balance">{formatAda(stakeTotal)}</div>
-        <dl class="subject-meta">
-          {#if $stake.pool_id}
-            <a class="meta-row" href="/{$stake.pool_id}">
-              <dt>pool</dt>
-              <dd>{$stake.pool_ticker ? formatTicker($stake.pool_ticker) : shortId($stake.pool_id)}</dd>
-            </a>
-          {/if}
-          {#if $stake.drep_id}
-            <a class="meta-row" href="/{$stake.drep_id}">
-              <dt>drep</dt>
-              <dd>{$stake.drep_name ?? shortId($stake.drep_id)}</dd>
-            </a>
-          {/if}
-          <div class="meta-row">
-            <dt>assets</dt>
-            <dd>{$stake.assets_count}</dd>
+        {#if $stake.pool_id || $stake.drep_id}
+          <div class="subject-deleg">
+            {#if $stake.pool_id}
+              <a class="info" href="/{$stake.pool_id}"
+                ><span class="lbl">pool</span><span class="val"
+                  >{$stake.pool_ticker ? formatTicker($stake.pool_ticker) : shortId($stake.pool_id)}</span
+                ></a
+              >
+            {/if}
+            {#if $stake.drep_id}
+              <a class="info" href="/{$stake.drep_id}"
+                ><span class="lbl">drep</span><span class="val">{$stake.drep_name ?? shortId($stake.drep_id)}</span></a
+              >
+            {/if}
           </div>
-        </dl>
+        {/if}
+        <div class="subject-assets">
+          <span class="lbl">assets</span><span class="val">{$stake.assets_count}</span>
+        </div>
       </div>
     {/if}
     <!-- Sort toggle: flips descending (default, high to low) ↔ ascending; the primary axis
@@ -587,14 +591,14 @@
     background: var(--surface);
   }
 
-  /* Top row: minimalist subject on the top-left (aligned to the leftmost tile), filter+sort
-     dropped to the bottom-right just above the grid (aligned to the rightmost tile). Colorless,
-     echoing the single-asset placard — a plain id/handle line, a large balance, then tiny
-     uppercase meta. The min-height + bottom-anchored toolbar keep the toolbar clear of the fixed
-     top-right logo (48px wide × ~64px tall portrait mark, so its bottom sits near 76px). */
+  /* Top row: minimalist subject on the left (aligned to the leftmost tile), filter+sort on the
+     right (aligned to the rightmost tile). Both are BOTTOM-anchored (align-items:flex-end), so the
+     subject's last line (assets) and the toolbar share a baseline, one GAP above the grid. The
+     min-height keeps the toolbar clear of the fixed top-right logo (48px wide × ~64px tall portrait
+     mark, bottom ~76px). Colorless, echoing the single-asset placard. */
   .assets-head {
     display: flex;
-    align-items: flex-start;
+    align-items: flex-end;
     justify-content: space-between;
     gap: 16px;
     /* Logo is 12px from the window top and ~64px tall (48px-wide portrait mark) → bottom ~76px.
@@ -611,7 +615,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
   }
   .subject-id {
     max-width: 58vw;
@@ -639,35 +643,39 @@
     line-height: 1.1;
     color: rgb(255 255 255 / 0.92);
     font-variant-numeric: tabular-nums;
+    margin-bottom: 1px;
   }
-  .subject-meta {
-    margin: 2px 0 0;
+  /* pool + DRep sit side by side; stake and assets are their own lines below. */
+  .subject-deleg {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px 16px;
-    font-size: 12px;
-    color: rgb(255 255 255 / 0.62);
+    gap: 2px 14px;
   }
-  .meta-row {
+  /* A label + value pair (pool/drep/stake, and the "/ N staked" tail); links underline the value
+     on hover. `.info` is used both as a flex row (own line) and inline (the staked tail). */
+  .info,
+  .subject-assets {
     display: flex;
     align-items: baseline;
-    gap: 6px;
+    gap: 5px;
+    font-size: 12px;
     text-decoration: none;
-    color: inherit;
+    color: rgb(255 255 255 / 0.75);
   }
-  /* Meta rows that link (pool/drep/stake/staked assets) underline their value on hover. */
-  a.meta-row:hover dd {
+  a.info:hover .val {
     text-decoration: underline;
   }
-  .subject-meta dt {
+  .lbl {
     text-transform: uppercase;
-    letter-spacing: 0.09em;
+    letter-spacing: 0.08em;
     font-size: 9px;
     color: rgb(255 255 255 / 0.4);
   }
-  .subject-meta dd {
-    margin: 0;
+  .val {
     font-variant-numeric: tabular-nums;
+  }
+  .slash {
+    color: rgb(255 255 255 / 0.3);
   }
 
   .scroll {
