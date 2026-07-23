@@ -55,7 +55,7 @@ struct CardanoCache {
     drep_count: i64,
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Copy, serde::Serialize)]
 pub struct GenesisConfig {
     pub shelley_known_slot: u64,
     pub shelley_known_time: u64,
@@ -118,7 +118,31 @@ fn config_event(
     )))
 }
 
-fn pool_sse_event(pool: &Pool, snap: Option<&BlockSnapshot>) -> Result<SseEvent, Infallible> {
+/// Exact count of blocks this pool minted in the current epoch. Read from the feed index,
+/// which holds the pool's full minted-block list for the whole 5-day window (≥ one epoch, and
+/// uncapped — the 30-block cap is only on what's *sent* to a client), filtered to slots at or
+/// after the current epoch's start. Rollback-safe: the feed index reverts `pool_minted` on a
+/// rollback (see `FeedIndex::rollback`), so this recomputes correctly.
+fn pool_epoch_blocks(
+    feed_index: &crate::state::FeedIndex,
+    pool_hash: &[u8],
+    epoch: u64,
+    genesis: &GenesisConfig,
+) -> u64 {
+    let epoch_start = slot_for_epoch(epoch, genesis);
+    feed_index
+        .pool_minted_blocks(pool_hash)
+        .iter()
+        .filter(|b| b.slot >= epoch_start)
+        .count() as u64
+}
+
+fn pool_sse_event(
+    pool: &Pool,
+    snap: Option<&BlockSnapshot>,
+    epoch: u64,
+    epoch_blocks: u64,
+) -> Result<SseEvent, Infallible> {
     // A pool with no delegators has live stake 0 / 0 delegators — send 0, not absent.
     let live_stake = snap
         .and_then(|s| State::pool_live_stake(s, &pool.hash_raw))
@@ -127,8 +151,11 @@ fn pool_sse_event(pool: &Pool, snap: Option<&BlockSnapshot>) -> Result<SseEvent,
         .and_then(|s| s.pool_delegators.get(&pool.hash_raw))
         .map(|d| d.len())
         .unwrap_or(0);
+    // `epoch_blocks` is exact for `epoch`; the frontend shows it while its epoch matches and
+    // resets to 0 once the epoch rolls over (the pool has minted 0 in the new epoch until its
+    // next block re-emits an exact count). `blocks` stays the lifetime total.
     Ok(SseEvent::default().data(format!(
-        r#"{{"type":"Pool","pool_id":"{}","ticker":{},"pledge":"{}","margin":{},"fixed_cost":"{}","live_stake":"{}","delegators":{},"blocks":{}}}"#,
+        r#"{{"type":"Pool","pool_id":"{}","ticker":{},"pledge":"{}","margin":{},"fixed_cost":"{}","live_stake":"{}","delegators":{},"blocks":{},"epoch":{},"epoch_blocks":{}}}"#,
         pool_bech32_id(&pool.hash_raw),
         serde_json::to_string(&pool.ticker).unwrap(),
         pool.pledge,
@@ -136,7 +163,9 @@ fn pool_sse_event(pool: &Pool, snap: Option<&BlockSnapshot>) -> Result<SseEvent,
         pool.fixed_cost,
         live_stake,
         delegators,
-        pool.blocks
+        pool.blocks,
+        epoch,
+        epoch_blocks,
     )))
 }
 
@@ -1646,11 +1675,16 @@ async fn send_pool_info(
     sender: &Sender<Result<SseEvent, Infallible>>,
     chain_state: &RwLock<State>,
     pool_hash: &[u8],
+    genesis: &GenesisConfig,
 ) {
     let guard = chain_state.read().await;
     if let Some(snap) = guard.current() {
         if let Some(pool) = snap.pools.get(&hex::encode(pool_hash)) {
-            let _ = sender.send(pool_sse_event(pool, Some(snap))).await;
+            let epoch = snap.last_epoch.unwrap_or(0);
+            let epoch_blocks = pool_epoch_blocks(&guard.feed_index, pool_hash, epoch, genesis);
+            let _ = sender
+                .send(pool_sse_event(pool, Some(snap), epoch, epoch_blocks))
+                .await;
         }
     }
 }
@@ -1755,6 +1789,9 @@ fn build_live_stream(
     size: u16,
     nftcdn: NftcdnConfig,
     mainnet: bool,
+    // Genesis params for `slot_for_epoch` when re-emitting a pool's current-epoch block count
+    // (captured by the `move` closure below; `GenesisConfig` is `Copy`).
+    genesis: GenesisConfig,
     // True for the assets-page endpoint: this connection also emits live grid tile
     // deltas (derived by diffing its subject's holdings between snapshots).
     wants_tiles: bool,
@@ -1772,7 +1809,7 @@ fn build_live_stream(
             None::<crate::state::AssetHoldings>,
             wants_tiles,
         ),
-        |(
+        move |(
             mut rx,
             filter,
             chain_state,
@@ -1817,7 +1854,12 @@ fn build_live_stream(
                                 let pool =
                                     snap.and_then(|s| s.pools.get(&hex::encode(hash)).cloned());
                                 let live_stake = snap.and_then(|s| State::pool_live_stake(s, hash));
-                                let event = pool.as_ref().map(|p| pool_sse_event(p, snap));
+                                let epoch = snap.and_then(|s| s.last_epoch).unwrap_or(0);
+                                let epoch_blocks =
+                                    pool_epoch_blocks(&guard.feed_index, hash, epoch, &genesis);
+                                let event = pool
+                                    .as_ref()
+                                    .map(|p| pool_sse_event(p, snap, epoch, epoch_blocks));
                                 (pool, live_stake, event)
                             };
                             // `current_pool != live.pool` also catches a block count bump
@@ -2126,7 +2168,13 @@ async fn filtered_events(
         };
 
         let exclude_slots = if let Some(ref ph) = pool_hash {
-            send_pool_info(&sender, &replay_state.chain_state, ph).await;
+            send_pool_info(
+                &sender,
+                &replay_state.chain_state,
+                ph,
+                &replay_state.genesis,
+            )
+            .await;
 
             // Read feed index data, pool live stake, and resolve delegation labels
             let (minted, stake_changes, deleg_info, deleg_slots, stake_threshold) = {
@@ -2651,6 +2699,7 @@ async fn filtered_events(
         size,
         state.nftcdn.clone(),
         state.mainnet,
+        state.genesis,
         false, // regular feed: header/count only, no grid tiles
     );
     let stream = replay.chain(live);
@@ -2737,6 +2786,7 @@ async fn asset_feed_events(
         size,
         state.nftcdn.clone(),
         state.mainnet,
+        state.genesis,
         true, // assets page: emit live grid tile deltas via per-block holdings diff
     );
     let stream = replay.chain(live);

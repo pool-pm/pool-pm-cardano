@@ -267,6 +267,11 @@ export interface PoolInfo {
   delegators: number;
   /** Lifetime blocks minted, updated live as the pool mints. */
   blocks: number;
+  /** The epoch `epoch_blocks` is counted for (the chain's current epoch when sent). */
+  epoch: number;
+  /** Exact blocks minted by the pool in `epoch` (from the server's full feed index).
+   * Shown while the displayed epoch matches `epoch`; reset to 0 once the epoch rolls over. */
+  epoch_blocks: number;
 }
 
 export interface StakeInfo {

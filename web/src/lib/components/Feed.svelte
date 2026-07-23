@@ -473,6 +473,12 @@
             {#if isMempool && $config?.genesis}
               {@const ei = epochInfo($config.genesis)}
               <span class="block-meta">Epoch {ei.epoch}</span>
+              {#if $pool}
+                <!-- Blocks the pool minted this epoch (server-counted, exact). The count is
+                     for `$pool.epoch`; once the displayed epoch rolls past it, show 0 until
+                     the pool's next mint re-emits a fresh count. -->
+                <span class="block-meta">{ei.epoch === $pool.epoch ? $pool.epoch_blocks : 0} blocks</span>
+              {/if}
               <span class="block-meta">{formatTimeLeft(ei.epochEnd)}</span>
             {:else if section.block}
               <span class="block-meta block-when">{formatDate(section.block.timestamp)}</span>
