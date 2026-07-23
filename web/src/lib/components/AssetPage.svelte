@@ -22,8 +22,18 @@
   // The top-left metadata panel; a tap toggles it (the media reclaims the space). Hidden by
   // default in a small window — narrow (the panel wraps tall) or short (it crowds the media) —
   // and shown otherwise. Keyed on window size, not device type, so a small desktop window
-  // behaves like a phone and a roomy tablet keeps it open.
-  let metaOpen = $state(!window.matchMedia('(max-width: 720px), (max-height: 600px)').matches);
+  // behaves like a phone and a roomy tablet keeps it open. The default re-evaluates live on
+  // resize / orientation change until the user toggles it, after which their choice sticks.
+  const metaSmall = window.matchMedia('(max-width: 720px), (max-height: 600px)');
+  let metaOpen = $state(!metaSmall.matches);
+  let metaUserSet = false; // set once the user taps — then stop tracking the window size
+  $effect(() => {
+    function onChange() {
+      if (!metaUserSet) metaOpen = !metaSmall.matches;
+    }
+    metaSmall.addEventListener('change', onChange);
+    return () => metaSmall.removeEventListener('change', onChange);
+  });
 
   // Reserved gaps so the media never touches the chrome around it.
   const MEDIA_TOP_GAP = 14; // below the top band (corner icons / metadata)
@@ -156,6 +166,7 @@
       const t = e.target as Element | null;
       if (t?.closest?.('.home-logo') || t?.closest?.('.search') || t?.closest?.('.meta-panel')) return;
       metaOpen = !metaOpen;
+      metaUserSet = true; // manual choice wins from here — stop auto-tracking window size
     }
     document.addEventListener('click', onClick, true);
     return () => document.removeEventListener('click', onClick, true);
