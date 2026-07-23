@@ -799,17 +799,18 @@ impl DbSync {
         Ok(())
     }
 
-    /// First-mint time (unix seconds) per asset `ident` (`multi_asset.id`), aggregated from
+    /// First-mint **slot** per asset `ident` (`multi_asset.id`), aggregated from
     /// `ma_tx_mint → tx → block`. Streamed (`fetch`) so the ~11M-row result never materializes
     /// as one `Vec`. The heavy cold-start join (~minutes over ~19M mint rows, wants
-    /// `idx_ma_tx_mint_ident`); warm resume reads the times from the snapshot instead. Keyed by
-    /// `ident` (8 bytes) rather than `(policy, name)` to keep the transient reset map small.
+    /// `idx_ma_tx_mint_ident`); warm resume reads the slots from the snapshot instead. Keyed by
+    /// `ident` (8 bytes) rather than `(policy, name)` to keep the transient reset map small. The
+    /// slot (not block time) is what the packed holdings leaf stores — only for sorting.
     pub async fn asset_mint_times_for_each<F: FnMut(i64, i64)>(
         &self,
         mut f: F,
     ) -> Result<(), sqlx::Error> {
         let mut stream = sqlx::query!(
-            r#"SELECT m.ident AS "ident!", EXTRACT(EPOCH FROM MIN(b.time))::bigint AS "first_mint!"
+            r#"SELECT m.ident AS "ident!", MIN(b.slot_no)::bigint AS "first_mint!"
                FROM ma_tx_mint m
                JOIN tx t ON t.id = m.tx_id
                JOIN block b ON b.id = t.block_id

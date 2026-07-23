@@ -195,45 +195,70 @@ impl<'de> serde::Deserialize<'de> for Qty {
 }
 
 /// A held token's leaf: its quantity plus the asset's first-mint time (unix seconds as `u32`
-/// — fits well past year 2100). The quantity is stored as a `(lo, hi)` `u64` pair, not a
-/// `u128`, so the struct aligns to 8 and is 24 bytes rather than 32 (a `u128` would force
-/// 16-byte alignment and pad the `u32`), keeping the ~15M-entry map small. `mint_time` is
-/// chain-derived (block time), so the snapshot stays independent of any db-sync's row ids.
+/// packing). The asset's first-mint **slot** rides in the top 30 bits (only for sorting the
+/// owned grid — a slot is monotonic with time and we don't display it; the asset-info popup's
+/// mint dates come from a separate db query). Stored as a `(lo, hi)` `u64` pair, **not** a
+/// bare `u128`: two `u64`s keep the struct at align 8 / 16 bytes, whereas a `u128` (align 16)
+/// would just re-pad the align-8 key back up — no saving. `mint_slot` is chain-derived, so the
+/// snapshot stays independent of any db-sync's row ids.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct Held {
-    qty_lo: u64,
-    qty_hi: u64,
-    /// First-mint time of the asset, unix seconds (0 = unknown/not yet sourced).
-    pub mint_time: u32,
+    lo: u64,
+    hi: u64,
 }
 
+/// Bits of the packed 128-bit leaf given to the quantity (low); the remaining 30 bits (high)
+/// hold the first-mint slot. 98 bits ≫ any real token quantity (bounded well under 2^64), and
+/// 30 bits of slot ≈ year 2054 on mainnet — plenty for a value only used to sort.
+const QTY_BITS: u32 = 98;
+const QTY_MASK: u128 = (1u128 << QTY_BITS) - 1;
+/// 30-bit slot mask (`128 - QTY_BITS` high bits).
+const MINT_SLOT_MASK: u32 = (1u32 << (128 - QTY_BITS)) - 1;
+
 impl Held {
-    pub fn new(qty: u128, mint_time: u32) -> Self {
+    pub fn new(qty: u128, mint_slot: u32) -> Self {
+        Self::from_packed((qty & QTY_MASK) | (((mint_slot & MINT_SLOT_MASK) as u128) << QTY_BITS))
+    }
+    fn packed(&self) -> u128 {
+        ((self.hi as u128) << 64) | self.lo as u128
+    }
+    fn from_packed(p: u128) -> Self {
         Held {
-            qty_lo: qty as u64,
-            qty_hi: (qty >> 64) as u64,
-            mint_time,
+            lo: p as u64,
+            hi: (p >> 64) as u64,
         }
     }
     pub fn qty(&self) -> u128 {
-        ((self.qty_hi as u128) << 64) | self.qty_lo as u128
+        self.packed() & QTY_MASK
+    }
+    /// First-mint slot (0 = unknown/not yet sourced). Monotonic with time; used only to sort.
+    pub fn mint_slot(&self) -> u32 {
+        (self.packed() >> QTY_BITS) as u32
     }
     fn set_qty(&mut self, qty: u128) {
-        self.qty_lo = qty as u64;
-        self.qty_hi = (qty >> 64) as u64;
+        *self = Self::from_packed((self.packed() & !QTY_MASK) | (qty & QTY_MASK));
+    }
+    fn set_mint_slot(&mut self, mint_slot: u32) {
+        *self = Self::from_packed(
+            (self.packed() & QTY_MASK) | (((mint_slot & MINT_SLOT_MASK) as u128) << QTY_BITS),
+        );
     }
 }
 
+// The packing only pays off if the leaf stays align-8 / 16 bytes: a bare `u128` (align 16)
+// would re-pad the align-8 key back up to the old size. Two `u64`s keep both invariants.
+const _: () = assert!(std::mem::size_of::<Held>() == 16 && std::mem::align_of::<Held>() == 8);
+
 impl serde::Serialize for Held {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        // (mint_time, qty) — the quantity keeps the variable-length `Qty` encoding.
-        (self.mint_time, Qty(self.qty())).serialize(s)
+        // (mint_slot, qty) — the quantity keeps the variable-length `Qty` encoding.
+        (self.mint_slot(), Qty(self.qty())).serialize(s)
     }
 }
 impl<'de> serde::Deserialize<'de> for Held {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let (mint_time, qty): (u32, Qty) = serde::Deserialize::deserialize(d)?;
-        Ok(Held::new(qty.0, mint_time))
+        let (mint_slot, qty): (u32, Qty) = serde::Deserialize::deserialize(d)?;
+        Ok(Held::new(qty.0, mint_slot))
     }
 }
 
@@ -294,7 +319,7 @@ impl BlockSnapshot {
         addr_range(&self.asset_holdings, &(cred, address.to_vec()))
             .map(|((_, asset), h)| {
                 let (policy, name) = split_asset(asset);
-                (policy.to_vec(), name.to_vec(), h.qty(), h.mint_time)
+                (policy.to_vec(), name.to_vec(), h.qty(), h.mint_slot())
             })
             .collect()
     }
@@ -307,7 +332,7 @@ impl BlockSnapshot {
         let mut sums: std::collections::HashMap<&[u8], (u128, u32)> =
             std::collections::HashMap::new();
         for ((_, asset), h) in cred_range(&self.asset_holdings, cred) {
-            let e = sums.entry(asset).or_insert((0, h.mint_time));
+            let e = sums.entry(asset).or_insert((0, h.mint_slot()));
             e.0 += h.qty();
         }
         sums.into_iter()
@@ -576,8 +601,10 @@ impl BlockSnapshot {
 /// `address_balances`/`asset_holdings` drift accumulated by the intra-block debit-drop bug
 /// (produced now applied before consumed in `apply_block`). v6: the holdings leaf gained the
 /// asset's `mint_time` (`Qty` → `Held`). v7: holdings key `(cred, addr)` became an interned
-/// `Arc<AddrKey>` (wire shape unchanged per entry, but re-interned on load).
-const SNAPSHOT_FORMAT: u32 = 7;
+/// `Arc<AddrKey>` (wire shape unchanged per entry, but re-interned on load). v8: the `Held`
+/// leaf became a packed 128-bit `(mint_slot:30 | qty:98)` and `mint_time` (unix seconds)
+/// became `mint_slot` — different semantics, so old leaves must rebuild.
+const SNAPSHOT_FORMAT: u32 = 8;
 
 /// Serializes [`BlockSnapshot::asset_holdings`] as a plain msgpack map with the key `(cred,
 /// addr)` **deref'd off its `Arc`** — so the wire form carries no `Arc` (no serde `rc`
@@ -692,16 +719,16 @@ fn bump_one(
     name: &[u8],
     qty: u128,
     add: bool,
-    mint_time: u32,
+    mint_slot: u32,
 ) {
     let hkey = (addr.clone(), asset_id(policy, name));
     if add {
         let h = holdings.entry(hkey).or_default();
         h.set_qty(h.qty() + qty);
-        // Record the asset's first-mint time on the first credit to this leaf; keep any
-        // time already recorded (all leaves of one asset share the same mint time).
-        if h.mint_time == 0 {
-            h.mint_time = mint_time;
+        // Record the asset's first-mint slot on the first credit to this leaf; keep any
+        // slot already recorded (all leaves of one asset share the same mint slot).
+        if h.mint_slot() == 0 {
+            h.set_mint_slot(mint_slot);
         }
     } else {
         // produced/consumed amounts balance exactly; saturate as a guard against any stray
@@ -721,8 +748,8 @@ fn bump_one(
 
 /// Apply one UTXO's policy-grouped assets to the global holdings map (`add` = produced,
 /// else consumed), computing the UTXO's stake credential once. On credit, each asset's
-/// first-mint time is looked up in `mint_times` (per-block asset→time map), falling back to
-/// `block_time` for a freshly minted asset. Maintained for *every* address; live tile deltas
+/// first-mint slot is looked up in `mint_slots` (per-block asset→slot map), falling back to
+/// `block_slot` for a freshly minted asset. Maintained for *every* address; live tile deltas
 /// are derived per connection by diffing, not emitted here.
 fn apply_utxo_assets(
     address: &[u8],
@@ -730,8 +757,8 @@ fn apply_utxo_assets(
     add: bool,
     holdings: &mut AssetHoldings,
     interner: &mut AddrInterner,
-    mint_times: &std::collections::HashMap<AssetId, u32>,
-    block_time: u32,
+    mint_slots: &std::collections::HashMap<AssetId, u32>,
+    block_slot: u32,
 ) {
     if assets.is_empty() {
         return;
@@ -742,10 +769,10 @@ fn apply_utxo_assets(
     for (policy, names) in assets {
         for (name, qty) in names {
             let mt = if add {
-                mint_times
+                mint_slots
                     .get(&asset_id(policy, name))
                     .copied()
-                    .unwrap_or(block_time)
+                    .unwrap_or(block_slot)
             } else {
                 0
             };
@@ -878,9 +905,6 @@ pub struct BlockUpdate<'a> {
     pub slot: u64,
     pub block_hash: String,
     pub epoch: u64,
-    /// The block's wall-clock time (unix seconds) — the first-mint time stamped on any asset
-    /// newly minted in this block; transferred assets carry their recorded time instead.
-    pub block_time: u32,
     pub produced: Vec<((Vec<u8>, i16), TxOutput)>,
     pub consumed: &'a [((Vec<u8>, i16), TxOutput)],
     pub pool_delegation_changes: &'a [(Vec<u8>, Option<Vec<u8>>)],
@@ -1366,9 +1390,9 @@ impl State {
         (address_balances, stakes)
     }
 
-    /// Build the `ident → first-mint unix time (u32)` map from db-sync — the source of the
-    /// holdings-leaf `mint_time`. Streamed (never one big `Vec`); a heavy one-time cold-start
-    /// aggregate (~minutes), so warm resume reads mint times from the snapshot instead.
+    /// Build the `ident → first-mint slot (u32)` map from db-sync — the source of the
+    /// holdings-leaf `mint_slot`. Streamed (never one big `Vec`); a heavy one-time cold-start
+    /// aggregate (~minutes), so warm resume reads mint slots from the snapshot instead.
     async fn fetch_asset_mint_times(
         db: &DbSync,
     ) -> Result<std::collections::HashMap<i64, u32>, sqlx::Error> {
@@ -1376,7 +1400,7 @@ impl State {
         let mut rows: u64 = 0;
         db.asset_mint_times_for_each(|ident, first_mint| {
             rows += 1;
-            // Block times are positive and fit u32 well past year 2100.
+            // Slots are positive and fit u32 for centuries (the leaf keeps the low 30 bits).
             map.insert(ident, first_mint.max(0) as u32);
             if rows.is_multiple_of(2_000_000) {
                 tracing::info!(
@@ -1656,7 +1680,6 @@ impl State {
             slot,
             block_hash,
             epoch,
-            block_time,
             produced,
             consumed,
             pool_delegation_changes,
@@ -1689,11 +1712,13 @@ impl State {
         // balance/holdings — and `utxos.remove` would no-op, leaving a phantom UTXO. Doing
         // credits first guarantees the entry exists when the debit lands. (`stakes` is
         // immune either way: it's a flat sum of signed deltas.)
-        // Per-block asset → first-mint time for crediting new leaves. By ledger conservation
-        // every output asset either comes from an input this block (carry its recorded time
-        // from that input's prior leaf) or is minted this block (fall back to `block_time`).
-        // So seed the map from the consumed inputs' prior leaves; anything absent is a new mint.
-        let mut mint_times: std::collections::HashMap<AssetId, u32> =
+        // Per-block asset → first-mint slot for crediting new leaves. By ledger conservation
+        // every output asset either comes from an input this block (carry its recorded slot
+        // from that input's prior leaf) or is minted this block (fall back to this block's
+        // `slot`). So seed the map from the consumed inputs' prior leaves; anything absent is a
+        // new mint.
+        let block_slot = slot as u32;
+        let mut mint_slots: std::collections::HashMap<AssetId, u32> =
             std::collections::HashMap::new();
         for (_, output) in consumed {
             if output.assets.is_empty() {
@@ -1705,7 +1730,7 @@ impl State {
                 for (name, _) in names {
                     let aid = asset_id(policy, name);
                     if let Some(h) = prev.asset_holdings.get(&(addr.clone(), aid.clone())) {
-                        mint_times.entry(aid).or_insert(h.mint_time);
+                        mint_slots.entry(aid).or_insert(h.mint_slot());
                     }
                 }
             }
@@ -1723,8 +1748,8 @@ impl State {
                 true,
                 &mut asset_holdings,
                 &mut interner,
-                &mint_times,
-                block_time,
+                &mint_slots,
+                block_slot,
             );
             utxos.insert(key, output);
         }
@@ -1746,8 +1771,8 @@ impl State {
                 false,
                 &mut asset_holdings,
                 &mut interner,
-                &mint_times,
-                block_time,
+                &mint_slots,
+                block_slot,
             );
         }
         // Holdings mutations done — hand the interner back to `self`.
@@ -2502,7 +2527,6 @@ mod tests {
             slot: 200,
             block_hash: "hash200".into(),
             epoch: 11,
-            block_time: 1_700_000_200,
             produced,
             consumed: &consumed,
             pool_delegation_changes: &pool_deleg,
@@ -2539,15 +2563,15 @@ mod tests {
 
         // Asset holdings: addr1's token removed, addr2 untouched, addr3's token added.
         assert!(cur.address_held_assets(&addr1).is_empty());
-        // addr2's token carries its original mint_time (0); addr3's is a new mint stamped
-        // with this block's time (policy2/name2 was in no consumed input).
+        // addr2's token carries its original mint_slot (0); addr3's is a new mint stamped
+        // with this block's slot 200 (policy2/name2 was in no consumed input).
         assert_eq!(
             cur.address_held_assets(&addr2),
             vec![(policy1.clone(), name1.clone(), 3u128, 0)]
         );
         assert_eq!(
             cur.address_held_assets(&addr3),
-            vec![(policy2.clone(), name2.clone(), 7u128, 1_700_000_200)]
+            vec![(policy2.clone(), name2.clone(), 7u128, 200)]
         );
 
         // Pools: pool_q new + minted this block; pool_p carried blocks/ticker, params updated, retiring set.
@@ -2655,7 +2679,6 @@ mod tests {
             slot: 200,
             block_hash: "h200".into(),
             epoch: 10,
-            block_time: 1_700_000_200,
             produced,
             consumed: &consumed,
             pool_delegation_changes: &[],
@@ -2729,7 +2752,7 @@ mod tests {
         let mut state = State::new(Url::parse("postgresql:///test").unwrap());
         state.restore_from_snapshot(initial, AddrInterner::new());
 
-        // Block at time 999: A spends its TOK to B (transfer) and mints NEW to itself.
+        // Block at slot 200: A spends its TOK to B (transfer) and mints NEW to itself.
         let produced = vec![
             ((txh_new.clone(), 0i16), held(&addr_b, &tok, 1)),
             ((txh_new.clone(), 1i16), held(&addr_a, &new, 5)),
@@ -2740,7 +2763,6 @@ mod tests {
             slot: 200,
             block_hash: "h2".into(),
             epoch: 1,
-            block_time: 999,
             produced,
             consumed: &consumed,
             pool_delegation_changes: &[],
@@ -2755,20 +2777,20 @@ mod tests {
         });
 
         let cur = state.current().unwrap();
-        // TOK moved to B keeps its original mint time (111), not the block time.
+        // TOK moved to B keeps its original mint slot (111), not the block slot.
         assert_eq!(
             cur.asset_holdings
                 .get(&leaf(&addr_b, &tok))
                 .unwrap()
-                .mint_time,
+                .mint_slot(),
             111
         );
         // A no longer holds TOK.
         assert!(cur.asset_holdings.get(&leaf(&addr_a, &tok)).is_none());
-        // NEW was minted this block → stamped with the block time.
+        // NEW was minted this block → stamped with the block's slot (200).
         let new_leaf = cur.asset_holdings.get(&leaf(&addr_a, &new)).unwrap();
         assert_eq!(new_leaf.qty(), 5);
-        assert_eq!(new_leaf.mint_time, 999);
+        assert_eq!(new_leaf.mint_slot(), 200);
     }
 
     /// `write_snapshot` → `load_snapshot` round-trips the whole snapshot (including a
@@ -2805,7 +2827,7 @@ mod tests {
             asset_id(&[0x11; 28], b"BIG"),
         );
         snap.asset_holdings
-            .insert(hkey.clone(), Held::new(big, 1_700_000_000));
+            .insert(hkey.clone(), Held::new(big, 12_345_678));
         let mut poolp = Pool::from_registration(vec![0x01; 28], 1, 2, 3, 100);
         poolp.ticker = Some("TICK".into());
         poolp.blocks = 9;
@@ -2843,7 +2865,7 @@ mod tests {
         assert!(loaded == snap, "snapshot did not round-trip exactly");
         let loaded_held = loaded.asset_holdings.get(&hkey).unwrap();
         assert_eq!(loaded_held.qty(), big);
-        assert_eq!(loaded_held.mint_time, 1_700_000_000);
+        assert_eq!(loaded_held.mint_slot(), 12_345_678);
         assert_eq!(loaded_fi.pool_minted_blocks(&[0x01; 28]).len(), 1);
         assert_eq!(interner.len(), 1, "the one address interned once");
 
