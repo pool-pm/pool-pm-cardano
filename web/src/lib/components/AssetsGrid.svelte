@@ -70,7 +70,9 @@
   const GROUP_SAMPLES = 5; // max sample cards in a stack — must match the server
   const BUFFER_ROWS = 4; // extra rows rendered above/below the viewport
   const PREFETCH_ROWS = 6; // fetch the next page once the buffer gets this close to the end
-  const VPAD = 16; // breathing room above the first row / below the last
+  const VPAD = 8; // breathing room above the first row / below the last (the tile's own quantity
+  // band adds visual space above the artwork, so a full GAP here reads as too much)
+  const SIDE_PAD = 20; // grid inline padding; the header aligns its edges to this (see .scroll)
   const FAST_SCROLL_PX_PER_MS = 3; // above this fling speed, defer image loads
   const SCROLL_SETTLE_MS = 120; // load the settled view this long after scrolling stops
 
@@ -160,6 +162,22 @@
   // VPAD is reserved above the first row and below the last.
   const totalHeight = $derived(loadedRows > 0 ? (loadedRows - 1) * ROW + TILE_H : 0);
   const spacerHeight = $derived(totalHeight + VPAD * 2);
+
+  // Header edge alignment. The grid's .window is centered in the spacer (margin-inline:auto), so
+  // a row's tiles sit `gridSlack` past the SIDE_PAD inline padding on each side. The subject
+  // header aligns to the leftmost tile, the toolbar's right edge to the rightmost tile — which
+  // on the right also means clearing the grid's *actual* vertical scrollbar (0 when the content
+  // fits, so the OS --scrollbar-width would over-pad). scrollbarW is remeasured whenever the
+  // width (containerW) or content height (spacerHeight) changes, since either can add/remove it.
+  let scrollbarW = $state(0);
+  $effect(() => {
+    void containerW;
+    void spacerHeight;
+    if (scrollEl) scrollbarW = scrollEl.offsetWidth - scrollEl.clientWidth;
+  });
+  const gridSlack = $derived(Math.max(0, (containerW - rowWidth) / 2));
+  const headPadLeft = $derived(SIDE_PAD + gridSlack);
+  const headPadRight = $derived(SIDE_PAD + gridSlack + scrollbarW);
 
   // Rows live at y = VPAD + row*ROW, so the scroll math offsets by VPAD too.
   const firstRow = $derived(Math.floor(Math.max(0, scrollTop - VPAD) / ROW));
@@ -385,7 +403,7 @@
   <!-- Top row: minimalist subject header on the left (owned pages only — on policy browse both
        stores stay null so nothing shows), the filter + sort toolbar aligned to the right.
        Colorless, mirroring the single-asset placard: a plain id/handle line + muted meta. -->
-  <div class="assets-head">
+  <div class="assets-head" style="padding-left:{headPadLeft}px; padding-right:{headPadRight}px">
     {#if $address}
       {@const id = idParts($address.address)}
       <div class="subject">
@@ -579,12 +597,13 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 16px;
-    /* logo bottom (~76) + toolbar (28) so the bottom-anchored toolbar drops below the logo. */
-    min-height: 108px;
-    /* Left 20px = the grid's inline padding; right also clears the grid's vertical scrollbar so
-       the toolbar's right edge lands on the rightmost tile. Bottom 0 so the only gap down to the
-       grid is the grid's own top VPAD (= one inter-tile gap). */
-    padding: 12px calc(20px + var(--scrollbar-width, 0px)) 0 20px;
+    /* Logo is 12px from the window top and ~64px tall (48px-wide portrait mark) → bottom ~76px.
+       Toolbar height 28 + the 12px gap we want below the logo → min-height 116 puts the
+       bottom-anchored toolbar 12px under the logo, mirroring the window-top→logo gap. */
+    min-height: 116px;
+    /* padding-left / -right are set inline (headPadLeft/Right) to land the header edges on the
+       first row's tiles (past the grid's scrollbar + centering slack). Bottom 0. */
+    padding: 12px 20px 0;
     box-sizing: border-box;
     background: var(--surface);
   }
