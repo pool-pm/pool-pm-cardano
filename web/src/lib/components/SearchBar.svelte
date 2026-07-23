@@ -172,7 +172,10 @@
   {#if open && results.length > 0}
     <div class="results">
       {#each results as r, i (`${r.kind}:${r.id}:${r.label}`)}
-        <a class="result" class:selected={i === selected} href={`/${r.id}`} onmouseenter={() => (selected = i)}>
+        <!-- onmousemove (not onmouseenter): follow the pointer only when it actually moves, so
+             results re-rendering under a stationary mouse while typing don't hijack the
+             keyboard selection (Enter must stay on the first result). -->
+        <a class="result" class:selected={i === selected} href={`/${r.id}`} onmousemove={() => (selected = i)}>
           <span class="kind">{r.kind.toUpperCase()}</span>
           <span class="name" style:color={poolColor(r.id)}>
             {r.kind === 'pool' ? formatTicker(r.label) : r.kind === 'handle' ? `$${r.label}` : r.label}
