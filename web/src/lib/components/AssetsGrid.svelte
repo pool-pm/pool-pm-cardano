@@ -512,61 +512,59 @@
     background: var(--surface);
   }
 
-  /* Name filter: same look as the sort button, immediately to its left. Fixed height +
-     border-box so it matches the button exactly (a bare input's intrinsic height differs). */
-  .filter-input {
+  /* Both controls wear the asset tiles' "stretched canvas" (.frame): sharp edges, a dark
+     top→bottom gradient, no border, and layered drop + inset shadows so each sits proud of
+     the wall. Same fixed height + border-box so filter and sort line up exactly. */
+  .filter-input,
+  .sort-btn {
     height: 28px;
     box-sizing: border-box;
+    font-family: Inter, sans-serif;
+    font-size: 12px;
+    border: none;
+    border-radius: 0;
+    background: linear-gradient(180deg, #17171c 0%, #0c0c0f 100%);
+    box-shadow:
+      0 6px 14px -5px rgb(0 0 0 / 0.6),
+      inset 0 1px 0 rgb(255 255 255 / 0.08),
+      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
+    transition:
+      color 0.18s ease,
+      box-shadow 0.18s ease;
+  }
+  /* Brighter top-edge light-catch on focus/hover — the canvas "lit more", no flat fill. */
+  .filter-input:focus,
+  .sort-btn:hover,
+  .sort-btn:focus-visible {
+    outline: none;
+    box-shadow:
+      0 6px 14px -5px rgb(0 0 0 / 0.6),
+      inset 0 1px 0 rgb(255 255 255 / 0.16),
+      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
+  }
+
+  .filter-input {
     min-width: 0;
     max-width: 220px;
     padding: 0 12px;
-    border: 1px solid rgb(255 255 255 / 0.12);
-    border-radius: 8px;
-    background: rgb(255 255 255 / 0.03);
     color: rgb(255 255 255 / 0.85);
-    font-family: Inter, sans-serif;
-    font-size: 12px;
-    outline: none;
-    transition:
-      border-color 0.18s ease,
-      background 0.18s ease;
   }
   .filter-input::placeholder {
     color: rgb(255 255 255 / 0.4);
   }
-  .filter-input:focus {
-    border-color: rgb(255 255 255 / 0.28);
-    background: rgb(255 255 255 / 0.06);
-  }
 
-  /* Matching rounded-rectangle control: hairline border, muted text, brightens on hover.
-     Same fixed height as the filter so the two line up exactly. */
   .sort-btn {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    height: 28px;
-    box-sizing: border-box;
     padding: 0 10px;
-    border: 1px solid rgb(255 255 255 / 0.12);
-    border-radius: 8px;
-    background: rgb(255 255 255 / 0.03);
     color: rgb(255 255 255 / 0.55);
-    font-family: Inter, sans-serif;
-    font-size: 12px;
     line-height: 1;
     cursor: pointer;
-    transition:
-      color 0.18s ease,
-      border-color 0.18s ease,
-      background 0.18s ease;
   }
   .sort-btn:hover,
   .sort-btn:focus-visible {
     color: rgb(255 255 255 / 0.85);
-    border-color: rgb(255 255 255 / 0.28);
-    background: rgb(255 255 255 / 0.06);
-    outline: none;
   }
   /* The arrow points down for descending; ascending flips it 180° (smoothly). */
   .sort-arrow {
