@@ -14,6 +14,12 @@ pub struct Card {
     pub image_twitter: String,
     /// `summary_large_image` (a big banner, for the NFT image) vs `summary` (the logo).
     pub large: bool,
+    /// Optional SEO overrides for `<title>` / `<meta name="description">` (the search snippet),
+    /// independent of the social `og:` / `twitter:` title & description. `None` derives them from
+    /// `title` / `description` — set them (e.g. on the home page) to show a tagline to search
+    /// engines while the social card keeps its own text.
+    pub seo_title: Option<String>,
+    pub seo_description: Option<String>,
 }
 
 impl Card {
@@ -25,6 +31,8 @@ impl Card {
             image: format!("{base_url}/logo.jpg"),
             image_twitter: format!("{base_url}/logo_square.jpg"),
             large: false,
+            seo_title: None,
+            seo_description: None,
         }
     }
 
@@ -36,6 +44,8 @@ impl Card {
             image_twitter: image.clone(),
             image,
             large: true,
+            seo_title: None,
+            seo_description: None,
         }
     }
 }
@@ -51,8 +61,15 @@ pub fn render(card: &Card, url: &str) -> String {
     } else {
         "summary"
     };
+    // Social title/description (og:/twitter:), and the SEO title/description (search snippet),
+    // which default to the social ones unless the card overrides them (e.g. the home tagline).
     let title = esc(&card.title);
     let desc = esc(&card.description);
+    let seo_title = esc(&card
+        .seo_title
+        .clone()
+        .unwrap_or_else(|| format!("{} · pool.pm", card.title)));
+    let seo_desc = esc(card.seo_description.as_deref().unwrap_or(&card.description));
     // The description carries `\n` line breaks for the cards; flatten them for the body prose.
     let body_desc = esc(&card.description.replace('\n', " · "));
     let url = esc(url);
@@ -62,10 +79,10 @@ pub fn render(card: &Card, url: &str) -> String {
         "<!doctype html>\n<html lang=\"en\">\n<head>\n\
          <meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>{title} · pool.pm</title>\n\
+         <title>{seo_title}</title>\n\
          <link rel=\"canonical\" href=\"{url}\">\n\
          <meta name=\"robots\" content=\"index, follow\">\n\
-         <meta name=\"description\" content=\"{desc}\">\n\
+         <meta name=\"description\" content=\"{seo_desc}\">\n\
          <meta property=\"og:site_name\" content=\"pool.pm\">\n\
          <meta property=\"og:type\" content=\"website\">\n\
          <meta property=\"og:url\" content=\"{url}\">\n\

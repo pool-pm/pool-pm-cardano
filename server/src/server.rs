@@ -3078,27 +3078,28 @@ async fn build_card(state: &AppState, base_url: &str, path: &str) -> og::Card {
     home_card(state, base_url).await
 }
 
-/// Home card: the "CARDANO" header figures — ADA in circulation, active pools/DReps, % staked.
-/// Falls back to a branded tagline if the stats can't be computed (no snapshot yet).
+/// Home card. The social card (og:/twitter:) is the live "CARDANO" header — title + pool/DRep
+/// counts; the search snippet (`<title>` / meta description) is a stable brand tagline instead,
+/// since those are independent tags.
 async fn home_card(state: &AppState, base_url: &str) -> og::Card {
-    match cardano_stats(state).await {
-        Some(s) => og::Card::branded(
-            base_url,
-            "Cardano".to_string(),
-            // Pools and DReps on their own lines (newline in the description; rendered as a break
-            // by Telegram/Discord/Slack — X collapses it to a space).
-            format!(
-                "{} pools\n{} DReps",
-                og::commas(s.pool_count as i64),
-                og::commas(s.drep_count)
-            ),
+    // Social card: pools and DReps on their own lines (newline → a break on Telegram/Discord/
+    // Slack; X collapses it to a space). Falls back to a tagline if there's no snapshot yet.
+    let description = match cardano_stats(state).await {
+        Some(s) => format!(
+            "{} pools\n{} DReps",
+            og::commas(s.pool_count as i64),
+            og::commas(s.drep_count)
         ),
-        None => og::Card::branded(
-            base_url,
-            "pool.pm".to_string(),
-            "Explore Cardano in real time — pools, stake, addresses, assets and DReps.".to_string(),
-        ),
-    }
+        None => "Stake pools, wallets, native assets and DReps.".to_string(),
+    };
+    let mut card = og::Card::branded(base_url, "Cardano".to_string(), description);
+    card.seo_title = Some("pool.pm — explore Cardano in real time".to_string());
+    card.seo_description = Some(
+        "Explore the Cardano blockchain in real time — stake pools, wallets, stake accounts, \
+         native assets and DReps, with live blocks and mempool."
+            .to_string(),
+    );
+    card
 }
 
 /// Card for a feed subject (pool/drep/stake/addr), read synchronously from the snapshot (no await
