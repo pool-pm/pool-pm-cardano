@@ -1,19 +1,57 @@
 <!doctype html>
 <html lang="en">
-	<head>
-		<meta charset="UTF-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-		<meta name="theme-color" content="#e91e63" />
-		<link rel="icon" href="/favicon.ico" sizes="32x32" />
-		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-		<link rel="manifest" href="/site.webmanifest" />
-		<link rel="preconnect" href="https://rsms.me/" />
-		<link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
-		<title>pool.pm</title>
-	</head>
-	<body>
-		<div id="app"></div>
-		<script type="module" src="/src/main.ts"></script>
-	</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#e91e63" />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <link rel="preconnect" href="https://rsms.me/" />
+    <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
+    <title>pool.pm</title>
+    <!-- SEO baseline (home / any crawler that gets the static shell). Per-page title +
+		     description for bots are server-rendered on the crawler route; see server/src/og.rs. -->
+    <meta
+      name="description"
+      content="Explore the Cardano blockchain in real time — stake pools, wallets, stake accounts, native assets and DReps, with live blocks and mempool."
+    />
+    <link rel="canonical" href="https://pool.pm/" />
+    <meta property="og:site_name" content="pool.pm" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://pool.pm/" />
+    <meta property="og:title" content="pool.pm — explore Cardano in real time" />
+    <meta
+      property="og:description"
+      content="Stake pools, wallets, stake accounts, native assets and DReps — live blocks and mempool."
+    />
+    <meta property="og:image" content="https://pool.pm/logo.jpg" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@pool_pm" />
+    <meta name="twitter:image" content="https://pool.pm/logo.jpg" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "name": "pool.pm",
+            "url": "https://pool.pm/",
+            "description": "Explore the Cardano blockchain in real time — stake pools, wallets, native assets and DReps."
+          },
+          {
+            "@type": "Organization",
+            "name": "pool.pm",
+            "url": "https://pool.pm/",
+            "logo": "https://pool.pm/logo.jpg"
+          }
+        ]
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
 </html>

@@ -40,26 +40,31 @@ impl Card {
     }
 }
 
-/// The full HTML document a crawler receives: the `og:` / `twitter:` head, empty body (bots read
-/// the head; humans never reach this route — nginx serves them the real SPA shell).
+/// The full HTML document a crawler receives. Serves double duty: the `og:` / `twitter:` head for
+/// social unfurls, and — since nginx also routes search-engine bots here — SEO essentials (a
+/// descriptive `<title>`, `<meta name="description">`, `<link rel="canonical">`, `robots`) plus a
+/// small crawlable body (`<h1>` + the facts + a link) so Bing/Brave, which barely run JS, index
+/// real content instead of the bare `pool.pm` shell. Humans never reach this route.
 pub fn render(card: &Card, url: &str) -> String {
     let twitter_card = if card.large {
         "summary_large_image"
     } else {
         "summary"
     };
-    let (title, desc, url, image, twimage) = (
-        esc(&card.title),
-        esc(&card.description),
-        esc(url),
-        esc(&card.image),
-        esc(&card.image_twitter),
-    );
+    let title = esc(&card.title);
+    let desc = esc(&card.description);
+    // The description carries `\n` line breaks for the cards; flatten them for the body prose.
+    let body_desc = esc(&card.description.replace('\n', " · "));
+    let url = esc(url);
+    let image = esc(&card.image);
+    let twimage = esc(&card.image_twitter);
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n\
          <meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>{title}</title>\n\
+         <title>{title} · pool.pm</title>\n\
+         <link rel=\"canonical\" href=\"{url}\">\n\
+         <meta name=\"robots\" content=\"index, follow\">\n\
          <meta name=\"description\" content=\"{desc}\">\n\
          <meta property=\"og:site_name\" content=\"pool.pm\">\n\
          <meta property=\"og:type\" content=\"website\">\n\
@@ -72,7 +77,11 @@ pub fn render(card: &Card, url: &str) -> String {
          <meta name=\"twitter:title\" content=\"{title}\">\n\
          <meta name=\"twitter:description\" content=\"{desc}\">\n\
          <meta name=\"twitter:image\" content=\"{twimage}\">\n\
-         </head>\n<body></body>\n</html>\n"
+         </head>\n<body>\n\
+         <h1>{title}</h1>\n\
+         <p>{body_desc}</p>\n\
+         <p><a href=\"{url}\">Open on pool.pm</a></p>\n\
+         </body>\n</html>\n"
     )
 }
 

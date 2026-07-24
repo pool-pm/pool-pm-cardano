@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Only the home page is a stable, static URL. Subject pages (addresses, assets, pools, …) are
+     dynamic and effectively unbounded, so they're not listed; crawlers reach them via links. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+	<url>
+		<loc>https://pool.pm/</loc>
+		<changefreq>hourly</changefreq>
+		<priority>1.0</priority>
+	</url>
+</urlset>
