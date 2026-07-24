@@ -35,7 +35,17 @@ export function onAssetLive(fn: (e: AssetDelta) => void): () => void {
 }
 
 // --- Infinite scroll (older history) pagination ---
-type FeedCursor = { slot: number; epoch?: number; stake?: string };
+// Stake/address feeds page by `slot` (+ walk anchor); pool/DRep feeds page by the
+// per-source keyset ids. A cursor with all fields undefined is the pool/DRep seed
+// (paginate from the tip).
+type FeedCursor = {
+  slot?: number;
+  epoch?: number;
+  stake?: string;
+  block_id?: number;
+  vote_id?: number;
+  deleg_id?: number;
+};
 let feedCursor: FeedCursor | null = null; // null once seeded-empty or first tx reached
 let feedDone = false;
 let loadingOlder = false;
@@ -100,26 +110,43 @@ export async function loadOlder(): Promise<void> {
   if (loadingOlder || feedDone || !feedCursor) return;
   loadingOlder = true;
   const gen = feedGen;
-  const cur = feedCursor;
   try {
-    const params = new URLSearchParams({ before: String(cur.slot), dpr: feedDpr });
-    if (cur.stake != null) params.set('stake', cur.stake);
-    if (cur.epoch != null) params.set('epoch', String(cur.epoch));
-    const res = await fetch(`${olderBase}/api/feed/${feedId}/older?${params}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    // `blocks` may carry both Block and Reward items (rewards have no block/tx).
-    const data = (await res.json()) as { blocks: (BlockEvent | RewardEvent)[]; cursor?: FeedCursor };
-    if (gen !== feedGen) return; // feed switched mid-fetch — drop this response
-    const now = Date.now();
-    sections.update((s) => {
-      let next = s;
-      for (const item of data.blocks) {
-        next = item.type === 'Reward' ? insertReward(next, item) : insertOlderBlock(next, item, now);
-      }
-      return next;
-    });
-    feedCursor = data.cursor ?? null;
-    feedDone = feedCursor === null;
+    // Fetch pages until one appends something new or history is exhausted. A pool/DRep
+    // feed's first page pages from the tip and overlaps the connect replay, so it can
+    // fully dedup — advance past it. The bound guards against a pathological loop.
+    for (let guard = 0; guard < 20; guard++) {
+      const cur = feedCursor;
+      if (!cur) break;
+      const params = new URLSearchParams({ dpr: feedDpr });
+      if (cur.slot != null) params.set('before', String(cur.slot));
+      if (cur.stake != null) params.set('stake', cur.stake);
+      if (cur.epoch != null) params.set('epoch', String(cur.epoch));
+      if (cur.block_id != null) params.set('block_id', String(cur.block_id));
+      if (cur.vote_id != null) params.set('vote_id', String(cur.vote_id));
+      if (cur.deleg_id != null) params.set('deleg_id', String(cur.deleg_id));
+      const res = await fetch(`${olderBase}/api/feed/${feedId}/older?${params}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // `blocks` may carry both Block and Reward items (rewards have no block/tx).
+      const data = (await res.json()) as {
+        blocks: (BlockEvent | RewardEvent)[];
+        cursor?: FeedCursor;
+      };
+      if (gen !== feedGen) return; // feed switched mid-fetch — drop this response
+      const now = Date.now();
+      let added = 0;
+      sections.update((s) => {
+        let next = s;
+        for (const item of data.blocks) {
+          const before = next;
+          next = item.type === 'Reward' ? insertReward(next, item) : insertOlderBlock(next, item, now);
+          if (next !== before) added++;
+        }
+        return next;
+      });
+      feedCursor = data.cursor ?? null;
+      feedDone = feedCursor === null;
+      if (added > 0 || feedDone) break;
+    }
   } catch (err) {
     console.error('loadOlder error:', err); // keep the cursor so the next scroll retries
   } finally {

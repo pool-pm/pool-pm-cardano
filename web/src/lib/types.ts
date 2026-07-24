@@ -202,7 +202,9 @@ export interface MempoolPruneEvent {
 
 export interface ReplayCursorEvent {
   type: 'ReplayCursor';
-  slot: number;
+  /** Stake/address slot-walk cursor. Absent on pool/DRep feeds (empty marker that
+   *  just enables scrolling; pagination pages from the tip by keyset id). */
+  slot?: number;
   epoch?: number;
   stake?: string;
 }
