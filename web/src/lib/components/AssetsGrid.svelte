@@ -416,7 +416,8 @@
            The subject is bottom-anchored (align-items:flex-end) so this last "assets" line lines
            up with the toolbar's bottom, both one GAP above the grid. -->
       <div class="subject">
-        {#if $address.balance}<div class="subject-balance">{formatAda($address.balance)}</div>{/if}
+        {#if $address.balance}<a class="subject-balance" href="/{$address.address}">{formatAda($address.balance)}</a
+          >{/if}
         <div class="subject-id" title={$address.address}>
           {#if $address.handle}<span class="id-weak">$</span><span class="id-strong">{$address.handle}</span
             >{:else}<span class="id-strong">{id.prefix}</span><span class="id-weak">{id.rest}</span>{/if}
@@ -426,7 +427,7 @@
             {#if $address.pool_id}
               <a class="info" href="/{$address.pool_id}"
                 ><span class="lbl">pool</span><span class="val"
-                  >{$address.pool_ticker ? formatTicker($address.pool_ticker) : shortId($address.pool_id)}</span
+                  >{formatTicker($address.pool_ticker ?? $address.pool_id.slice(5, 10))}</span
                 ></a
               >
             {/if}
@@ -454,7 +455,7 @@
       {@const id = idParts($stake.stake_address)}
       {@const stakeTotal = (BigInt($stake.balance ?? '0') + BigInt($stake.rewards ?? '0')).toString()}
       <div class="subject">
-        <div class="subject-balance">{formatAda(stakeTotal)}</div>
+        <a class="subject-balance" href="/{$stake.stake_address}">{formatAda(stakeTotal)}</a>
         <!-- Handle when the credential owns one ("$handle's stake" to set it apart from the
              addr1 page); otherwise the stake address with its "stake" prefix prominent. -->
         <div class="subject-id" title={$stake.stake_address}>
@@ -467,7 +468,7 @@
             {#if $stake.pool_id}
               <a class="info" href="/{$stake.pool_id}"
                 ><span class="lbl">pool</span><span class="val"
-                  >{$stake.pool_ticker ? formatTicker($stake.pool_ticker) : shortId($stake.pool_id)}</span
+                  >{formatTicker($stake.pool_ticker ?? $stake.pool_id.slice(5, 10))}</span
                 ></a
               >
             {/if}
@@ -648,13 +649,20 @@
     font-weight: 500;
     color: rgb(255 255 255 / 0.45);
   }
+  /* The balance links back to the subject's feed (address/stake page). */
   .subject-balance {
+    display: block;
+    width: fit-content;
     font-size: 42px;
     font-weight: 650;
     line-height: 1.1;
     color: rgb(255 255 255 / 0.92);
     font-variant-numeric: tabular-nums;
     margin-bottom: 1px;
+    text-decoration: none;
+  }
+  .subject-balance:hover {
+    text-decoration: underline;
   }
   /* pool + DRep sit side by side; stake and assets are their own lines below. */
   .subject-deleg {

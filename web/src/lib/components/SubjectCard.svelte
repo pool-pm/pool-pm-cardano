@@ -84,7 +84,7 @@
             style:color={poolColor(stake.pool_id)}
             href="/{stake.pool_id}"
             title={stake.pool_ticker ?? stake.pool_id}
-            >{stake.pool_ticker ? formatTicker(stake.pool_ticker) : stake.pool_id}</a
+            >{formatTicker(stake.pool_ticker ?? stake.pool_id.slice(5, 10))}</a
           >
         </div>
       {/if}
