@@ -23,8 +23,10 @@ use tracing::{info, warn};
 use crate::event::{format_quantity, AssetInfo, BlockTx, DelegationInfo, TxInput, TxOutputInfo};
 use crate::event_bus::EventBus;
 use crate::filter;
+use crate::filter::FeedFilter;
 use crate::model::{asset_fingerprint, drep_bech32_id, pool_bech32_id, DRep, Pool, TxOutput};
 use crate::nftcdn::{rung_for_dpr, NftcdnConfig, SIZE_LADDER};
+use crate::og;
 use crate::state::feed_index::BlockRef;
 use crate::state::{BlockSnapshot, State};
 
@@ -2976,6 +2978,257 @@ async fn asset_media(
     }))
 }
 
+// ---------------------------------------------------------------------------------------------
+// Social-media cards (Open Graph / Twitter). Crawlers don't run the SPA's JS, so these tags must
+// be server-rendered; nginx routes only crawler User-Agents to this axum fallback. The pure card
+// model + HTML renderer + formatting live in `crate::og`.
+// ---------------------------------------------------------------------------------------------
+
+/// axum fallback: a social-card HTML document for any page path. The Host header gives the
+/// absolute base for `og:url` / `og:image` (works across pool.pm / preprod / preview).
+async fn og_page(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
+    uri: axum::http::Uri,
+) -> axum::response::Html<String> {
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("pool.pm");
+    let base_url = format!("https://{host}");
+    let path = uri.path().trim_start_matches('/');
+    let url = if path.is_empty() {
+        format!("{base_url}/")
+    } else {
+        format!("{base_url}/{path}")
+    };
+    let card = build_card(&state, &base_url, path).await;
+    axum::response::Html(og::render(&card, &url))
+}
+
+/// Pick the card for a page path, mirroring the frontend's route parsing (`App.svelte`).
+async fn build_card(state: &AppState, base_url: &str, path: &str) -> og::Card {
+    // Single asset (asset1…, optionally /files/N) — the only image card.
+    let head = path.split('/').next().unwrap_or("");
+    if head.starts_with("asset1") && is_valid_fingerprint(head) {
+        return asset_card(state, head).await;
+    }
+    // Policy grid.
+    if let Some(policy) = path.strip_prefix("policy/") {
+        if is_valid_policy_id(policy) {
+            return og::Card::branded(
+                base_url,
+                format!("Policy {}", og::short_id(policy)),
+                "Cardano minting policy".to_string(),
+            );
+        }
+    }
+    // Owned-assets grid: <addr|stake subject>/assets[/<policy>].
+    if let Some((subj, _)) = path.split_once("/assets") {
+        if let Some(filter) = FeedFilter::from_path(subj) {
+            let guard = state.chain_state.read().await;
+            return subject_card(base_url, &filter, guard.current(), true);
+        }
+    }
+    // $handle → resolve to the holder address and show its card.
+    if let Some(rest) = path.strip_prefix('$') {
+        let name = rest.split('/').next().unwrap_or("").to_lowercase();
+        let guard = state.chain_state.read().await;
+        if let Some(snap) = guard.current() {
+            if let Some(addr) = snap.address_by_handle.get(&name).cloned() {
+                if let Some(filter) = FeedFilter::from_path(&addr) {
+                    return subject_card(base_url, &filter, Some(snap), false);
+                }
+            }
+        }
+        return home_card(base_url);
+    }
+    // Feed subject: pool / drep / stake / addr bech32.
+    if let Some(filter) = FeedFilter::from_path(path) {
+        let guard = state.chain_state.read().await;
+        return subject_card(base_url, &filter, guard.current(), false);
+    }
+    home_card(base_url)
+}
+
+fn home_card(base_url: &str) -> og::Card {
+    og::Card::branded(
+        base_url,
+        "pool.pm".to_string(),
+        "Explore Cardano in real time — pools, stake, addresses, assets and DReps.".to_string(),
+    )
+}
+
+/// Card for a feed subject (pool/drep/stake/addr), read synchronously from the snapshot (no await
+/// while the chain-state guard is held). `owned` = the `…/assets` grid variant.
+fn subject_card(
+    base_url: &str,
+    filter: &FeedFilter,
+    snap: Option<&BlockSnapshot>,
+    owned: bool,
+) -> og::Card {
+    let (mut title, description) = match filter {
+        FeedFilter::Pool(hash) => {
+            let pool = snap.and_then(|s| s.pools.get(&hex::encode(hash)));
+            let pool_id = pool_bech32_id(hash);
+            let ticker = pool
+                .and_then(|p| p.ticker.clone())
+                .unwrap_or_else(|| pool_id.get(5..10).unwrap_or_default().to_string());
+            let live = snap
+                .and_then(|s| State::pool_live_stake(s, hash))
+                .unwrap_or(0);
+            let delegators = snap
+                .and_then(|s| s.pool_delegators.get(hash))
+                .map(|d| d.len())
+                .unwrap_or(0);
+            let blocks = pool.map(|p| p.blocks).unwrap_or(0);
+            (
+                og::format_ticker(&ticker),
+                og::join(&[
+                    format!("Live stake {}", og::fmt_ada(live)),
+                    format!("{delegators} delegators"),
+                    format!("{blocks} blocks"),
+                ]),
+            )
+        }
+        FeedFilter::DRep(bytes) => {
+            let drep_id = drep_bech32_id(bytes);
+            let name = match bytes.first() {
+                Some(0x02) => Some("Always Abstain".to_string()),
+                Some(0x03) => Some("Always No Confidence".to_string()),
+                _ => snap
+                    .and_then(|s| s.dreps.get(bytes))
+                    .and_then(|d| d.given_name.clone()),
+            };
+            let live = snap
+                .and_then(|s| State::drep_live_stake(s, bytes))
+                .unwrap_or(0);
+            let delegators = snap
+                .and_then(|s| s.drep_delegators.get(bytes))
+                .map(|d| d.len())
+                .unwrap_or(0);
+            (
+                name.unwrap_or_else(|| og::short_id(&drep_id)),
+                og::join(&[
+                    format!("Live stake {}", og::fmt_ada(live)),
+                    format!("{delegators} delegators"),
+                ]),
+            )
+        }
+        FeedFilter::Stake(payload) => {
+            let cred = &payload[1..];
+            let handle = snap.and_then(|s| s.handle_for_stake(cred));
+            let balance = snap.and_then(|s| s.stakes.get(cred).copied()).unwrap_or(0);
+            let rewards = snap.and_then(|s| s.rewards.get(cred).copied()).unwrap_or(0);
+            let (pool_id, pool_ticker, drep_id, drep_name) = pool_drep_info(snap, cred);
+            let title = match handle {
+                Some(h) => format!("${h}'s stake"),
+                None => og::short_id(&filter.feed_id()),
+            };
+            (
+                title,
+                og::join(&[
+                    og::fmt_ada(balance + rewards),
+                    pool_line(&pool_id, &pool_ticker),
+                    drep_line(&drep_id, &drep_name),
+                ]),
+            )
+        }
+        FeedFilter::Address(addr) => {
+            let handle = snap.and_then(|s| s.handle_for(addr));
+            let balance = address_bytes(addr)
+                .and_then(|b| snap.and_then(|s| s.address_balances.get(&b).copied()))
+                .unwrap_or(0);
+            let cred = crate::pallas::stake_credential_from_bech32(addr);
+            let (pool_id, pool_ticker, drep_id, drep_name) = match cred.as_deref() {
+                Some(c) => pool_drep_info(snap, c),
+                None => (None, None, None, None),
+            };
+            let title = match handle {
+                Some(h) => format!("${h}"),
+                None => og::short_id(addr),
+            };
+            (
+                title,
+                og::join(&[
+                    og::fmt_ada(balance),
+                    pool_line(&pool_id, &pool_ticker),
+                    drep_line(&drep_id, &drep_name),
+                ]),
+            )
+        }
+    };
+    if owned {
+        title.push_str(" assets");
+    }
+    og::Card::branded(base_url, title, description)
+}
+
+fn pool_line(pool_id: &Option<String>, ticker: &Option<String>) -> String {
+    match pool_id {
+        Some(id) => {
+            let t = ticker
+                .clone()
+                .unwrap_or_else(|| id.get(5..10).unwrap_or_default().to_string());
+            format!("pool {}", og::format_ticker(&t))
+        }
+        None => String::new(),
+    }
+}
+
+fn drep_line(drep_id: &Option<String>, name: &Option<String>) -> String {
+    match drep_id {
+        Some(id) => format!("DRep {}", name.clone().unwrap_or_else(|| og::short_id(id))),
+        None => String::new(),
+    }
+}
+
+/// Card for a single asset: NFTCDN display name + `/image` @1024, plus on-chain quantity/policy
+/// (reuses the same NFTCDN-metadata + `asset_chain_info` merge as `asset_media`).
+async fn asset_card(state: &AppState, fingerprint: &str) -> og::Card {
+    let image = state.nftcdn.signed_url(fingerprint, "image", "size=1024");
+    let db = state.chain_state.read().await.db_handle();
+    let info_fut = async {
+        match db {
+            Some(db) => db.asset_chain_info(fingerprint).await.unwrap_or(None),
+            None => None,
+        }
+    };
+    let meta_url = state.nftcdn.signed_url(fingerprint, "metadata", "");
+    let name_fut = async {
+        let resp = state.http.get(&meta_url).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let meta = serde_json::from_str::<serde_json::Value>(&resp.text().await.ok()?).ok()?;
+        meta["metadata"]["name"]
+            .as_str()
+            .or_else(|| meta["name"].as_str())
+            .map(str::to_string)
+    };
+    let (nftcdn_name, info) = tokio::join!(name_fut, info_fut);
+    let (policy, name_bytes, quantity) = match info {
+        Some((p, n, q, _, _)) => (Some(p), Some(n), q),
+        None => (None, None, None),
+    };
+    let name = nftcdn_name
+        .or_else(|| name_bytes.as_deref().and_then(decode_asset_name))
+        .unwrap_or_else(|| fingerprint.to_string());
+    let mut parts = Vec::new();
+    if let Some(q) = quantity {
+        parts.push(format!("Quantity {q}"));
+    }
+    if let Some(p) = policy {
+        parts.push(format!("Policy {}", og::short_id(&p)));
+    }
+    let description = if parts.is_empty() {
+        "Cardano native asset".to_string()
+    } else {
+        og::join(&parts)
+    };
+    og::Card::with_image(name, description, image)
+}
+
 /// True for a syntactically valid Cardano policy id: exactly 56 lowercase hex
 /// chars (28 bytes). Like `is_valid_fingerprint`, this rejects garbage before it
 /// reaches the DB; the policy id itself never enters an NFTCDN host (only the
@@ -3608,6 +3861,9 @@ pub async fn serve(config: ServeConfig) {
         cardano_cache: Arc::new(tokio::sync::Mutex::new(None)),
     };
     let app = Router::new()
+        // Any unmatched path → social-card HTML (nginx routes only crawler UAs here). All methods,
+        // so a crawler's HEAD probe is answered too.
+        .fallback(og_page)
         .route("/events", get(events))
         .route("/events/{feed_id}/assets", get(asset_feed_events))
         .route("/events/{feed_id}", get(filtered_events))
