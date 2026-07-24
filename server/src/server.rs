@@ -3266,8 +3266,8 @@ async fn asset_card(state: &AppState, fingerprint: &str) -> og::Card {
             .map(str::to_string)
     };
     let (nftcdn_name, info) = tokio::join!(name_fut, info_fut);
-    let (policy, name_bytes, quantity) = match info {
-        Some((p, n, q, _, _)) => (Some(p), Some(n), q),
+    let (name_bytes, quantity, first_mint) = match info {
+        Some((_policy, n, q, first, _last)) => (Some(n), q, first),
         None => (None, None, None),
     };
     let name = nftcdn_name
@@ -3277,8 +3277,10 @@ async fn asset_card(state: &AppState, fingerprint: &str) -> og::Card {
     if let Some(q) = quantity {
         parts.push(format!("Quantity {q}"));
     }
-    if let Some(p) = policy {
-        parts.push(format!("Policy {}", og::short_id(&p)));
+    // First mint date (day-numeric / short-month / year, e.g. "15 Jan 2022"), matching the
+    // asset page's placard — more telling than the policy id.
+    if let Some(minted) = first_mint.and_then(fmt_mint_date) {
+        parts.push(format!("Minted {minted}"));
     }
     let description = if parts.is_empty() {
         "Cardano native asset".to_string()
@@ -3286,6 +3288,11 @@ async fn asset_card(state: &AppState, fingerprint: &str) -> og::Card {
         og::join(&parts)
     };
     og::Card::with_image(name, description, image)
+}
+
+/// A unix timestamp (seconds) as a `"15 Jan 2022"` date, or `None` if out of range.
+fn fmt_mint_date(secs: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp(secs, 0).map(|dt| dt.format("%-d %b %Y").to_string())
 }
 
 /// True for a syntactically valid Cardano policy id: exactly 56 lowercase hex
