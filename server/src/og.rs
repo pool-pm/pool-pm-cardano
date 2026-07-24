@@ -22,8 +22,8 @@ impl Card {
         Card {
             title,
             description,
-            image: format!("{base_url}/logo.png"),
-            image_twitter: format!("{base_url}/logo_square.png"),
+            image: format!("{base_url}/logo.jpg"),
+            image_twitter: format!("{base_url}/logo_square.jpg"),
             large: false,
         }
     }
@@ -187,8 +187,8 @@ mod tests {
         let branded = Card::branded("https://pool.pm", "pool.pm".to_string(), "d".to_string());
         let html = render(&branded, "https://pool.pm/");
         assert!(html.contains(r#"twitter:card" content="summary""#));
-        assert!(html.contains(r#"og:image" content="https://pool.pm/logo.png""#));
-        assert!(html.contains(r#"twitter:image" content="https://pool.pm/logo_square.png""#));
+        assert!(html.contains(r#"og:image" content="https://pool.pm/logo.jpg""#));
+        assert!(html.contains(r#"twitter:image" content="https://pool.pm/logo_square.jpg""#));
     }
 
     #[test]

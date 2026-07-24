@@ -199,7 +199,7 @@ cd web && pnpm dev         # frontend dev server (Vite)
   server answers any *unmatched* path with a server-rendered card — the SPA can't, since
   crawlers don't run JS. So the proxy must send **link-unfurl crawler User-Agents** to
   `--listen` for page (HTML) requests, while serving the static SPA to everyone else. Static
-  files — including `web/dist/logo.png` / `logo_square.png` (the non-asset card image) — must be
+  files — including `web/dist/logo.jpg` / `logo_square.jpg` (the non-asset card image) — must be
   served directly even to crawlers, so `og:image` fetches return the image, not a card. Forward
   the original `Host` so the card's absolute `og:url` / `og:image` use the real domain. Any web
   server works; a minimal nginx form:
@@ -213,7 +213,7 @@ cd web && pnpm dev         # frontend dev server (Vite)
       root /path/to/web/dist;
       location /events { proxy_pass http://127.0.0.1:3000; proxy_buffering off; proxy_read_timeout 24h; }
       location /api/   { proxy_pass http://127.0.0.1:3000; }
-      # static files first, so a crawler's og:image (/logo.png) is served, not a card
+      # static files first, so a crawler's og:image (/logo.jpg) is served, not a card
       location ~* \.(js|css|png|jpe?g|svg|webp|ico|woff2?|txt|xml|webmanifest|map)$ { try_files $uri =404; }
       location / {
           proxy_set_header Host $host;
