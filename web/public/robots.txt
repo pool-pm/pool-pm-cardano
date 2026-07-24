@@ -1,4 +1,33 @@
+# Social / link-unfurl crawlers fetch only a single shared URL on demand — they don't crawl the
+# site — so allow them everything, keeping social cards working on every subject page.
+User-agent: Twitterbot
+User-agent: facebookexternalhit
+User-agent: Facebot
+User-agent: TelegramBot
+User-agent: Discordbot
+User-agent: Slackbot
+User-agent: Slackbot-LinkExpanding
+User-agent: WhatsApp
+User-agent: LinkedInBot
+User-agent: Pinterest
+User-agent: redditbot
+User-agent: Applebot
+User-agent: SkypeUriPreview
+User-agent: Embedly
+User-agent: Iframely
+User-agent: vkShare
+User-agent: Mastodon
+Disallow:
+
+# Search engines and everyone else: the home page is indexable, but the subject space — every
+# address / stake account / pool / DRep / asset / policy — is dynamic and effectively unbounded.
+# Crawling it all is pure server load with no ranking value, so disallow those paths.
 User-agent: *
-Allow: /
+Disallow: /addr
+Disallow: /stake
+Disallow: /pool1
+Disallow: /drep
+Disallow: /asset1
+Disallow: /policy/
 
 Sitemap: https://pool.pm/sitemap.xml
