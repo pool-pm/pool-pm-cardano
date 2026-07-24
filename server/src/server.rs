@@ -3169,17 +3169,24 @@ fn subject_card(
             let balance = snap.and_then(|s| s.stakes.get(cred).copied()).unwrap_or(0);
             let rewards = snap.and_then(|s| s.rewards.get(cred).copied()).unwrap_or(0);
             let (pool_id, pool_ticker, drep_id, drep_name) = pool_drep_info(snap, cred);
+            let assets = snap.map(|s| s.stake_asset_count(cred)).unwrap_or(0);
             let title = match handle {
                 Some(h) => format!("${h}'s stake"),
                 None => og::short_id(&filter.feed_id()),
             };
             (
                 title,
-                og::join(&[
-                    og::fmt_ada(balance + rewards),
-                    pool_line(&pool_id, &pool_ticker),
-                    drep_line(&drep_id, &drep_name),
-                ]),
+                // Balance (+ delegation) on the first line, then the asset count — same shape as
+                // the address card (distinct assets across all of the credential's addresses).
+                format!(
+                    "{}\n{} assets",
+                    og::join(&[
+                        og::fmt_ada(balance + rewards),
+                        pool_line(&pool_id, &pool_ticker),
+                        drep_line(&drep_id, &drep_name),
+                    ]),
+                    og::commas(assets as i64)
+                ),
             )
         }
         FeedFilter::Address(addr) => {
