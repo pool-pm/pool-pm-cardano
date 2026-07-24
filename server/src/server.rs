@@ -28,7 +28,7 @@ use crate::model::{asset_fingerprint, drep_bech32_id, pool_bech32_id, DRep, Pool
 use crate::nftcdn::{rung_for_dpr, NftcdnConfig, SIZE_LADDER};
 use crate::og;
 
-mod api_assets;
+mod assets;
 mod subject;
 use subject::*;
 mod decode;
@@ -1763,12 +1763,12 @@ pub async fn serve(config: ServeConfig) {
         .route("/events", get(events))
         .route("/events/{feed_id}/assets", get(asset_feed_events))
         .route("/events/{feed_id}", get(filtered_events))
-        .route("/api/asset/{fingerprint}", get(api_assets::asset_media))
-        .route("/api/policy/{policy_id}", get(api_assets::policy_assets))
-        .route("/api/assets/{feed_id}", get(api_assets::owned_assets))
+        .route("/api/asset/{fingerprint}", get(assets::asset_media))
+        .route("/api/policy/{policy_id}", get(assets::policy_assets))
+        .route("/api/assets/{feed_id}", get(assets::owned_assets))
         .route(
             "/api/assets/{feed_id}/{policy}",
-            get(api_assets::owned_assets_by_policy),
+            get(assets::owned_assets_by_policy),
         )
         .route("/api/feed/{feed_id}/older", get(replay::older_blocks))
         .route("/api/search", get(search::search))
