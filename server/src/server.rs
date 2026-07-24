@@ -203,7 +203,16 @@ fn drep_sse_event(drep_bytes: &[u8], snap: Option<&BlockSnapshot>) -> Result<Sse
 /// (one db query each per epoch — they settle at epoch boundaries — run off-lock).
 /// Returns the JSON string (so callers can dedup live updates) or `None` before the
 /// first snapshot exists.
-async fn cardano_stats_json(state: &AppState) -> Option<String> {
+/// Homepage "CARDANO" header figures — shared by the SSE `Cardano` event and the home card.
+struct CardanoStats {
+    /// ADA in circulation (lovelace) = max supply − reserves.
+    circulation: i64,
+    pool_count: usize,
+    drep_count: i64,
+    staked_percent: f64,
+}
+
+async fn cardano_stats(state: &AppState) -> Option<CardanoStats> {
     let (total_staked, epoch, pool_count, db) = {
         let guard = state.chain_state.read().await;
         let snap = guard.current()?;
@@ -271,9 +280,20 @@ async fn cardano_stats_json(state: &AppState) -> Option<String> {
     } else {
         0.0
     };
+    Some(CardanoStats {
+        circulation,
+        pool_count,
+        drep_count: cached.drep_count,
+        staked_percent,
+    })
+}
+
+/// The homepage `Cardano` SSE event JSON.
+async fn cardano_stats_json(state: &AppState) -> Option<String> {
+    let s = cardano_stats(state).await?;
     Some(format!(
         r#"{{"type":"Cardano","circulation":"{}","pool_count":{},"drep_count":{},"staked_percent":{:.1}}}"#,
-        circulation, pool_count, cached.drep_count, staked_percent
+        s.circulation, s.pool_count, s.drep_count, s.staked_percent
     ))
 }
 
@@ -3041,22 +3061,36 @@ async fn build_card(state: &AppState, base_url: &str, path: &str) -> og::Card {
                 }
             }
         }
-        return home_card(base_url);
+        return home_card(state, base_url).await;
     }
     // Feed subject: pool / drep / stake / addr bech32.
     if let Some(filter) = FeedFilter::from_path(path) {
         let guard = state.chain_state.read().await;
         return subject_card(base_url, &filter, guard.current(), false);
     }
-    home_card(base_url)
+    home_card(state, base_url).await
 }
 
-fn home_card(base_url: &str) -> og::Card {
-    og::Card::branded(
-        base_url,
-        "pool.pm".to_string(),
-        "Explore Cardano in real time — pools, stake, addresses, assets and DReps.".to_string(),
-    )
+/// Home card: the "CARDANO" header figures — ADA in circulation, active pools/DReps, % staked.
+/// Falls back to a branded tagline if the stats can't be computed (no snapshot yet).
+async fn home_card(state: &AppState, base_url: &str) -> og::Card {
+    match cardano_stats(state).await {
+        Some(s) => og::Card::branded(
+            base_url,
+            "Cardano".to_string(),
+            og::join(&[
+                format!("{} circulating", og::fmt_ada(s.circulation)),
+                format!("{} pools", og::commas(s.pool_count as i64)),
+                format!("{} DReps", og::commas(s.drep_count)),
+                format!("{:.1}% staked", s.staked_percent),
+            ]),
+        ),
+        None => og::Card::branded(
+            base_url,
+            "pool.pm".to_string(),
+            "Explore Cardano in real time — pools, stake, addresses, assets and DReps.".to_string(),
+        ),
+    }
 }
 
 /// Card for a feed subject (pool/drep/stake/addr), read synchronously from the snapshot (no await

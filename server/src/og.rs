@@ -93,10 +93,11 @@ pub fn esc(s: &str) -> String {
 
 /// A lovelace amount as whole ADA with thousands separators, e.g. `1_234_567_000000` → `"₳1,234,567"`.
 pub fn fmt_ada(lovelace: i64) -> String {
-    format!("₳{}", group_thousands(lovelace / 1_000_000))
+    format!("₳{}", commas(lovelace / 1_000_000))
 }
 
-fn group_thousands(n: i64) -> String {
+/// An integer with thousands separators, e.g. `3179` → `"3,179"`.
+pub fn commas(n: i64) -> String {
     let neg = n < 0;
     let digits = n.unsigned_abs().to_string();
     let bytes = digits.as_bytes();
