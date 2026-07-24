@@ -3036,11 +3036,18 @@ async fn build_card(state: &AppState, base_url: &str, path: &str) -> og::Card {
     // Policy grid.
     if let Some(policy) = path.strip_prefix("policy/") {
         if is_valid_policy_id(policy) {
-            return og::Card::branded(
-                base_url,
-                format!("Policy {}", og::short_id(policy)),
-                "Cardano minting policy".to_string(),
-            );
+            let count = match hex::decode(policy) {
+                Ok(bytes) => match state.chain_state.read().await.db_handle() {
+                    Some(db) => db.policy_asset_count(&bytes).await.ok(),
+                    None => None,
+                },
+                Err(_) => None,
+            };
+            let desc = match count {
+                Some(n) => format!("{} assets", og::commas(n)),
+                None => "Cardano minting policy".to_string(),
+            };
+            return og::Card::branded(base_url, format!("Policy {}", og::short_id(policy)), desc);
         }
     }
     // Owned-assets grid: <addr|stake subject>/assets[/<policy>].
@@ -3078,12 +3085,13 @@ async fn home_card(state: &AppState, base_url: &str) -> og::Card {
         Some(s) => og::Card::branded(
             base_url,
             "Cardano".to_string(),
-            og::join(&[
-                format!("{} circulating", og::fmt_ada(s.circulation)),
-                format!("{} pools", og::commas(s.pool_count as i64)),
-                format!("{} DReps", og::commas(s.drep_count)),
-                format!("{:.1}% staked", s.staked_percent),
-            ]),
+            // Pools and DReps on their own lines (newline in the description; rendered as a break
+            // by Telegram/Discord/Slack — X collapses it to a space).
+            format!(
+                "{} pools\n{} DReps",
+                og::commas(s.pool_count as i64),
+                og::commas(s.drep_count)
+            ),
         ),
         None => og::Card::branded(
             base_url,
@@ -3118,11 +3126,14 @@ fn subject_card(
             let blocks = pool.map(|p| p.blocks).unwrap_or(0);
             (
                 og::format_ticker(&ticker),
-                og::join(&[
-                    format!("Live stake {}", og::fmt_ada(live)),
-                    format!("{delegators} delegators"),
-                    format!("{blocks} blocks"),
-                ]),
+                format!(
+                    "STAKE POOL\n{}",
+                    og::join(&[
+                        format!("Live stake {}", og::fmt_ada(live)),
+                        format!("{delegators} delegators"),
+                        format!("{blocks} blocks"),
+                    ])
+                ),
             )
         }
         FeedFilter::DRep(bytes) => {
@@ -3143,10 +3154,13 @@ fn subject_card(
                 .unwrap_or(0);
             (
                 name.unwrap_or_else(|| og::short_id(&drep_id)),
-                og::join(&[
-                    format!("Live stake {}", og::fmt_ada(live)),
-                    format!("{delegators} delegators"),
-                ]),
+                format!(
+                    "DREP\n{}",
+                    og::join(&[
+                        format!("Live stake {}", og::fmt_ada(live)),
+                        format!("{delegators} delegators"),
+                    ])
+                ),
             )
         }
         FeedFilter::Stake(payload) => {
@@ -3170,8 +3184,14 @@ fn subject_card(
         }
         FeedFilter::Address(addr) => {
             let handle = snap.and_then(|s| s.handle_for(addr));
-            let balance = address_bytes(addr)
-                .and_then(|b| snap.and_then(|s| s.address_balances.get(&b).copied()))
+            let addr_bytes = address_bytes(addr);
+            let balance = addr_bytes
+                .as_deref()
+                .and_then(|b| snap.and_then(|s| s.address_balances.get(b).copied()))
+                .unwrap_or(0);
+            let assets = addr_bytes
+                .as_deref()
+                .and_then(|b| snap.map(|s| s.address_asset_count(b)))
                 .unwrap_or(0);
             let cred = crate::pallas::stake_credential_from_bech32(addr);
             let (pool_id, pool_ticker, drep_id, drep_name) = match cred.as_deref() {
@@ -3184,11 +3204,16 @@ fn subject_card(
             };
             (
                 title,
-                og::join(&[
-                    og::fmt_ada(balance),
-                    pool_line(&pool_id, &pool_ticker),
-                    drep_line(&drep_id, &drep_name),
-                ]),
+                // Balance (+ delegation, if any) on the first line, then the asset count.
+                format!(
+                    "{}\n{} assets",
+                    og::join(&[
+                        og::fmt_ada(balance),
+                        pool_line(&pool_id, &pool_ticker),
+                        drep_line(&drep_id, &drep_name),
+                    ]),
+                    og::commas(assets as i64)
+                ),
             )
         }
     };

@@ -373,6 +373,18 @@ impl DbSync {
         }))
     }
 
+    /// Number of distinct assets minted under a policy — one `multi_asset` row per (policy, name),
+    /// so a plain count over the unique `(policy, name)` index. Used by the policy social card.
+    pub async fn policy_asset_count(&self, policy: &[u8]) -> Result<i64, sqlx::Error> {
+        let row = sqlx::query!(
+            r#"SELECT count(*) AS "count!" FROM multi_asset WHERE policy = $1"#,
+            policy
+        )
+        .fetch_one(&self.db)
+        .await?;
+        Ok(row.count)
+    }
+
     /// All assets of a policy, newest-first-minted first, keyset-paginated on
     /// `multi_asset.id` (a bigserial assigned at first sighting, so a higher id
     /// means more recently first minted). `cursor` is the last id of the previous
