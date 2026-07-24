@@ -168,7 +168,6 @@ fn subject_card(
             let handle = snap.and_then(|s| s.handle_for_stake(cred));
             let balance = snap.and_then(|s| s.stakes.get(cred).copied()).unwrap_or(0);
             let rewards = snap.and_then(|s| s.rewards.get(cred).copied()).unwrap_or(0);
-            let (pool_id, pool_ticker, drep_id, drep_name) = pool_drep_info(snap, cred);
             let assets = snap.map(|s| s.stake_asset_count(cred)).unwrap_or(0);
             let title = match handle {
                 Some(h) => format!("${h}'s stake"),
@@ -176,17 +175,11 @@ fn subject_card(
             };
             (
                 title,
-                // Balance (+ delegation) on the first line, then the asset count — same shape as
-                // the address card (distinct assets across all of the credential's addresses).
-                format!(
-                    "{}\n{} assets",
-                    og::join(&[
-                        og::fmt_ada(balance + rewards),
-                        pool_line(&pool_id, &pool_ticker),
-                        drep_line(&drep_id, &drep_name),
-                    ]),
-                    og::commas(assets as i64)
-                ),
+                // Balance + asset count (distinct assets across all the credential's addresses).
+                og::join(&[
+                    og::fmt_ada(balance + rewards),
+                    format!("{} assets", og::commas(assets as i64)),
+                ]),
             )
         }
         FeedFilter::Address(addr) => {
@@ -200,27 +193,17 @@ fn subject_card(
                 .as_deref()
                 .and_then(|b| snap.map(|s| s.address_asset_count(b)))
                 .unwrap_or(0);
-            let cred = crate::pallas::stake_credential_from_bech32(addr);
-            let (pool_id, pool_ticker, drep_id, drep_name) = match cred.as_deref() {
-                Some(c) => pool_drep_info(snap, c),
-                None => (None, None, None, None),
-            };
             let title = match handle {
                 Some(h) => format!("${h}"),
                 None => og::short_id(addr),
             };
             (
                 title,
-                // Balance (+ delegation, if any) on the first line, then the asset count.
-                format!(
-                    "{}\n{} assets",
-                    og::join(&[
-                        og::fmt_ada(balance),
-                        pool_line(&pool_id, &pool_ticker),
-                        drep_line(&drep_id, &drep_name),
-                    ]),
-                    og::commas(assets as i64)
-                ),
+                // Balance + asset count.
+                og::join(&[
+                    og::fmt_ada(balance),
+                    format!("{} assets", og::commas(assets as i64)),
+                ]),
             )
         }
     };
@@ -228,25 +211,6 @@ fn subject_card(
         title.push_str(" assets");
     }
     og::Card::branded(base_url, title, description)
-}
-
-fn pool_line(pool_id: &Option<String>, ticker: &Option<String>) -> String {
-    match pool_id {
-        Some(id) => {
-            let t = ticker
-                .clone()
-                .unwrap_or_else(|| id.get(5..10).unwrap_or_default().to_string());
-            format!("pool {}", og::format_ticker(&t))
-        }
-        None => String::new(),
-    }
-}
-
-fn drep_line(drep_id: &Option<String>, name: &Option<String>) -> String {
-    match drep_id {
-        Some(id) => format!("DRep {}", name.clone().unwrap_or_else(|| og::short_id(id))),
-        None => String::new(),
-    }
 }
 
 /// Card for a single asset: NFTCDN display name + `/image` @1024, plus on-chain quantity/policy

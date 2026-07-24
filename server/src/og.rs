@@ -169,7 +169,6 @@ pub fn join(parts: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(" · ")
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
