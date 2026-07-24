@@ -454,8 +454,45 @@ async fn search(
             scored.push((score, Hit::DRep(drep)));
         }
     }
-    // Best score first; truncate, then resolve delegators + live stake for the survivors.
-    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    // Rank: score, then delegator count, then live stake — all descending. Duplicate
+    // tickers / DRep names (not unique on-chain) tie on score, so the bigger one leads.
+    // Delegator count is an O(1) set length → cheap for every match. Live stake is
+    // O(delegators), so it's computed only within a run that already ties on both score
+    // and delegator count (rare, tiny) — never for every match.
+    let deleg_count = |hit: &Hit| -> usize {
+        match hit {
+            Hit::Pool(p) => snap.pool_delegators.get(&p.hash_raw).map_or(0, |d| d.len()),
+            Hit::DRep(d) => snap
+                .drep_delegators
+                .get(&d.hash_bytes)
+                .map_or(0, |d| d.len()),
+        }
+    };
+    let live_stake = |hit: &Hit| -> i64 {
+        match hit {
+            Hit::Pool(p) => State::pool_live_stake(&snap, &p.hash_raw).unwrap_or(0),
+            Hit::DRep(d) => State::drep_live_stake(&snap, &d.hash_bytes).unwrap_or(0),
+        }
+    };
+    scored.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then_with(|| deleg_count(&b.1).cmp(&deleg_count(&a.1)))
+    });
+    // Break the (rare) remaining score+delegators ties by live stake, descending.
+    let mut i = 0;
+    while i < scored.len() {
+        let mut j = i + 1;
+        while j < scored.len()
+            && scored[j].0.total_cmp(&scored[i].0) == std::cmp::Ordering::Equal
+            && deleg_count(&scored[j].1) == deleg_count(&scored[i].1)
+        {
+            j += 1;
+        }
+        if j - i > 1 {
+            scored[i..j].sort_by(|a, b| live_stake(&b.1).cmp(&live_stake(&a.1)));
+        }
+        i = j;
+    }
     scored.truncate(SEARCH_LIMIT);
     let results: Vec<SearchResult> = scored
         .into_iter()
