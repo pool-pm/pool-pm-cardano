@@ -184,11 +184,14 @@ pub enum Event {
         timestamp: u64,
         rows: Vec<RewardRow>,
     },
-    /// Emitted once at the end of a stake/address replay so the client can paginate
-    /// older history: `slot` = oldest replayed block; `stake`/`epoch` = the pre-block
-    /// stake walk anchor for the next page (absent on address feeds — no walk).
+    /// Emitted once at the end of a replay so the client can paginate older history.
+    /// Stake/address feeds: `slot` = oldest replayed block; `stake`/`epoch` = the
+    /// pre-block stake-walk anchor for the next page (absent on address feeds).
+    /// Pool/DRep feeds carry none of those — an empty marker that enables scrolling;
+    /// pagination pages from the tip by per-source keyset id and dedups the overlap.
     ReplayCursor {
-        slot: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        slot: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         epoch: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]

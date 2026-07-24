@@ -13,7 +13,7 @@ use crate::model::{
 use crate::pallas::{
     stake_credential_from_address_bytes, stake_credential_from_bech32, PoolUpdate,
 };
-pub use dbsync::DbSync;
+pub use dbsync::{DbSync, DelegationFill, FillBlock};
 pub use feed_index::FeedIndex;
 
 #[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -612,8 +612,10 @@ impl BlockSnapshot {
 /// asset's `mint_time` (`Qty` → `Held`). v7: holdings key `(cred, addr)` became an interned
 /// `Arc<AddrKey>` (wire shape unchanged per entry, but re-interned on load). v8: the `Held`
 /// leaf became a packed 128-bit `(mint_slot:30 | qty:98)` and `mint_time` (unix seconds)
-/// became `mint_slot` — different semantics, so old leaves must rebuild.
-const SNAPSHOT_FORMAT: u32 = 8;
+/// became `mint_slot` — different semantics, so old leaves must rebuild. v9: `FeedIndex`
+/// gained `pool_votes`/`drep_votes` (governance vote-block index); rmp-serde encodes structs
+/// positionally, so the extra fields shift the layout and old snapshots must rebuild.
+const SNAPSHOT_FORMAT: u32 = 9;
 
 /// Serializes [`BlockSnapshot::asset_holdings`] as a plain msgpack map with the key `(cred,
 /// addr)` **deref'd off its `Arc`** — so the wire form carries no `Arc` (no serde `rc`

@@ -94,6 +94,43 @@ fn drep_bytes(raw: Option<&[u8]>, has_script: Option<bool>, view: Option<&str>) 
     }
 }
 
+/// Split a feed's DRep `tag+hash` bytes into `(raw 28-byte hash, has_script)` for a
+/// `drep_hash` lookup. `None` for the predefined DReps (0x02 abstain / 0x03 no
+/// confidence — they never vote and their feeds are never empty) or malformed input.
+/// Inverse of [`drep_bytes`].
+fn drep_raw_script(drep_bytes: &[u8]) -> Option<(&[u8], bool)> {
+    match drep_bytes.first() {
+        Some(0x00) | Some(0x01) if drep_bytes.len() == 29 => {
+            Some((&drep_bytes[1..], drep_bytes[0] == 0x01))
+        }
+        _ => None,
+    }
+}
+
+/// A block ref from a pool/DRep source query (minted block or governance-vote block).
+/// `id` is the source row's keyset cursor: `block.id` for minted blocks, `voting_procedure.id`
+/// for votes — passed back as `before_id` to page older.
+pub struct FillBlock {
+    pub id: i64,
+    pub slot: u64,
+    pub block_hash: String,
+    pub block_no: u64,
+}
+
+/// One delegation event for a pool/DRep feed: the block/tx it happened in and the
+/// delegator's stake credential (28 bytes). `id` is the keyset cursor (`delegation.id`
+/// / `delegation_vote.id`). The `from`/`to` labels and live_stake are resolved by the
+/// caller from the current snapshot.
+#[derive(Clone)]
+pub struct DelegationFill {
+    pub id: i64,
+    pub slot: u64,
+    pub block_hash: String,
+    pub block_no: u64,
+    pub tx_hash: String,
+    pub cred: Vec<u8>,
+}
+
 impl DbSync {
     pub async fn new(url: &Url) -> Result<Self, sqlx::Error> {
         let options = PgConnectOptions::from_url(url)?
@@ -274,6 +311,212 @@ impl DbSync {
                     r.block_no as u64,
                     r.epoch_no as u64,
                 )
+            })
+            .collect())
+    }
+
+    // ---- Empty-feed fill + pool/DRep infinite scroll -------------------------
+    // Source queries for a pool/DRep feed's blocks, votes and gained delegations.
+    // Each is a keyset backward top-K on a `(subject_id, id)` composite (see the
+    // ansible `idx_*_id` indexes): `WHERE subject = X AND src.id < before ORDER BY
+    // src.id DESC LIMIT n`. `before = i64::MAX` is the first page (used by the
+    // empty-feed fill on connect); older pages pass the previous page's per-source
+    // min id — so every page is index-only and sub-ms regardless of scroll depth.
+    // They omit the stake-change / lost-delegation overlay the live index carries:
+    // a row shows *that* an event happened, cheaply. `id` is returned as the cursor.
+
+    /// The pool's minted blocks with `block.id < before_id`, newest-first (via
+    /// idx_block_slot_leader_id_id). Empty if the pool never minted.
+    pub async fn pool_recent_blocks(
+        &self,
+        pool_hash: &[u8],
+        before_id: i64,
+        limit: i64,
+    ) -> Result<Vec<FillBlock>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT b.id AS "id!", b.slot_no AS "slot_no!", b.hash,
+                      b.block_no AS "block_no!"
+               FROM block b
+               WHERE b.slot_leader_id = (
+                   SELECT sl.id FROM slot_leader sl
+                   JOIN pool_hash ph ON ph.id = sl.pool_hash_id
+                   WHERE ph.hash_raw = $1
+               )
+               AND b.id < $2
+               ORDER BY b.id DESC
+               LIMIT $3"#,
+            pool_hash,
+            before_id,
+            limit
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| FillBlock {
+                id: r.id,
+                slot: r.slot_no as u64,
+                block_hash: hex::encode(r.hash),
+                block_no: r.block_no as u64,
+            })
+            .collect())
+    }
+
+    /// The pool's gained delegations with `delegation.id < before_id`, newest-first
+    /// (via idx_delegation_pool_hash_id_id). Lost delegations aren't indexed.
+    pub async fn pool_recent_delegations(
+        &self,
+        pool_hash: &[u8],
+        before_id: i64,
+        limit: i64,
+    ) -> Result<Vec<DelegationFill>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT d.id AS "id!", b.slot_no AS "slot_no!", b.hash,
+                      b.block_no AS "block_no!", t.hash AS tx_hash, sa.hash_raw AS stake_address
+               FROM delegation d
+               JOIN tx t ON t.id = d.tx_id
+               JOIN block b ON b.id = t.block_id
+               JOIN stake_address sa ON sa.id = d.addr_id
+               WHERE d.pool_hash_id = (SELECT id FROM pool_hash WHERE hash_raw = $1)
+               AND d.id < $2
+               ORDER BY d.id DESC
+               LIMIT $3"#,
+            pool_hash,
+            before_id,
+            limit
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| DelegationFill {
+                id: r.id,
+                slot: r.slot_no as u64,
+                block_hash: hex::encode(r.hash),
+                block_no: r.block_no as u64,
+                tx_hash: hex::encode(r.tx_hash),
+                // hash_raw is 29 bytes (header + 28-byte credential); strip header.
+                cred: r.stake_address[1..].to_vec(),
+            })
+            .collect())
+    }
+
+    /// Blocks holding the pool's (SPO) governance votes with `voting_procedure.id <
+    /// before_id`, newest-first (via idx_voting_procedure_pool_voter_id). Vote details
+    /// are decoded from the fetched block; this only supplies the refs.
+    pub async fn pool_recent_votes(
+        &self,
+        pool_hash: &[u8],
+        before_id: i64,
+        limit: i64,
+    ) -> Result<Vec<FillBlock>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT vp.id AS "id!", b.slot_no AS "slot_no!", b.hash,
+                      b.block_no AS "block_no!"
+               FROM voting_procedure vp
+               JOIN tx t ON t.id = vp.tx_id
+               JOIN block b ON b.id = t.block_id
+               WHERE vp.pool_voter = (SELECT id FROM pool_hash WHERE hash_raw = $1)
+               AND vp.id < $2
+               ORDER BY vp.id DESC
+               LIMIT $3"#,
+            pool_hash,
+            before_id,
+            limit
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| FillBlock {
+                id: r.id,
+                slot: r.slot_no as u64,
+                block_hash: hex::encode(r.hash),
+                block_no: r.block_no as u64,
+            })
+            .collect())
+    }
+
+    /// The DRep's gained vote-delegations with `delegation_vote.id < before_id`,
+    /// newest-first (via idx_delegation_vote_drep_hash_id_id). `drep_bytes` is the
+    /// feed's tag+hash form; predefined DReps (0x02/0x03) / malformed input → empty.
+    pub async fn drep_recent_delegations(
+        &self,
+        drep_bytes: &[u8],
+        before_id: i64,
+        limit: i64,
+    ) -> Result<Vec<DelegationFill>, sqlx::Error> {
+        let Some((raw, has_script)) = drep_raw_script(drep_bytes) else {
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query!(
+            r#"SELECT dv.id AS "id!", b.slot_no AS "slot_no!", b.hash,
+                      b.block_no AS "block_no!", t.hash AS tx_hash, sa.hash_raw AS stake_address
+               FROM delegation_vote dv
+               JOIN tx t ON t.id = dv.tx_id
+               JOIN block b ON b.id = t.block_id
+               JOIN stake_address sa ON sa.id = dv.addr_id
+               WHERE dv.drep_hash_id =
+                   (SELECT id FROM drep_hash WHERE raw = $1 AND has_script = $2)
+               AND dv.id < $3
+               ORDER BY dv.id DESC
+               LIMIT $4"#,
+            raw,
+            has_script,
+            before_id,
+            limit
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| DelegationFill {
+                id: r.id,
+                slot: r.slot_no as u64,
+                block_hash: hex::encode(r.hash),
+                block_no: r.block_no as u64,
+                tx_hash: hex::encode(r.tx_hash),
+                cred: r.stake_address[1..].to_vec(),
+            })
+            .collect())
+    }
+
+    /// Blocks holding the DRep's governance votes with `voting_procedure.id <
+    /// before_id`, newest-first (via idx_voting_procedure_drep_voter_id).
+    pub async fn drep_recent_votes(
+        &self,
+        drep_bytes: &[u8],
+        before_id: i64,
+        limit: i64,
+    ) -> Result<Vec<FillBlock>, sqlx::Error> {
+        let Some((raw, has_script)) = drep_raw_script(drep_bytes) else {
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query!(
+            r#"SELECT vp.id AS "id!", b.slot_no AS "slot_no!", b.hash,
+                      b.block_no AS "block_no!"
+               FROM voting_procedure vp
+               JOIN tx t ON t.id = vp.tx_id
+               JOIN block b ON b.id = t.block_id
+               WHERE vp.drep_voter =
+                   (SELECT id FROM drep_hash WHERE raw = $1 AND has_script = $2)
+               AND vp.id < $3
+               ORDER BY vp.id DESC
+               LIMIT $4"#,
+            raw,
+            has_script,
+            before_id,
+            limit
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| FillBlock {
+                id: r.id,
+                slot: r.slot_no as u64,
+                block_hash: hex::encode(r.hash),
+                block_no: r.block_no as u64,
             })
             .collect())
     }

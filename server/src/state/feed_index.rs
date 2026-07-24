@@ -31,6 +31,13 @@ pub struct FeedIndex {
     drep_stake_change: HashMap<Vec<u8>, Vec<BlockRef>>,
     drep_delegation_events: Vec<DelegationEntry>,
     drep_delegation_index: HashMap<Vec<u8>, Vec<usize>>,
+    /// Blocks in which a pool (SPO) / DRep cast a governance vote, keyed by the same
+    /// bytes as the other subject maps (pool hash / drep tag+hash). Populated per block
+    /// from `extract_vote_subjects`; feeds surface votes without a db query.
+    #[serde(default)]
+    pool_votes: HashMap<Vec<u8>, Vec<BlockRef>>,
+    #[serde(default)]
+    drep_votes: HashMap<Vec<u8>, Vec<BlockRef>>,
 }
 
 impl FeedIndex {
@@ -61,6 +68,8 @@ impl FeedIndex {
         let (pool_minted_b, _) = sum_blockrefs(&self.pool_minted);
         let (pool_stake_b, _) = sum_blockrefs(&self.pool_stake_change);
         let (drep_stake_b, _) = sum_blockrefs(&self.drep_stake_change);
+        let (pool_votes_b, _) = sum_blockrefs(&self.pool_votes);
+        let (drep_votes_b, _) = sum_blockrefs(&self.drep_votes);
 
         // Vec<DelegationEntry> — each owns two Strings and up to three Vec<u8>.
         let sum_events = |v: &Vec<DelegationEntry>| -> usize {
@@ -88,6 +97,8 @@ impl FeedIndex {
         let total = pool_minted_b
             + pool_stake_b
             + drep_stake_b
+            + pool_votes_b
+            + drep_votes_b
             + pool_events_b
             + drep_events_b
             + pool_index_b
@@ -99,6 +110,8 @@ impl FeedIndex {
             pool_minted_mb = mb(pool_minted_b),
             pool_stake_change_mb = mb(pool_stake_b),
             drep_stake_change_mb = mb(drep_stake_b),
+            pool_votes_mb = mb(pool_votes_b),
+            drep_votes_mb = mb(drep_votes_b),
             pool_events = self.delegation_events.len(),
             pool_events_mb = mb(pool_events_b),
             drep_events = self.drep_delegation_events.len(),
@@ -175,6 +188,38 @@ impl FeedIndex {
                 .or_default()
                 .push(block_ref.clone());
         }
+    }
+
+    pub fn add_pool_votes(&mut self, pools: HashSet<Vec<u8>>, block_ref: BlockRef) {
+        for pool_hash in pools {
+            self.pool_votes
+                .entry(pool_hash)
+                .or_default()
+                .push(block_ref.clone());
+        }
+    }
+
+    pub fn add_drep_votes(&mut self, dreps: HashSet<Vec<u8>>, block_ref: BlockRef) {
+        for drep_bytes in dreps {
+            self.drep_votes
+                .entry(drep_bytes)
+                .or_default()
+                .push(block_ref.clone());
+        }
+    }
+
+    pub fn pool_vote_blocks(&self, pool_hash: &[u8]) -> &[BlockRef] {
+        self.pool_votes
+            .get(pool_hash)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn drep_vote_blocks(&self, drep_bytes: &[u8]) -> &[BlockRef] {
+        self.drep_votes
+            .get(drep_bytes)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     pub fn add_drep_delegation_event(&mut self, entry: DelegationEntry) {
@@ -263,6 +308,18 @@ impl FeedIndex {
             .partition_point(|e| e.slot <= slot);
         self.drep_delegation_events.truncate(keep);
         self.rebuild_drep_delegation_index();
+
+        for entries in self.pool_votes.values_mut() {
+            let keep = entries.partition_point(|r| r.slot <= slot);
+            entries.truncate(keep);
+        }
+        self.pool_votes.retain(|_, v| !v.is_empty());
+
+        for entries in self.drep_votes.values_mut() {
+            let keep = entries.partition_point(|r| r.slot <= slot);
+            entries.truncate(keep);
+        }
+        self.drep_votes.retain(|_, v| !v.is_empty());
     }
 
     pub fn prune(&mut self, boundary_slot: u64) {
@@ -305,6 +362,22 @@ impl FeedIndex {
             self.drep_delegation_events.drain(..start);
             self.rebuild_drep_delegation_index();
         }
+
+        for entries in self.pool_votes.values_mut() {
+            let start = entries.partition_point(|r| r.slot < boundary_slot);
+            if start > 0 {
+                entries.drain(..start);
+            }
+        }
+        self.pool_votes.retain(|_, v| !v.is_empty());
+
+        for entries in self.drep_votes.values_mut() {
+            let start = entries.partition_point(|r| r.slot < boundary_slot);
+            if start > 0 {
+                entries.drain(..start);
+            }
+        }
+        self.drep_votes.retain(|_, v| !v.is_empty());
     }
 
     fn rebuild_delegation_index(&mut self) {
@@ -399,6 +472,13 @@ mod tests {
         dreps.insert(drep.clone());
         fi.add_drep_stake_changes(dreps, bref(220));
         fi.add_drep_delegation_event(deleg(180, &cred, None, Some(drep.clone())));
+        // Governance votes: an SPO vote at 280, a DRep vote at 120.
+        let mut vote_pools = HashSet::new();
+        vote_pools.insert(pool.clone());
+        fi.add_pool_votes(vote_pools, bref(280));
+        let mut vote_dreps = HashSet::new();
+        vote_dreps.insert(drep.clone());
+        fi.add_drep_votes(vote_dreps, bref(120));
 
         // Initial state.
         assert_eq!(fi.pool_minted_blocks(&pool).len(), 3);
@@ -406,9 +486,13 @@ mod tests {
         assert_eq!(fi.delegation_entries_by_cred(&cred).0.len(), 2);
         assert_eq!(fi.drep_stake_change_blocks(&drep).len(), 1);
         assert_eq!(fi.drep_delegation_entries(&drep).len(), 1);
+        assert_eq!(fi.pool_vote_blocks(&pool).len(), 1);
+        assert_eq!(fi.drep_vote_blocks(&drep).len(), 1);
 
         // Rollback to 200: drop slot > 200.
         fi.rollback(200);
+        assert_eq!(fi.pool_vote_blocks(&pool).len(), 0); // 280 dropped, key removed
+        assert_eq!(fi.drep_vote_blocks(&drep).len(), 1); // 120 kept
         let minted: Vec<u64> = fi
             .pool_minted_blocks(&pool)
             .iter()
@@ -430,5 +514,6 @@ mod tests {
         assert_eq!(minted, vec![200]); // 100 dropped
         assert_eq!(fi.delegation_entries_by_cred(&cred).0.len(), 1); // slot 150 kept
         assert_eq!(fi.drep_delegation_entries(&drep).len(), 1); // slot 180 kept
+        assert_eq!(fi.drep_vote_blocks(&drep).len(), 0); // vote at 120 pruned (< 150)
     }
 }

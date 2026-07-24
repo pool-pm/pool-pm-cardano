@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.id AS \"id!\", b.slot_no AS \"slot_no!\", b.hash,\n                      b.block_no AS \"block_no!\", t.hash AS tx_hash, sa.hash_raw AS stake_address\n               FROM delegation d\n               JOIN tx t ON t.id = d.tx_id\n               JOIN block b ON b.id = t.block_id\n               JOIN stake_address sa ON sa.id = d.addr_id\n               WHERE d.pool_hash_id = (SELECT id FROM pool_hash WHERE hash_raw = $1)\n               AND d.id < $2\n               ORDER BY d.id DESC\n               LIMIT $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot_no!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "hash",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "block_no!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "tx_hash",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "stake_address",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "9da85712863ea89149428a39612f476db85e6aa3b94a5c19692ee23d07236011"
+}

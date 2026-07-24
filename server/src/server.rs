@@ -1610,6 +1610,7 @@ async fn process_replay_block(
                     || tx
                         .stake_change
                         .is_some_and(|sc| sc.unsigned_abs() > stake_threshold)
+                    || feed_filter.matches_vote(tx)
             }
         });
         if txs.is_empty() {
@@ -2240,7 +2241,7 @@ async fn filtered_events(
             .await;
 
             // Read feed index data, pool live stake, and resolve delegation labels
-            let (minted, stake_changes, deleg_info, deleg_slots, stake_threshold) = {
+            let (minted, stake_changes, mut deleg_info, deleg_slots, pool_votes, stake_threshold) = {
                 let guard = replay_state.chain_state.read().await;
                 let snap = guard.current();
                 let live_stake = snap
@@ -2305,6 +2306,7 @@ async fn filtered_events(
                     guard.feed_index.pool_stake_change_blocks(ph).to_vec(),
                     deleg_info,
                     deleg_slots,
+                    guard.feed_index.pool_vote_blocks(ph).to_vec(),
                     threshold,
                 )
             };
@@ -2324,6 +2326,107 @@ async fn filtered_events(
                 slot_map
                     .entry(r.slot)
                     .or_insert(SlotAction::StakeChange(r.clone()));
+            }
+            // SPO governance votes (rendered via `matches_vote`, like DRep votes).
+            for r in &pool_votes {
+                slot_map
+                    .entry(r.slot)
+                    .or_insert(SlotAction::StakeChange(r.clone()));
+            }
+
+            // Empty-feed fill: a pool dormant for >5 days has little or nothing in the
+            // feed index, leaving a blank feed. Top up to MAX_REPLAY_BLOCKS from db-sync
+            // (most-recent minted blocks + gained delegations) via the sub-ms indexed
+            // top-K queries. Runs off the chain_state lock; delegation `from`/exact
+            // live_stake aren't reconstructed (the accepted trade-off) — `to` is this
+            // pool and live_stake is the delegator's current snapshot stake.
+            //
+            // Trigger on *guaranteed-render* content (minted blocks + delegations), NOT
+            // slot_map.len(): a pool with many delegators has lots of `pool_stake_change`
+            // candidate blocks in the window, but almost all are sub-threshold and get
+            // filtered out at send time — so slot_map.len() ≥ 30 while the feed still
+            // renders ~empty. The newest-first send places any fill blocks after the
+            // (few) rendering candidates, so over-triggering just wastes a sub-ms query.
+            if minted.len() + deleg_slots.len() + pool_votes.len() < MAX_REPLAY_BLOCKS {
+                if let Some(dbh) = { replay_state.chain_state.read().await.db_handle() } {
+                    let limit = MAX_REPLAY_BLOCKS as i64;
+                    for b in dbh
+                        .pool_recent_blocks(ph, i64::MAX, limit)
+                        .await
+                        .unwrap_or_default()
+                    {
+                        slot_map
+                            .entry(b.slot)
+                            .or_insert(SlotAction::PoolMinted(BlockRef {
+                                slot: b.slot,
+                                hash: b.block_hash,
+                                number: b.block_no,
+                            }));
+                    }
+                    // SPO governance votes (rendered via `matches_vote`).
+                    for b in dbh
+                        .pool_recent_votes(ph, i64::MAX, limit)
+                        .await
+                        .unwrap_or_default()
+                    {
+                        slot_map
+                            .entry(b.slot)
+                            .or_insert(SlotAction::StakeChange(BlockRef {
+                                slot: b.slot,
+                                hash: b.block_hash,
+                                number: b.block_no,
+                            }));
+                    }
+                    let deleg_fill = dbh
+                        .pool_recent_delegations(ph, i64::MAX, limit)
+                        .await
+                        .unwrap_or_default();
+                    if !deleg_fill.is_empty() {
+                        let guard = replay_state.chain_state.read().await;
+                        let snap = guard.current();
+                        let to_pool_id = pool_bech32_id(ph);
+                        let to_ticker = snap
+                            .and_then(|s| s.pools.get(&hex::encode(ph)))
+                            .and_then(|p| p.ticker.clone());
+                        for f in &deleg_fill {
+                            // A feed-index overlay for this tx is richer (real from/live_stake) — keep it.
+                            if deleg_info.contains_key(&f.tx_hash) {
+                                continue;
+                            }
+                            let live_stake = snap
+                                .map(|s| {
+                                    s.stakes.get(&f.cred).copied().unwrap_or(0)
+                                        + s.rewards.get(&f.cred).copied().unwrap_or(0)
+                                })
+                                .unwrap_or(0);
+                            deleg_info
+                                .entry(f.tx_hash.clone())
+                                .or_default()
+                                .push(DelegationInfo {
+                                    stake_address: crate::pallas::stake_address_from_cred_bytes(
+                                        &f.cred,
+                                        replay_state.mainnet,
+                                    ),
+                                    from_pool_id: None,
+                                    from_ticker: None,
+                                    to_pool_id: Some(to_pool_id.clone()),
+                                    to_ticker: to_ticker.clone(),
+                                    from_drep_id: None,
+                                    from_drep_name: None,
+                                    to_drep_id: None,
+                                    to_drep_name: None,
+                                    live_stake,
+                                });
+                            slot_map
+                                .entry(f.slot)
+                                .or_insert(SlotAction::StakeChange(BlockRef {
+                                    slot: f.slot,
+                                    hash: f.block_hash.clone(),
+                                    number: f.block_no,
+                                }));
+                        }
+                    }
+                }
             }
 
             let exclude_slots: HashSet<u64> = slot_map.keys().copied().collect();
@@ -2368,12 +2471,25 @@ async fn filtered_events(
             )
             .await;
 
+            // Enable infinite scroll: pagination pages older history from the tip by
+            // keyset id and dedups this replay's overlap (see `older_pool_drep`).
+            if let Some(e) = serialize_event(
+                crate::event::Event::ReplayCursor {
+                    slot: None,
+                    epoch: None,
+                    stake: None,
+                },
+                sse.size,
+            ) {
+                let _ = sse.sender.send(e).await;
+            }
+
             exclude_slots
         } else if let Some(ref db) = replay_filter.drep_bytes().cloned() {
             send_drep_info(&sender, &replay_state.chain_state, db).await;
 
             // Read DRep feed index data and resolve delegation labels
-            let (stake_changes, deleg_info, deleg_slots, stake_threshold) = {
+            let (stake_changes, mut deleg_info, deleg_slots, drep_votes, stake_threshold) = {
                 let guard = replay_state.chain_state.read().await;
                 let snap = guard.current();
                 let live_stake = snap
@@ -2441,6 +2557,7 @@ async fn filtered_events(
                     guard.feed_index.drep_stake_change_blocks(db).to_vec(),
                     deleg_info,
                     deleg_slots,
+                    guard.feed_index.drep_vote_blocks(db).to_vec(),
                     threshold,
                 )
             };
@@ -2456,6 +2573,91 @@ async fn filtered_events(
                 slot_map
                     .entry(r.slot)
                     .or_insert(SlotAction::StakeChange(r.clone()));
+            }
+            // Governance votes cast by this DRep (rendered via `matches_vote`).
+            for r in &drep_votes {
+                slot_map
+                    .entry(r.slot)
+                    .or_insert(SlotAction::StakeChange(r.clone()));
+            }
+
+            // Empty-feed fill for a dormant DRep: DReps mint no blocks, so top up from
+            // db-sync with the DRep's most-recent governance votes (block refs — the vote
+            // tx is retained via `matches_vote` and decoded from the fetched block) and
+            // gained delegations. Sub-ms indexed top-K, off the chain_state lock.
+            //
+            // Trigger on delegations only (guaranteed to render), NOT slot_map.len():
+            // `drep_stake_change` fills the window with sub-threshold candidate blocks
+            // that get filtered at send time, same as the pool case.
+            if deleg_slots.len() + drep_votes.len() < MAX_REPLAY_BLOCKS {
+                if let Some(dbh) = { replay_state.chain_state.read().await.db_handle() } {
+                    let limit = MAX_REPLAY_BLOCKS as i64;
+                    for b in dbh
+                        .drep_recent_votes(db, i64::MAX, limit)
+                        .await
+                        .unwrap_or_default()
+                    {
+                        slot_map
+                            .entry(b.slot)
+                            .or_insert(SlotAction::StakeChange(BlockRef {
+                                slot: b.slot,
+                                hash: b.block_hash,
+                                number: b.block_no,
+                            }));
+                    }
+                    let deleg_fill = dbh
+                        .drep_recent_delegations(db, i64::MAX, limit)
+                        .await
+                        .unwrap_or_default();
+                    if !deleg_fill.is_empty() {
+                        let guard = replay_state.chain_state.read().await;
+                        let snap = guard.current();
+                        let to_drep_id = drep_bech32_id(db);
+                        let to_drep_name = match db.first() {
+                            Some(0x02) => Some("Always Abstain".to_string()),
+                            Some(0x03) => Some("Always No Confidence".to_string()),
+                            _ => snap
+                                .and_then(|s| s.dreps.get(db.as_slice()))
+                                .and_then(|d| d.given_name.clone()),
+                        };
+                        for f in &deleg_fill {
+                            if deleg_info.contains_key(&f.tx_hash) {
+                                continue;
+                            }
+                            let live_stake = snap
+                                .map(|s| {
+                                    s.stakes.get(&f.cred).copied().unwrap_or(0)
+                                        + s.rewards.get(&f.cred).copied().unwrap_or(0)
+                                })
+                                .unwrap_or(0);
+                            deleg_info
+                                .entry(f.tx_hash.clone())
+                                .or_default()
+                                .push(DelegationInfo {
+                                    stake_address: crate::pallas::stake_address_from_cred_bytes(
+                                        &f.cred,
+                                        replay_state.mainnet,
+                                    ),
+                                    from_pool_id: None,
+                                    from_ticker: None,
+                                    to_pool_id: None,
+                                    to_ticker: None,
+                                    from_drep_id: None,
+                                    from_drep_name: None,
+                                    to_drep_id: Some(to_drep_id.clone()),
+                                    to_drep_name: to_drep_name.clone(),
+                                    live_stake,
+                                });
+                            slot_map
+                                .entry(f.slot)
+                                .or_insert(SlotAction::StakeChange(BlockRef {
+                                    slot: f.slot,
+                                    hash: f.block_hash.clone(),
+                                    number: f.block_no,
+                                }));
+                        }
+                    }
+                }
             }
 
             let exclude_slots: HashSet<u64> = slot_map.keys().copied().collect();
@@ -2488,6 +2690,18 @@ async fn filtered_events(
                 None,
             )
             .await;
+
+            // Enable infinite scroll (see the pool branch / `older_pool_drep`).
+            if let Some(e) = serialize_event(
+                crate::event::Event::ReplayCursor {
+                    slot: None,
+                    epoch: None,
+                    stake: None,
+                },
+                sse.size,
+            ) {
+                let _ = sse.sender.send(e).await;
+            }
 
             exclude_slots
         } else if let Some(payload) = replay_filter.stake_payload().cloned() {
@@ -2589,7 +2803,7 @@ async fn filtered_events(
                 if let Some(sr) = &subject {
                     let (slot, epoch, stake) = sr.cursor();
                     let ev = crate::event::Event::ReplayCursor {
-                        slot,
+                        slot: Some(slot),
                         epoch: Some(epoch),
                         stake: Some(stake),
                     };
@@ -2676,7 +2890,7 @@ async fn filtered_events(
 
             if let Some(slot) = older_cursor_slot {
                 let ev = crate::event::Event::ReplayCursor {
-                    slot,
+                    slot: Some(slot),
                     epoch: None,
                     stake: None,
                 };
@@ -3710,23 +3924,37 @@ async fn owned_assets_by_policy(
 
 #[derive(serde::Deserialize)]
 struct OlderQuery {
-    /// Fetch blocks strictly older than this slot (the client's current oldest).
-    before: u64,
+    /// Stake/address feeds: fetch blocks strictly older than this slot. Absent for
+    /// pool/DRep feeds, which page by per-source keyset id.
+    before: Option<u64>,
     /// Walk anchor from the previous page (stake feeds): the pre-block stake at
     /// `before`'s block, as a string (can exceed JS MAX_SAFE_INTEGER).
     stake: Option<String>,
     epoch: Option<u64>,
+    /// Pool/DRep keyset cursor: the previous page's per-source min row id. Fetch rows
+    /// with `src.id < this`; absent on the first older page (queries from the tip).
+    block_id: Option<i64>,
+    vote_id: Option<i64>,
+    deleg_id: Option<i64>,
     dpr: Option<f64>,
 }
 
-/// Pagination cursor for the next (older) page. `stake`/`epoch` only for stake feeds.
+/// Pagination cursor for the next (older) page. `slot`/`stake`/`epoch` are the
+/// stake/address (slot-walk) cursor; `*_id` are the pool/DRep per-source keyset cursor.
 #[derive(serde::Serialize)]
 struct OlderCursor {
-    slot: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slot: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     epoch: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stake: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    block_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vote_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deleg_id: Option<i64>,
 }
 
 #[derive(serde::Serialize)]
@@ -3756,16 +3984,25 @@ async fn older_blocks(
         .await
         .db_handle()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    // Pool/DRep feeds paginate by per-source keyset id (blocks/votes/delegations),
+    // merged by slot — a different shape from the stake/address slot-walk below.
+    if matches!(
+        &filter,
+        filter::FeedFilter::Pool(_) | filter::FeedFilter::DRep(_)
+    ) {
+        return older_pool_drep(&state, &db, &filter, &query, size, limit).await;
+    }
+
+    let before = query.before.ok_or(StatusCode::BAD_REQUEST)?;
     let (hash_raw, blocks) = match &filter {
         filter::FeedFilter::Stake(payload) => (
             Some(payload.clone()),
-            db.stake_recent_blocks(payload, query.before as i64, limit)
-                .await,
+            db.stake_recent_blocks(payload, before as i64, limit).await,
         ),
         filter::FeedFilter::Address(addr) => (
             stake_hash_raw_of(addr, state.mainnet),
-            db.address_recent_blocks(addr, query.before as i64, limit)
-                .await,
+            db.address_recent_blocks(addr, before as i64, limit).await,
         ),
         _ => return Err(StatusCode::BAD_REQUEST),
     };
@@ -3866,9 +4103,12 @@ async fn older_blocks(
     } else if let Some(sr) = &subject {
         let (slot, epoch, stake) = sr.cursor();
         Some(OlderCursor {
-            slot,
+            slot: Some(slot),
             epoch: Some(epoch),
             stake: Some(stake.to_string()),
+            block_id: None,
+            vote_id: None,
+            deleg_id: None,
         })
     } else {
         // Address feeds (no walk): slot-only cursor at the oldest block.
@@ -3877,11 +4117,267 @@ async fn older_blocks(
             .map(|b| b.slot)
             .min()
             .map(|slot| OlderCursor {
-                slot,
+                slot: Some(slot),
                 epoch: None,
                 stake: None,
+                block_id: None,
+                vote_id: None,
+                deleg_id: None,
             })
     };
+
+    Ok(axum::Json(OlderResponse {
+        blocks: events,
+        cursor,
+    }))
+}
+
+/// Infinite-scroll pagination for a pool/DRep feed: merge the subject's minted blocks
+/// (pool only), governance votes and gained delegations — each paged by its own keyset
+/// id (`src.id < cursor`, an index-only top-K, sub-ms at any depth) — into one
+/// slot-ordered page, replay them over N2N, and return the next per-source cursor
+/// (`None` once every source is exhausted).
+async fn older_pool_drep(
+    state: &AppState,
+    db: &crate::state::DbSync,
+    filter: &filter::FeedFilter,
+    query: &OlderQuery,
+    size: u16,
+    limit: i64,
+) -> Result<axum::Json<OlderResponse>, StatusCode> {
+    use crate::state::{DelegationFill, FillBlock};
+
+    let block_before = query.block_id.unwrap_or(i64::MAX);
+    let vote_before = query.vote_id.unwrap_or(i64::MAX);
+    let deleg_before = query.deleg_id.unwrap_or(i64::MAX);
+
+    // Query each applicable source (off the lock — db handle already cloned).
+    let (blocks, votes, delegs): (Vec<FillBlock>, Vec<FillBlock>, Vec<DelegationFill>) =
+        match filter {
+            filter::FeedFilter::Pool(hash) => (
+                db.pool_recent_blocks(hash, block_before, limit)
+                    .await
+                    .unwrap_or_default(),
+                db.pool_recent_votes(hash, vote_before, limit)
+                    .await
+                    .unwrap_or_default(),
+                db.pool_recent_delegations(hash, deleg_before, limit)
+                    .await
+                    .unwrap_or_default(),
+            ),
+            filter::FeedFilter::DRep(bytes) => (
+                Vec::new(),
+                db.drep_recent_votes(bytes, vote_before, limit)
+                    .await
+                    .unwrap_or_default(),
+                db.drep_recent_delegations(bytes, deleg_before, limit)
+                    .await
+                    .unwrap_or_default(),
+            ),
+            _ => return Err(StatusCode::BAD_REQUEST),
+        };
+
+    // Merge the sources into one slot-desc page, tagged by source (0=block, 1=vote,
+    // 2=deleg) so we can advance a per-source keyset cursor.
+    struct Row {
+        slot: u64,
+        id: i64,
+        src: u8,
+        hash: String,
+        number: u64,
+        deleg: Option<DelegationFill>,
+    }
+    let mut rows: Vec<Row> = Vec::with_capacity(blocks.len() + votes.len() + delegs.len());
+    for b in &blocks {
+        rows.push(Row {
+            slot: b.slot,
+            id: b.id,
+            src: 0,
+            hash: b.block_hash.clone(),
+            number: b.block_no,
+            deleg: None,
+        });
+    }
+    for b in &votes {
+        rows.push(Row {
+            slot: b.slot,
+            id: b.id,
+            src: 1,
+            hash: b.block_hash.clone(),
+            number: b.block_no,
+            deleg: None,
+        });
+    }
+    for d in &delegs {
+        rows.push(Row {
+            slot: d.slot,
+            id: d.id,
+            src: 2,
+            hash: d.block_hash.clone(),
+            number: d.block_no,
+            deleg: Some(d.clone()),
+        });
+    }
+    // Newest first; id breaks ties within a slot.
+    rows.sort_by(|a, b| b.slot.cmp(&a.slot).then(b.id.cmp(&a.id)));
+    let total_returned = rows.len();
+    rows.truncate(limit as usize);
+
+    // Per-source cursor = the min displayed id for that source; if a source put nothing
+    // on this page (its rows are older, shown next page) keep its incoming cursor.
+    let min_id = |src: u8| rows.iter().filter(|r| r.src == src).map(|r| r.id).min();
+    let block_cursor = min_id(0).unwrap_or(block_before);
+    let vote_cursor = min_id(1).unwrap_or(vote_before);
+    let deleg_cursor = min_id(2).unwrap_or(deleg_before);
+
+    // More older pages exist if any source was capped at `limit`, or returned rows we
+    // didn't fit on this page.
+    let has_more = blocks.len() as i64 == limit
+        || votes.len() as i64 == limit
+        || delegs.len() as i64 == limit
+        || total_returned > rows.len();
+
+    if rows.is_empty() {
+        return Ok(axum::Json(OlderResponse {
+            blocks: vec![],
+            cursor: None,
+        }));
+    }
+
+    // Resolve delegation labels + build the tx_hash -> DelegationInfo overlay and the
+    // slot_map (PoolMinted wins over vote/deleg on a shared slot) under one short lock.
+    let (deleg_info, slot_map, to_pool_id, to_ticker) = {
+        let guard = state.chain_state.read().await;
+        let snap = guard.current();
+        let (to_pool_id, to_ticker, to_drep_id, to_drep_name) = match filter {
+            filter::FeedFilter::Pool(hash) => {
+                let ticker = snap
+                    .and_then(|s| s.pools.get(&hex::encode(hash)))
+                    .and_then(|p| p.ticker.clone());
+                (Some(pool_bech32_id(hash)), ticker, None, None)
+            }
+            filter::FeedFilter::DRep(bytes) => {
+                let name = match bytes.first() {
+                    Some(0x02) => Some("Always Abstain".to_string()),
+                    Some(0x03) => Some("Always No Confidence".to_string()),
+                    _ => snap
+                        .and_then(|s| s.dreps.get(bytes.as_slice()))
+                        .and_then(|d| d.given_name.clone()),
+                };
+                (None, None, Some(drep_bech32_id(bytes)), name)
+            }
+            _ => (None, None, None, None),
+        };
+        let mut deleg_info: HashMap<String, Vec<DelegationInfo>> = HashMap::new();
+        let mut slot_map: HashMap<u64, SlotAction> = HashMap::new();
+        for r in &rows {
+            let block_ref = BlockRef {
+                slot: r.slot,
+                hash: r.hash.clone(),
+                number: r.number,
+            };
+            if r.src == 0 {
+                slot_map
+                    .entry(r.slot)
+                    .or_insert(SlotAction::PoolMinted(block_ref));
+            } else {
+                slot_map
+                    .entry(r.slot)
+                    .or_insert(SlotAction::StakeChange(block_ref));
+                if let Some(d) = &r.deleg {
+                    if !deleg_info.contains_key(&d.tx_hash) {
+                        let live_stake = snap
+                            .map(|s| {
+                                s.stakes.get(&d.cred).copied().unwrap_or(0)
+                                    + s.rewards.get(&d.cred).copied().unwrap_or(0)
+                            })
+                            .unwrap_or(0);
+                        deleg_info
+                            .entry(d.tx_hash.clone())
+                            .or_default()
+                            .push(DelegationInfo {
+                                stake_address: crate::pallas::stake_address_from_cred_bytes(
+                                    &d.cred,
+                                    state.mainnet,
+                                ),
+                                from_pool_id: None,
+                                from_ticker: None,
+                                to_pool_id: to_pool_id.clone(),
+                                to_ticker: to_ticker.clone(),
+                                from_drep_id: None,
+                                from_drep_name: None,
+                                to_drep_id: to_drep_id.clone(),
+                                to_drep_name: to_drep_name.clone(),
+                                live_stake,
+                            });
+                    }
+                }
+            }
+        }
+        (deleg_info, slot_map, to_pool_id, to_ticker)
+    };
+
+    let mut replay_blocks: Vec<ReplayBlock> = slot_map
+        .into_values()
+        .map(|action| match action {
+            SlotAction::PoolMinted(r) => ReplayBlock {
+                slot: r.slot,
+                hash: r.hash,
+                number: r.number,
+                epoch: 0,
+                pool_id: to_pool_id.clone(),
+                pool_ticker: to_ticker.clone(),
+                filter_by_delegators: false,
+            },
+            SlotAction::StakeChange(r) => ReplayBlock {
+                slot: r.slot,
+                hash: r.hash,
+                number: r.number,
+                epoch: 0,
+                pool_id: None,
+                pool_ticker: None,
+                filter_by_delegators: true,
+            },
+        })
+        .collect();
+    replay_blocks.sort_by(|a, b| b.slot.cmp(&a.slot));
+
+    // Replay each block over N2N. Vote blocks are kept by `matches_vote`, delegation
+    // blocks by the injected overlay — so an empty delegator set / 0 threshold is fine.
+    let delegators = imbl::hashset::HashSet::new();
+    let mut client = PeerClient::connect(state.n2n_addr, state.magic)
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let ctx = ReplayCtx {
+        nftcdn: &state.nftcdn,
+        genesis: &state.genesis,
+        chain_state: &state.chain_state,
+        mainnet: state.mainnet,
+    };
+    let params = ReplayParams {
+        delegators: &delegators,
+        feed_filter: filter,
+        deleg_info: &deleg_info,
+        stake_threshold: 0,
+    };
+    let mut events = Vec::new();
+    for block in &replay_blocks {
+        if let Some(mut ev) = process_replay_block(&mut client, &ctx, block, &params, None).await {
+            resolve_event_assets(&mut ev, size);
+            events.push(ev);
+        }
+    }
+    let _ = client.abort().await;
+
+    let is_pool = matches!(filter, filter::FeedFilter::Pool(_));
+    let cursor = has_more.then(|| OlderCursor {
+        slot: None,
+        epoch: None,
+        stake: None,
+        block_id: is_pool.then_some(block_cursor),
+        vote_id: Some(vote_cursor),
+        deleg_id: Some(deleg_cursor),
+    });
 
     Ok(axum::Json(OlderResponse {
         blocks: events,

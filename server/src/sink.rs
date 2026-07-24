@@ -84,6 +84,8 @@ impl Worker {
             issuer_pool_hash,
             stake_change_pools,
             stake_change_dreps,
+            vote_pools,
+            vote_dreps,
             feed_delegations,
             drep_feed_delegations,
             new_decimals,
@@ -109,6 +111,12 @@ impl Worker {
             let mut stake_change_pools: std::collections::HashSet<Vec<u8>> =
                 std::collections::HashSet::new();
             let mut stake_change_dreps: std::collections::HashSet<Vec<u8>> =
+                std::collections::HashSet::new();
+
+            // Feed index: pools (SPO) / DReps that cast a governance vote in this block.
+            let mut vote_pools: std::collections::HashSet<Vec<u8>> =
+                std::collections::HashSet::new();
+            let mut vote_dreps: std::collections::HashSet<Vec<u8>> =
                 std::collections::HashSet::new();
 
             // CIP-68: collect decimals from reference token datums in this block
@@ -143,6 +151,14 @@ impl Worker {
                 // The inputs this tx actually spends and outputs it actually creates —
                 // collateral only for a phase-2-invalid tx (see `effective_io`).
                 let (inputs, outputs) = crate::pallas::effective_io(&tx);
+
+                // Feed index: governance voters (SPO + DRep) in this tx. A phase-2-invalid
+                // tx applies only its collateral, so its votes never take effect — skip them.
+                if valid {
+                    let (vps, vds) = crate::mempool::extract_vote_subjects(&tx);
+                    vote_pools.extend(vps);
+                    vote_dreps.extend(vds);
+                }
 
                 // Track consumed UTXOs: subtract lovelaces from stake credentials.
                 for input in &inputs {
@@ -427,6 +443,8 @@ impl Worker {
                 issuer_pool_hash,
                 stake_change_pools,
                 stake_change_dreps,
+                vote_pools,
+                vote_dreps,
                 feed_delegations,
                 drep_feed_delegations,
                 new_decimals,
@@ -483,6 +501,18 @@ impl Worker {
                 state
                     .feed_index
                     .add_drep_stake_changes(stake_change_dreps, block_ref.clone());
+            }
+
+            if !vote_pools.is_empty() {
+                state
+                    .feed_index
+                    .add_pool_votes(vote_pools, block_ref.clone());
+            }
+
+            if !vote_dreps.is_empty() {
+                state
+                    .feed_index
+                    .add_drep_votes(vote_dreps, block_ref.clone());
             }
 
             for entry in drep_feed_delegations {

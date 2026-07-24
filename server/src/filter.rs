@@ -139,6 +139,23 @@ impl FeedFilter {
         tx.stake_credentials
             .iter()
             .any(|cred| delegators.contains(cred))
+            || self.matches_vote(tx)
+    }
+
+    /// A pool or DRep feed also matches a tx carrying that subject's own governance vote
+    /// (`VoteInfo.voter_id` == the feed's bech32 id — an SPO vote for a pool, a DRep vote
+    /// for a DRep). Votes aren't delegator-scoped, so the stake-credential match above
+    /// never catches them — this is what surfaces votes on a feed (live and in replay).
+    /// Always `false` for stake/address feeds (they don't vote).
+    pub fn matches_vote(&self, tx: &BlockTx) -> bool {
+        if tx.votes.is_empty() {
+            return false;
+        }
+        if !matches!(self, FeedFilter::Pool(_) | FeedFilter::DRep(_)) {
+            return false;
+        }
+        let id = self.feed_id();
+        tx.votes.iter().any(|v| v.voter_id == id)
     }
 
     fn matches_block(&self, pool_id: &Option<String>) -> bool {
@@ -386,5 +403,70 @@ mod tests {
         assert!(FeedFilter::from_path(&encode("pool", &[0u8; 27])).is_none());
         assert!(FeedFilter::from_path(&encode("stake", &[0xe1u8; 28])).is_none());
         // 28, needs 29
+    }
+
+    fn tx_with_votes(votes: Vec<crate::event::VoteInfo>) -> BlockTx {
+        BlockTx {
+            hash: String::new(),
+            fee: 0,
+            size: 0,
+            inputs: vec![],
+            outputs: vec![],
+            expiry: None,
+            delegations: vec![],
+            votes,
+            message: None,
+            stake_change: None,
+            catalyst: None,
+            annotations: vec![],
+            stake_credentials: vec![],
+            withdrawals: vec![],
+        }
+    }
+
+    fn vote_by(voter_id: &str) -> crate::event::VoteInfo {
+        crate::event::VoteInfo {
+            voter_role: "DRep".into(),
+            voter_id: voter_id.into(),
+            voter_name: None,
+            vote: "Yes".into(),
+            action_tx_hash: String::new(),
+            action_index: 0,
+            action_title: None,
+        }
+    }
+
+    /// A DRep feed matches a tx carrying *its own* vote (even with no delegator
+    /// touch), never another DRep's vote, and vote-matching is DRep-only.
+    #[test]
+    fn drep_feed_matches_only_its_own_vote() {
+        let drep = FeedFilter::DRep([&[0x00u8][..], &[0xabu8; 28]].concat());
+        let id = drep.feed_id();
+        let no_delegators = HashSet::new();
+
+        // This DRep's vote matches with an empty delegator set and no stake creds.
+        let own = tx_with_votes(vec![vote_by(&id)]);
+        assert!(drep.matches_vote(&own));
+        assert!(drep.matches_tx(&own, &no_delegators));
+
+        // A different DRep's vote does not.
+        let other = tx_with_votes(vec![vote_by("drep1someoneelse")]);
+        assert!(!drep.matches_vote(&other));
+        assert!(!drep.matches_tx(&other, &no_delegators));
+
+        // No votes -> no vote match (and the cheap early-out path).
+        assert!(!drep.matches_vote(&tx_with_votes(vec![])));
+
+        // A pool feed matches its own SPO vote (voter_id == the pool's bech32 id), but not
+        // a DRep's vote; and a DRep feed doesn't match an SPO vote.
+        let pool = FeedFilter::Pool(vec![0x11u8; 28]);
+        assert!(!pool.matches_vote(&own)); // `own` is this DRep's vote
+        let spo = tx_with_votes(vec![vote_by(&pool.feed_id())]);
+        assert!(pool.matches_vote(&spo));
+        assert!(!drep.matches_vote(&spo));
+
+        // Stake/address feeds never match on votes.
+        let stake = FeedFilter::Stake(vec![0xe1u8; 29]);
+        assert!(!stake.matches_vote(&spo));
     }
 }

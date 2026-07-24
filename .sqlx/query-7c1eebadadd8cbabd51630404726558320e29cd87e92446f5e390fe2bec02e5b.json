@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT b.id AS \"id!\", b.slot_no AS \"slot_no!\", b.hash,\n                      b.block_no AS \"block_no!\"\n               FROM block b\n               WHERE b.slot_leader_id = (\n                   SELECT sl.id FROM slot_leader sl\n                   JOIN pool_hash ph ON ph.id = sl.pool_hash_id\n                   WHERE ph.hash_raw = $1\n               )\n               AND b.id < $2\n               ORDER BY b.id DESC\n               LIMIT $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot_no!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "hash",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "block_no!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "7c1eebadadd8cbabd51630404726558320e29cd87e92446f5e390fe2bec02e5b"
+}

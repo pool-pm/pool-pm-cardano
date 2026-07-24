@@ -250,6 +250,26 @@ pub fn extract_votes(tx: &MultiEraTx<'_>, state: &State) -> Vec<VoteInfo> {
         .collect()
 }
 
+/// Raw governance-voter identities in a tx's votes, keyed exactly as the feed index
+/// keys its subjects: pool hashes (28 bytes) for SPO votes, `tag+hash` bytes for DRep
+/// votes (0x00 key / 0x01 script). Constitutional-committee votes are dropped (no feed).
+/// A voter may vote on several actions in one tx, so the caller dedups. This is the
+/// feed-index side of [`extract_votes`] (which builds the display `VoteInfo`).
+pub fn extract_vote_subjects(tx: &MultiEraTx<'_>) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    use pallas::ledger::primitives::conway::Voter;
+    let mut pools = Vec::new();
+    let mut dreps = Vec::new();
+    for (voter, _action_id, _vote) in tx.voting_procedures() {
+        match voter {
+            Voter::StakePoolKey(h) => pools.push(h.as_ref().to_vec()),
+            Voter::DRepKey(h) => dreps.push([&[0x00u8][..], h.as_ref()].concat()),
+            Voter::DRepScript(h) => dreps.push([&[0x01u8][..], h.as_ref()].concat()),
+            Voter::ConstitutionalCommitteeKey(_) | Voter::ConstitutionalCommitteeScript(_) => {}
+        }
+    }
+    (pools, dreps)
+}
+
 /// Per-credential merge of pool + DRep delegation changes within one tx.
 /// `cred_bytes -> (StakeCredential, pool_hash, drep_bytes)`; each `Option<Option<_>>`
 /// is `Some(Some(x))` to set, `Some(None)` to deregister, `None` if unchanged.
