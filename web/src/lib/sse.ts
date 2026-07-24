@@ -47,6 +47,7 @@ type FeedCursor = {
   deleg_id?: number;
 };
 let feedCursor: FeedCursor | null = null; // null once seeded-empty or first tx reached
+let feedCursorSeed: FeedCursor | null = null; // the connect-time cursor, restored on return-to-top
 let feedDone = false;
 let loadingOlder = false;
 let olderBase = ''; // origin + path before "/events/"
@@ -101,6 +102,18 @@ function insertReward(s: Section[], event: RewardEvent): Section[] {
   const result = [...s];
   result.splice(idx, 0, section);
   return result;
+}
+
+/// Re-seed pagination to the connect-time cursor. Called when the user scrolls back to
+/// the newest edge (where the feed is trimmed to the live window): a later scroll into
+/// history then refetches from the seed and refills contiguously — pool/DRep re-page from
+/// the tip and dedup the overlap; stake/address resume from the connect anchor. No-op
+/// before the seed has arrived.
+export function resetOlder(): void {
+  if (feedCursorSeed !== null) {
+    feedCursor = { ...feedCursorSeed };
+    feedDone = false;
+  }
 }
 
 /// Fetch the next page of older blocks for the current feed and append them. Guarded
@@ -294,6 +307,7 @@ export function connectSSE(url: string): void {
   // Reset pagination state for the new feed.
   setFeedContext(url);
   feedCursor = null;
+  feedCursorSeed = null;
   feedDone = false;
   loadingOlder = false;
   feedGen++;
@@ -317,7 +331,9 @@ export function connectSSE(url: string): void {
       } else if (data.type === 'Cardano') {
         cardano.set(data as CardanoInfo);
       } else if (data.type === 'ReplayCursor') {
-        feedCursor = { slot: data.slot, epoch: data.epoch, stake: data.stake };
+        // Seed pagination and remember the seed so return-to-top can restore it.
+        feedCursorSeed = { slot: data.slot, epoch: data.epoch, stake: data.stake };
+        feedCursor = { ...feedCursorSeed };
       } else if (data.type === 'AssetDelta') {
         assetLiveHandler?.({
           slot: data.slot,

@@ -4,7 +4,7 @@
   import { sections, config, pool, drep, stake, address, cardano, blockCount } from '../stores';
   import type { GenesisConfig, Section } from '../types';
   import { TX_WIDTH, FLIP_DURATION, poolColor, formatTicker, formatAda, layoutGrid } from '../layout';
-  import { loadOlder } from '../sse';
+  import { loadOlder, resetOlder } from '../sse';
   import Transaction from './Transaction.svelte';
   import SubjectCard from './SubjectCard.svelte';
 
@@ -31,8 +31,9 @@
   // minted block is #blocks (from the Pool header, which the server re-emits on every mint and
   // rollback), each older one one less. Only the pool's own blocks count — a pool feed also
   // shows blocks minted by *other* pools that changed this pool's stake (pool_id !== the feed
-  // pool); those are skipped and don't consume a number. Pool feeds never paginate, so the
-  // minted sections are always the newest contiguous from the tip, making the decrement exact.
+  // pool); those are skipped and don't consume a number. Infinite scroll loads the pool's
+  // minted blocks contiguously from the tip, so the minted sections stay the newest
+  // contiguous run and the decrement is exact.
   // Empty (inert) on non-pool feeds, where `$pool` is null. Recomputes on section/blocks change.
   const poolBlockNumbers = $derived.by(() => {
     const map = new Map<string, number>();
@@ -101,7 +102,12 @@
     if (!feedEl) return;
     // row-reverse: scrollLeft ≈ 0 at right edge (can be slightly negative
     // due to padding/scrollbar gutter), goes more negative when scrolled left
+    const wasAway = scrolledAway;
     scrolledAway = landscape ? feedEl.scrollLeft < -30 : feedEl.scrollTop > 10;
+
+    // Back at the newest edge: re-seed pagination so a later scroll into history refills
+    // contiguously (the next block trims the accumulated older blocks — see the cap above).
+    if (isSubjectFeed && wasAway && !scrolledAway) resetOlder();
 
     // Near the oldest edge (left in landscape, bottom in portrait) → prefetch the
     // next page of older blocks (loadOlder self-guards against re-entry / end).
@@ -308,7 +314,11 @@
     const nowSec = Math.floor(Date.now() / 1000);
     sections.update((s) => {
       s[0].txs = s[0].txs.filter((tx) => !tx.expiry || tx.expiry > nowSec);
-      let result = s.slice(0, MAX_BLOCKS + 1);
+      // Keep paginated (older) blocks only while the user is scrolled into history; at
+      // the newest edge (top / top-right in landscape) — or on the home feed — trim back
+      // to the live window so idle pages don't accumulate. `resetOlder` on return-to-top
+      // (in handleScroll) re-seeds pagination so re-scrolling refills contiguously.
+      let result = isSubjectFeed && scrolledAway ? s : s.slice(0, MAX_BLOCKS + 1);
       // In pool/drep feeds, prune old small stake/delegation changes
       const liveStake = p?.live_stake ?? d?.live_stake;
       if (liveStake) {
@@ -329,6 +339,10 @@
               ),
             )
           )
+            return true;
+          // Keep this subject's own governance votes (SPO on a pool feed, DRep vote on
+          // a DRep feed) — they carry no stake change or delegation.
+          if (section.txs.some((tx) => tx.votes?.some((v) => v.voter_id === feedPoolId || v.voter_id === feedDrepId)))
             return true;
           let net = 0n;
           for (const tx of section.txs) {

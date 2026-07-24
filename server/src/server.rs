@@ -4407,13 +4407,18 @@ async fn older_pool_drep(
     let _ = client.abort().await;
 
     let is_pool = matches!(filter, filter::FeedFilter::Pool(_));
+    // A cursor still at i64::MAX means "from the tip" (that source contributed nothing
+    // to this page). Omit it rather than serialize a value beyond JS's safe-integer
+    // range — the client round-trips the cursor through a JSON number, and MAX would
+    // round up past i64::MAX and 400 on the next request. Absent == MAX server-side.
+    let keyset = |id: i64| (id != i64::MAX).then_some(id);
     let cursor = has_more.then(|| OlderCursor {
         slot: None,
         epoch: None,
         stake: None,
-        block_id: is_pool.then_some(block_cursor),
-        vote_id: Some(vote_cursor),
-        deleg_id: Some(deleg_cursor),
+        block_id: is_pool.then(|| keyset(block_cursor)).flatten(),
+        vote_id: keyset(vote_cursor),
+        deleg_id: keyset(deleg_cursor),
     });
 
     Ok(axum::Json(OlderResponse {
