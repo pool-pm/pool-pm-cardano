@@ -3242,10 +3242,13 @@ fn drep_line(drep_id: &Option<String>, name: &Option<String>) -> String {
     }
 }
 
-/// Card for a single asset: NFTCDN display name + `/image` @1024, plus on-chain quantity/policy
-/// (reuses the same NFTCDN-metadata + `asset_chain_info` merge as `asset_media`).
+/// Card for a single asset: NFTCDN display name + the full-res `/preview` media, plus on-chain
+/// quantity/policy (reuses the same NFTCDN-metadata + `asset_chain_info` merge as `asset_media`).
+/// Uses `/preview` (the original media, e.g. a crisp PNG) rather than `/image?size=1024`, which
+/// NFTCDN only serves as a heavily-compressed WebP — blocky, and WebP `og:image` isn't rendered
+/// by Facebook/LinkedIn.
 async fn asset_card(state: &AppState, fingerprint: &str) -> og::Card {
-    let image = state.nftcdn.signed_url(fingerprint, "image", "size=1024");
+    let image = state.nftcdn.signed_url(fingerprint, "preview", "");
     let db = state.chain_state.read().await.db_handle();
     let info_fut = async {
         match db {
