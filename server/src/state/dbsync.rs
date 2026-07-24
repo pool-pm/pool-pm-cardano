@@ -616,6 +616,31 @@ impl DbSync {
         }))
     }
 
+    /// The NFT's owner — the address of its single unspent `tx_out` — as `(payment address
+    /// bech32, stake `hash_raw` if the address has a stake part)`. Callers gate on quantity == 1:
+    /// a quantity-1 asset lives in exactly one UTXO, so this walks only its transfer history via
+    /// `idx_ma_tx_out_ident` (sub-ms) and no ordering is needed. A deliberate `ORDER BY tx_id`
+    /// here would push the planner into a parallel `tx_out` scan (~40ms). `None` if not held.
+    pub async fn asset_last_owner(
+        &self,
+        fingerprint: &str,
+    ) -> Result<Option<(String, Option<Vec<u8>>)>, sqlx::Error> {
+        let row = sqlx::query!(
+            r#"SELECT a.address AS "address!", sa.hash_raw AS "stake?"
+               FROM tx_out
+               JOIN ma_tx_out ON ma_tx_out.tx_out_id = tx_out.id
+               JOIN address a ON a.id = tx_out.address_id
+               LEFT JOIN stake_address sa ON sa.id = tx_out.stake_address_id
+               WHERE ma_tx_out.ident = (SELECT id FROM multi_asset WHERE fingerprint = $1)
+                 AND tx_out.consumed_by_tx_id IS NULL
+               LIMIT 1"#,
+            fingerprint
+        )
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(row.map(|r| (r.address, r.stake)))
+    }
+
     /// Number of distinct assets minted under a policy — one `multi_asset` row per (policy, name),
     /// so a plain count over the unique `(policy, name)` index. Used by the policy social card.
     pub async fn policy_asset_count(&self, policy: &[u8]) -> Result<i64, sqlx::Error> {

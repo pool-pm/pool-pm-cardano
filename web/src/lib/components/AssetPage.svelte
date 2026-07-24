@@ -13,6 +13,8 @@
   let quantity = $state<string | null>(null);
   let firstMint = $state<number | null>(null);
   let lastMint = $state<number | null>(null);
+  let owner = $state<string | null>(null);
+  let ownerHandle = $state<string | null>(null);
   let metadata = $state<Record<string, unknown> | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -83,6 +85,9 @@
 
   const quantityLabel = $derived(quantity ? quantity.replace(/\B(?=(\d{3})+(?!\d))/g, ',') : null);
   const policyShort = $derived(policy ? `${policy.slice(0, 6)}…${policy.slice(-4)}` : null);
+  const ownerLabel = $derived(
+    ownerHandle ? `$${ownerHandle}` : owner ? `${owner.slice(0, 8)}…${owner.slice(-4)}` : null,
+  );
 
   // Step between media (clamped); each media is effectively its own page.
   function go(delta: number) {
@@ -178,6 +183,8 @@
       quantity = data.quantity ?? null;
       firstMint = data.first_mint ?? null;
       lastMint = data.last_mint ?? null;
+      owner = data.owner ?? null;
+      ownerHandle = data.owner_handle ?? null;
       metadata = data.metadata ?? null;
       current = Math.max(0, Math.min(initialIndex, media.length - 1)); // clamp a deep-linked index
       document.title = data.name ?? fingerprint;
@@ -223,7 +230,7 @@
     {/if}
   {/if}
 
-  {#if !loading && !error && (name || policyShort || quantityLabel || mintLabel)}
+  {#if !loading && !error && (name || policyShort || quantityLabel || mintLabel || owner)}
     <div class="placard" bind:clientHeight={placardHeight} transition:fade={{ duration: 400 }}>
       <dl class="meta">
         {#if quantityLabel}
@@ -236,6 +243,12 @@
           <div class="row">
             <dt>minted</dt>
             <dd>{mintLabel}</dd>
+          </div>
+        {/if}
+        {#if owner}
+          <div class="row">
+            <dt>owner</dt>
+            <dd><a href={`/${owner}/assets`} title={owner}>{ownerLabel}</a></dd>
           </div>
         {/if}
         {#if policyShort}

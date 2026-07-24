@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.address AS \"address!\", sa.hash_raw AS \"stake?\"\n               FROM tx_out\n               JOIN ma_tx_out ON ma_tx_out.tx_out_id = tx_out.id\n               JOIN address a ON a.id = tx_out.address_id\n               LEFT JOIN stake_address sa ON sa.id = tx_out.stake_address_id\n               WHERE ma_tx_out.ident = (SELECT id FROM multi_asset WHERE fingerprint = $1)\n                 AND tx_out.consumed_by_tx_id IS NULL\n               LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "address!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "stake?",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f73a9aba6a1e91c79a36a832b214936094a5dcc7780a7358be85fa148488c22e"
+}

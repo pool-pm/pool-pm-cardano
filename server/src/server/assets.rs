@@ -28,6 +28,12 @@ pub(super) struct AssetMediaResponse {
     first_mint: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_mint: Option<i64>,
+    /// Current owner (NFTs only): the `…/assets` link subject — a stake account (`stake1…`)
+    /// if the holding address has a stake part, else the payment address — and its ADA Handle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner_handle: Option<String>,
     /// The raw on-chain CIP-25/68 `metadata` object from NFTCDN, passed through for the
     /// page to format (the frontend drops the media-technical keys).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,6 +57,7 @@ pub(super) async fn asset_media(
     // Chain facts (policy, supply, mint dates) run concurrently with the NFTCDN media
     // fetch; the db handle is cloned off the lock so the query never holds it.
     let db = state.chain_state.read().await.db_handle();
+    let owner_db = db.clone(); // owner lookup after we know the supply (NFTs only)
     let info_fut = async {
         match db {
             Some(db) => db.asset_chain_info(&fingerprint).await.unwrap_or(None),
@@ -122,6 +129,41 @@ pub(super) async fn asset_media(
     // Display name: NFTCDN's, else the decoded on-chain asset name (e.g. a token ticker).
     let name = nftcdn_name.or_else(|| name_bytes.as_deref().and_then(decode_asset_name));
 
+    // Owner (NFTs only — a quantity-1 asset has exactly one holder). `owner` is the subject
+    // for the `…/assets` link (the stake account if the address has one, else the address);
+    // `owner_handle` is that owner's ADA Handle, if any.
+    let (owner, owner_handle) = if quantity.as_deref() == Some("1") {
+        let holder = match owner_db {
+            Some(db) => db.asset_last_owner(&fingerprint).await.unwrap_or(None),
+            None => None,
+        };
+        match holder {
+            Some((address, stake)) => {
+                let guard = state.chain_state.read().await;
+                let snap = guard.current();
+                match stake.filter(|h| h.len() == 29) {
+                    Some(hash_raw) => {
+                        let cred = &hash_raw[1..];
+                        (
+                            Some(crate::pallas::stake_address_from_cred_bytes(
+                                cred,
+                                state.mainnet,
+                            )),
+                            snap.and_then(|s| s.handle_for_stake(cred)),
+                        )
+                    }
+                    None => {
+                        let handle = snap.and_then(|s| s.handle_for(&address));
+                        (Some(address), handle)
+                    }
+                }
+            }
+            None => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+
     Ok(axum::Json(AssetMediaResponse {
         fingerprint,
         name,
@@ -129,6 +171,8 @@ pub(super) async fn asset_media(
         quantity,
         first_mint,
         last_mint,
+        owner,
+        owner_handle,
         metadata,
         media,
     }))

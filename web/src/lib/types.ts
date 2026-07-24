@@ -54,6 +54,10 @@ export interface AssetMediaResponse {
   /** First / last mint times (unix seconds); a range when minted across several txs. */
   first_mint?: number;
   last_mint?: number;
+  /** Current owner (NFTs only): `owner` is the `/…/assets` link subject (stake1…/addr1…),
+   *  `owner_handle` its ADA Handle name (without the leading `$`) if any. */
+  owner?: string;
+  owner_handle?: string;
   /** Raw on-chain CIP-25/68 metadata object, for the page to format. */
   metadata?: Record<string, unknown>;
   media: AssetMedia[];
