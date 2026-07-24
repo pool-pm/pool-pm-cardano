@@ -11,7 +11,10 @@
 
   const SSE_BASE = import.meta.env.VITE_SSE_URL || `${window.location.origin}/events`;
 
-  const path = window.location.pathname.replace(/^\/+/, '');
+  // Strip leading AND trailing slashes: a trailing slash would otherwise flow into the SSE
+  // URL (`/events/<feed>/`), miss the axum `/events/{feed}` route, and fall through to the
+  // crawler `og_page` — so the EventSource gets HTML instead of a stream and the feed dies.
+  const path = window.location.pathname.replace(/^\/+/, '').replace(/\/+$/, '');
   // A bare CIP-14 fingerprint path renders the standalone asset page;
   // `/policy/<28-byte hex>` renders the policy asset grid; `/<bech32>/assets`
   // renders the owned-assets grid for a payment address or stake credential;
