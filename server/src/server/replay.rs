@@ -4,6 +4,22 @@
 //! Reaches decode / subject builders and shared server state via `super::*`.
 use super::*;
 
+/// Cap on how long an N2N `PeerClient::connect` may block. When the local node is at its
+/// incoming-connection limit a connect can hang indefinitely; bounding it stops replay tasks
+/// (and their socket FDs) from accumulating until the process wedges. Treated as a failure —
+/// the feed just replays no history rather than hanging.
+const N2N_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Hard ceiling on N2N `PeerClient`s open for replay at once. Every feed connection replays
+/// its history over one PeerClient; under a burst (or a bot reconnect-loop) these would
+/// otherwise oversubscribe the local node's incoming-connection limit and exhaust our FDs,
+/// wedging the whole process. `try_acquire` — a connection that can't get a permit skips
+/// history replay (still gets live events) rather than queueing, so we degrade gracefully
+/// and self-heal as permits free. Well below a node's typical N2N accept limit.
+const MAX_CONCURRENT_REPLAYS: usize = 24;
+static N2N_REPLAY_PERMITS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(MAX_CONCURRENT_REPLAYS);
+
 /// A block to replay: pool's own block (all txs) or stake-change block (filtered).
 pub(super) struct ReplayBlock {
     pub(super) slot: u64,
@@ -526,16 +542,23 @@ pub(super) async fn send_replay_blocks(
     if blocks.is_empty() {
         return;
     }
+    // Bound concurrent replays (see N2N_REPLAY_PERMITS): no permit → skip history, the
+    // connection still gets live events. Held for the PeerClient's lifetime.
+    let Ok(_permit) = N2N_REPLAY_PERMITS.try_acquire() else {
+        return;
+    };
     // Sort newest-first so the feed builds immediately with recent activity
     blocks.sort_by(|a, b| b.slot.cmp(&a.slot));
 
-    let mut client = match PeerClient::connect(n2n_addr, magic).await {
-        Ok(c) => c,
-        Err(_) => {
-            warn!("N2N connect to {} failed", n2n_addr);
-            return;
-        }
-    };
+    let mut client =
+        match tokio::time::timeout(N2N_CONNECT_TIMEOUT, PeerClient::connect(n2n_addr, magic)).await
+        {
+            Ok(Ok(c)) => c,
+            _ => {
+                warn!("N2N connect to {} failed (or timed out)", n2n_addr);
+                return;
+            }
+        };
     let ctx = ReplayCtx {
         nftcdn,
         genesis,
@@ -550,11 +573,20 @@ pub(super) async fn send_replay_blocks(
     };
     let mut sent = 0usize;
     for block in blocks.iter() {
+        // Bail the instant the client is gone: otherwise a disconnected feed (bots reconnect
+        // every few seconds) keeps doing all 30 N2N block fetches while holding this PeerClient,
+        // and those connections pile up until the node's N2N limit / our FDs are exhausted and
+        // the whole process wedges. Check before the expensive fetch and on send failure.
+        if sender.is_closed() {
+            break;
+        }
         let event =
             process_replay_block(&mut client, &ctx, block, &params, subject.as_deref_mut()).await;
         if let Some(event) = event {
             if let Some(sse) = serialize_event(event, size) {
-                let _ = sender.send(sse).await;
+                if sender.send(sse).await.is_err() {
+                    break;
+                }
                 sent += 1;
                 if sent >= MAX_REPLAY_BLOCKS {
                     break;
@@ -575,6 +607,9 @@ pub(super) async fn send_filtered_snapshot(
     size: u16,
 ) {
     for event in snapshot {
+        if sender.is_closed() {
+            break; // client disconnected — stop replaying
+        }
         if let Some(filtered) = filter.filter_event(&event, delegators) {
             if let crate::event::Event::Block { slot, .. } = &filtered {
                 if exclude_slots.contains(slot) {
@@ -582,7 +617,9 @@ pub(super) async fn send_filtered_snapshot(
                 }
             }
             if let Some(sse) = serialize_event(filtered, size) {
-                let _ = sender.send(sse).await;
+                if sender.send(sse).await.is_err() {
+                    break;
+                }
             }
         }
     }
@@ -733,9 +770,18 @@ pub(super) async fn older_blocks(
         .collect();
     replay_blocks.sort_by(|a, b| b.slot.cmp(&a.slot));
 
-    let mut client = PeerClient::connect(state.n2n_addr, state.magic)
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    // Bound concurrent N2N replays (see N2N_REPLAY_PERMITS); saturated → 503, the
+    // infinite-scroll retries. Held for the PeerClient's lifetime.
+    let _permit = N2N_REPLAY_PERMITS
+        .try_acquire()
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let mut client = tokio::time::timeout(
+        N2N_CONNECT_TIMEOUT,
+        PeerClient::connect(state.n2n_addr, state.magic),
+    )
+    .await
+    .map_err(|_| StatusCode::GATEWAY_TIMEOUT)?
+    .map_err(|_| StatusCode::BAD_GATEWAY)?;
     let ctx = ReplayCtx {
         nftcdn: &state.nftcdn,
         genesis: &state.genesis,
@@ -1019,9 +1065,18 @@ pub(super) async fn older_pool_drep(
     // Replay each block over N2N. Vote blocks are kept by `matches_vote`, delegation
     // blocks by the injected overlay — so an empty delegator set / 0 threshold is fine.
     let delegators = imbl::hashset::HashSet::new();
-    let mut client = PeerClient::connect(state.n2n_addr, state.magic)
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    // Bound concurrent N2N replays (see N2N_REPLAY_PERMITS); saturated → 503, the
+    // infinite-scroll retries. Held for the PeerClient's lifetime.
+    let _permit = N2N_REPLAY_PERMITS
+        .try_acquire()
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let mut client = tokio::time::timeout(
+        N2N_CONNECT_TIMEOUT,
+        PeerClient::connect(state.n2n_addr, state.magic),
+    )
+    .await
+    .map_err(|_| StatusCode::GATEWAY_TIMEOUT)?
+    .map_err(|_| StatusCode::BAD_GATEWAY)?;
     let ctx = ReplayCtx {
         nftcdn: &state.nftcdn,
         genesis: &state.genesis,

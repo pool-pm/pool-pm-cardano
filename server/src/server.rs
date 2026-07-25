@@ -726,13 +726,20 @@ async fn filtered_events(
     let replay_state = state.clone();
 
     tokio::spawn(async move {
-        let _ = sender
+        // If the client already disconnected before we start, skip the whole replay (its
+        // db-fill queries + N2N block fetches) — a burst of short-lived connections (bots
+        // reconnecting every few seconds) must not each do the full replay work.
+        if sender
             .send(config_event(
                 replay_state.nftcdn.subdomain,
                 &replay_state.genesis,
                 replay_state.magic,
             ))
-            .await;
+            .await
+            .is_err()
+        {
+            return;
+        }
 
         // Shared transport/config for every send_replay_blocks call below.
         let sse = ReplaySse {
