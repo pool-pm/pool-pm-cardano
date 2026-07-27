@@ -74,6 +74,7 @@ function insertOlderBlock(s: Section[], event: BlockEvent, now: number): Section
     hash: event.hash,
     number: event.number,
     timestamp: event.timestamp,
+    size: event.size,
     pool_id: event.pool_id,
     pool_ticker: event.pool_ticker,
   };
@@ -203,6 +204,7 @@ function handleSnapshot(events: Event[]): void {
         hash: event.hash,
         number: event.number,
         timestamp: event.timestamp,
+        size: event.size,
         pool_id: event.pool_id,
         pool_ticker: event.pool_ticker,
       };
@@ -226,9 +228,11 @@ function handleEvent(event: Event): void {
       sections.update((s) => {
         const mempool = s[0];
         if (mempool.txs.some((t) => t.hash === event.hash)) return s;
-        mempool.txs = [{ ...event, receivedAt: now }, ...mempool.txs];
-        resolveInputs(mempool.txs);
-        return [...s];
+        const txs = [{ ...event, receivedAt: now }, ...mempool.txs];
+        resolveInputs(txs);
+        // New object (same id) so the keyed each re-renders the mempool row — see the Block
+        // finalize note; a same-reference mutation may not re-render under the derived each.
+        return [{ ...mempool, txs }, ...s.slice(1)];
       });
       break;
     }
@@ -251,21 +255,29 @@ function handleEvent(event: Event): void {
             ...event.txs.filter((tx) => !mempoolByHash.has(tx.hash)).map((tx) => ({ ...tx, receivedAt: now })),
           ];
 
-          mempool.block = {
-            slot: event.slot,
-            hash: event.hash,
-            number: event.number,
-            timestamp: event.timestamp,
-            pool_id: event.pool_id,
-            pool_ticker: event.pool_ticker,
+          // Finalize the mempool into a block as a NEW object (don't mutate s[0] in place):
+          // the keyed `{#each}` renders a section by identity, so a same-reference mutation can
+          // leave the old mempool render on screen while the new mempool also renders → two
+          // "mempool" boxes. A fresh object (same id) forces the row to re-render as a block.
+          const finalized = {
+            ...mempool,
+            block: {
+              slot: event.slot,
+              hash: event.hash,
+              number: event.number,
+              timestamp: event.timestamp,
+              size: event.size,
+              pool_id: event.pool_id,
+              pool_ticker: event.pool_ticker,
+            },
+            txs: inBlock,
           };
-          mempool.txs = inBlock;
 
           const next = newSection();
           next.txs = excluded.filter((tx) => !pendingPrune.has(tx.hash));
           pendingPrune.clear();
 
-          return [next, ...s];
+          return [next, finalized, ...s.slice(1)];
         } else {
           return insertOlderBlock(s, event, now);
         }
