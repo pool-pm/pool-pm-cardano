@@ -51,17 +51,19 @@
   }
 
   // Folded-block size scales with the block's KB, capped so a full block is ~2× a small one.
-  // Folded own-block middle-tile HEIGHT, ∝ block KB. An empty (<1 KB) block is just the two
-  // text lines (FOLD_MIN) so it wastes no space — the block is then only its header + tile +
-  // footer; a full (~90 KB) block's tile is FOLD_MAX, sized so the whole block is ~2× the
-  // smallest (the header/footer overhead is roughly FOLD_MIN, so tile 28→110 → block ~76→158).
-  // Width stays natural (header/footer), so only the height grows with KB.
-  const FOLD_MIN_PX = 28; // the two text lines ("N txs" / "X KB")
-  const FOLD_MAX_PX = 110;
+  // Folded own-block = a SQUARE whose side ∝ block KB, so a full (~90 KB) block is ~4× the
+  // smallest in both width and height. The side starts at the header/footer natural width (the
+  // block can't be narrower than the date/ticker/hash) and grows to 4×. Clamped to the smaller
+  // window dimension (minus margins) so a folded block never overflows the viewport.
+  const FOLD_MIN_PX = 130; // ≈ header/footer natural width (the smallest square side)
+  const FOLD_MAX_PX = 520; // 4× the min
   const MAX_BLOCK_KB = 90; // ~mainnet max block body size
   function foldSizePx(section: Section): number {
     const kb = (section.block?.size ?? 0) / 1024;
-    return Math.round(FOLD_MIN_PX + (FOLD_MAX_PX - FOLD_MIN_PX) * (Math.min(kb, MAX_BLOCK_KB) / MAX_BLOCK_KB));
+    const raw = FOLD_MIN_PX + (FOLD_MAX_PX - FOLD_MIN_PX) * (Math.min(kb, MAX_BLOCK_KB) / MAX_BLOCK_KB);
+    const vw = feedWidth > 0 ? feedWidth : Infinity;
+    const vh = feedHeight > 0 ? feedHeight : Infinity;
+    return Math.round(Math.min(raw, Math.min(vw, vh) - 2 * LANDSCAPE_MARGIN));
   }
 
   // One consistent way to fold/unfold any block: click anywhere on it. Real links (the
@@ -70,10 +72,11 @@
   function onSectionClick(e: MouseEvent, section: Section) {
     if (!foldable || !section.block) return;
     const t = e.target as HTMLElement | null;
-    // Links/buttons act; the footer (block hash + number) stays selectable/copyable; an
-    // unfolded block's tx tiles keep their own interactions.
+    // Links/buttons act; the footer (block hash + number) stays selectable/copyable; a click
+    // on an unfolded block's actual tx tile keeps its own interactions — but clicking the empty
+    // space around/between the tiles (still inside the tx grid) folds the block.
     if (t?.closest('a, button, .block-footer')) return;
-    if (!sectionFolded(section) && t?.closest('.tx-grid')) return;
+    if (!sectionFolded(section) && t?.closest('.tx-grid-item')) return;
     // Don't toggle when the click ends a text selection.
     if (window.getSelection()?.toString()) return;
     toggleFold(section.id);
@@ -340,11 +343,8 @@
   });
 
   function sectionMaxWidth(section: Section): string {
+    // Folded own blocks are sized to a square via CSS (--fold-size), not this max-width.
     if (landscape) return 'none';
-    // Folded own block (custom tile, no measured grid): cap to a single-tx width so it doesn't
-    // stretch the full window in portrait — same compact size as in landscape.
-    if (foldable && section.block && isOwnBlock(section) && !unfoldedIds.has(section.id))
-      return `${TX_WIDTH + BLOCK_INSET}px`;
     const gw = actualGridWidths[section.id];
     if (gw) return `${gw + BLOCK_INSET}px`;
     if (section.txs.length === 0) return `${TX_WIDTH + BLOCK_INSET}px`;
@@ -445,6 +445,31 @@
     now;
     landscape;
     untrack(scheduleMeasure);
+  });
+
+  // Fill the viewport: if the displayed content doesn't reach the screen edge there's no
+  // scrollbar, so the scroll-driven `loadOlder` never fires (notably after hiding the pool's
+  // own blocks, which can leave only a few stake-change blocks). Keep loading older history
+  // until it fills or history runs out. Re-runs as $sections/canvasSize change, so it chains
+  // one page at a time; `autoFillTries` caps runaway on a feed that never fills (reset when
+  // the fill context changes — orientation or hiding own blocks).
+  let autoFillTries = $state(0);
+  const AUTO_FILL_MAX = 12;
+  $effect(() => {
+    $sections.length;
+    canvasSize;
+    landscape;
+    feedHeight;
+    feedWidth;
+    hideOwnBlocks;
+    untrack(() => {
+      if (!isSubjectFeed || !feedEl || canvasSize === 0) return;
+      const viewport = landscape ? feedWidth : feedHeight;
+      if (canvasSize <= viewport + 20 && autoFillTries < AUTO_FILL_MAX) {
+        autoFillTries++;
+        loadOlder();
+      }
+    });
   });
 
   // After feed resizes (e.g. orientation change), layoutGrid rewraps and changes section
@@ -627,6 +652,7 @@
               onclick={(e) => {
                 e.stopPropagation();
                 hideOwnBlocks = !hideOwnBlocks;
+                autoFillTries = 0; // let the viewport-fill run again for the new visible set
                 tick().then(scheduleMeasure);
               }}
             >
@@ -806,13 +832,26 @@
   /* Folded own-block body (replaces the tx grid): a centered tx-count/size tile whose side is
      --fold-size (∝ block KB), so the block's height (and width, above the header/footer's
      natural size) grows with the block's KB. */
+  /* Folded own block is a square whose side (--fold-size) scales with the block's KB. */
+  .section.fold-own {
+    width: var(--fold-size);
+    min-width: var(--fold-size);
+    max-width: var(--fold-size);
+    height: var(--fold-size);
+    box-sizing: border-box;
+  }
+  /* Keep the date/time and hash/number centred rather than spread across a wide square. */
+  .section.fold-own .block-header,
+  .section.fold-own .block-footer {
+    justify-content: center;
+  }
   .fold-summary.own {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 4px;
-    height: var(--fold-size); /* scales with block KB; width stays natural (header/footer) */
+    flex: 1; /* fill the square's middle between the header/ticker and the footer */
     color: rgb(255 255 255 / 0.85);
   }
   .fold-count {
