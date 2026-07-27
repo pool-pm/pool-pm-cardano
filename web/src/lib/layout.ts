@@ -120,6 +120,9 @@ export type LayoutGridParams = {
   landscape: boolean;
   availableWidth: number;
   availableHeight: number;
+  /** Included only so the action's `update` re-runs the layout when a block folds/unfolds
+   * (the tiles change height but none of the other params do). Not otherwise used. */
+  foldRev?: unknown;
 };
 
 function colsForMaxH(heights: number[], gap: number, maxH: number): number {
@@ -308,7 +311,8 @@ export function layoutGrid(node: HTMLElement, params: LayoutGridParams) {
       landscape = newParams.landscape;
       availableWidth = newParams.availableWidth;
       availableHeight = newParams.availableHeight;
-      doLayout();
+      // rAF so a fold/unfold re-measures the tiles *after* they've re-rendered at their new size.
+      schedule();
     },
     destroy() {
       if (pendingFrame) cancelAnimationFrame(pendingFrame);

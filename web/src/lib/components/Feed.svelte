@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
   import { slide } from 'svelte/transition';
+  import { SvelteSet } from 'svelte/reactivity';
   import { sections, config, pool, drep, stake, address, cardano, blockCount } from '../stores';
   import type { GenesisConfig, Section } from '../types';
   import { TX_WIDTH, FLIP_DURATION, poolColor, formatTicker, formatAda, layoutGrid } from '../layout';
@@ -26,6 +27,84 @@
   // A subject feed (pool/drep/stake) vs the global homepage feed. Drives block
   // spacing, coloring, and whether the per-block minting-pool ticker is shown.
   const isSubjectFeed = $derived(!!($pool || $drep || $stake || $address));
+
+  // --- Block folding (pool/DRep feeds) ---
+  // On pool/DRep feeds, blocks fold by default to declutter: a compact summary replaces
+  // the tx grid; clicking the block header toggles it. `unfoldedIds` holds the sections the
+  // user has expanded (default = folded). Only block sections on a pool/DRep feed fold.
+  const foldable = $derived(!!($pool || $drep));
+  const unfoldedIds = new SvelteSet<string>();
+  function sectionFolded(section: Section): boolean {
+    return foldable && !!section.block && !unfoldedIds.has(section.id);
+  }
+  function toggleFold(id: string) {
+    if (unfoldedIds.has(id)) unfoldedIds.delete(id);
+    else unfoldedIds.add(id);
+    // The section's size changes on fold/unfold; re-measure so the pack layout repositions
+    // (the measure effect keys on $sections, which a fold toggle doesn't change).
+    tick().then(scheduleMeasure);
+  }
+  // A block this feed's pool minted itself (vs a stake-change block from another pool, or —
+  // on a DRep feed — any block). Own blocks fold to "N txs · size"; others to a stake summary.
+  function isOwnBlock(section: Section): boolean {
+    return !!$pool && !!section.block && section.block.pool_id === $pool.pool_id;
+  }
+
+  // Folded-block size scales with the block's KB, capped so a full block is ~2× a small one.
+  // Folded own-block middle-tile HEIGHT, ∝ block KB. An empty (<1 KB) block is just the two
+  // text lines (FOLD_MIN) so it wastes no space — the block is then only its header + tile +
+  // footer; a full (~90 KB) block's tile is FOLD_MAX, sized so the whole block is ~2× the
+  // smallest (the header/footer overhead is roughly FOLD_MIN, so tile 28→110 → block ~76→158).
+  // Width stays natural (header/footer), so only the height grows with KB.
+  const FOLD_MIN_PX = 28; // the two text lines ("N txs" / "X KB")
+  const FOLD_MAX_PX = 110;
+  const MAX_BLOCK_KB = 90; // ~mainnet max block body size
+  function foldSizePx(section: Section): number {
+    const kb = (section.block?.size ?? 0) / 1024;
+    return Math.round(FOLD_MIN_PX + (FOLD_MAX_PX - FOLD_MIN_PX) * (Math.min(kb, MAX_BLOCK_KB) / MAX_BLOCK_KB));
+  }
+
+  // One consistent way to fold/unfold any block: click anywhere on it. Real links (the
+  // minting-pool ticker on a stake-change block, addresses) and an unfolded block's tx tiles
+  // keep their own behaviour, so those clicks don't toggle.
+  function onSectionClick(e: MouseEvent, section: Section) {
+    if (!foldable || !section.block) return;
+    const t = e.target as HTMLElement | null;
+    // Links/buttons act; the footer (block hash + number) stays selectable/copyable; an
+    // unfolded block's tx tiles keep their own interactions.
+    if (t?.closest('a, button, .block-footer')) return;
+    if (!sectionFolded(section) && t?.closest('.tx-grid')) return;
+    // Don't toggle when the click ends a text selection.
+    if (window.getSelection()?.toString()) return;
+    toggleFold(section.id);
+  }
+
+  // Fold or unfold *every* block at once — triggered by a click on the empty feed background.
+  // Fold all if any block is currently open, else unfold all.
+  function toggleAllFold() {
+    if (unfoldedIds.size > 0) unfoldedIds.clear();
+    else for (const s of $sections) if (s.block) unfoldedIds.add(s.id);
+    tick().then(scheduleMeasure);
+  }
+  function onBackgroundClick(e: MouseEvent) {
+    if (!foldable) return;
+    const t = e.target as HTMLElement | null;
+    // Only a click on the empty background — not a block/mempool section or the header card.
+    if (t?.closest('.section') || t?.closest('.subject-card')) return;
+    if (window.getSelection()?.toString()) return;
+    toggleAllFold();
+  }
+
+  // Hide/show all the pool's own minted blocks — toggled by clicking the epoch block-count on
+  // the mempool. `displaySections` (used for both rendering and layout) drops them when hidden;
+  // sections[0] (the mempool) and stake-change blocks always stay.
+  let hideOwnBlocks = $state(false);
+  // Hide the pool's own minted blocks when toggled (keep sections[0] = the mempool).
+  const displaySections = $derived(
+    hideOwnBlocks && $pool
+      ? $sections.filter((s, i) => i === 0 || !(s.block && s.block.pool_id === $pool!.pool_id))
+      : $sections,
+  );
 
   // On a pool feed, number each block the pool *minted* by its lifetime index: the newest
   // minted block is #blocks (from the Pool header, which the server re-emits on every mint and
@@ -121,7 +200,7 @@
   }
 
   function measureSections() {
-    const sects = $sections;
+    const sects = displaySections;
 
     // Before remeasuring, record an anchor section's viewport position.
     // After DOM update we'll measure the actual shift and compensate scroll.
@@ -262,6 +341,10 @@
 
   function sectionMaxWidth(section: Section): string {
     if (landscape) return 'none';
+    // Folded own block (custom tile, no measured grid): cap to a single-tx width so it doesn't
+    // stretch the full window in portrait — same compact size as in landscape.
+    if (foldable && section.block && isOwnBlock(section) && !unfoldedIds.has(section.id))
+      return `${TX_WIDTH + BLOCK_INSET}px`;
     const gw = actualGridWidths[section.id];
     if (gw) return `${gw + BLOCK_INSET}px`;
     if (section.txs.length === 0) return `${TX_WIDTH + BLOCK_INSET}px`;
@@ -358,7 +441,7 @@
 
   // Re-measure positions when sections change, time advances, or orientation changes
   $effect(() => {
-    $sections;
+    displaySections;
     now;
     landscape;
     untrack(scheduleMeasure);
@@ -443,6 +526,7 @@
   }
 </script>
 
+<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
 <div
   class="feed"
   class:landscape
@@ -450,20 +534,27 @@
   style:--block-padding="{BLOCK_PADDING}px"
   style:--block-border="{BLOCK_BORDER}px"
   style:--flip-duration="{FLIP_DURATION}ms"
+  onclick={onBackgroundClick}
 >
   <SubjectCard pool={$pool} drep={$drep} stake={$stake} address={$address} cardano={$cardano} {landscape} />
   <div class="canvas" style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}>
-    {#each $sections as section, i (section.id)}
+    {#each displaySections as section, i (section.id)}
       {@const isMempool = !section.block && !section.reward}
       {@const colors = sectionColors(section)}
       {@const layout = sectionPositions.get(section.id)}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      {@const secFolded = sectionFolded(section)}
+      {@const secOwn = section.block ? isOwnBlock(section) : false}
+      {@const foldOwn = !!section.block && secFolded && secOwn}
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
       <div
         class="section"
         class:mempool={isMempool}
         class:reward-capsule={!!section.reward}
         class:animated
         class:measured={canvasSize > 0}
+        class:foldable={foldable && !!section.block}
+        class:fold-own={foldOwn}
+        style:--fold-size={foldOwn ? `${foldSizePx(section)}px` : undefined}
         class:has-line={i > 0 && (layout?.spacing ?? 0) > 0}
         style:border-color={colors.border}
         style:background-color={colors.bg}
@@ -477,6 +568,7 @@
         ongridwidth={(e: CustomEvent<number>) => {
           actualGridWidths[section.id] = e.detail;
         }}
+        onclick={(e) => onSectionClick(e, section)}
         use:trackSection={section.id}
         use:introScale
         out:slide|local={{ duration: isMempool ? 0 : FLIP_DURATION, axis: landscape ? 'x' : 'y' }}
@@ -505,6 +597,8 @@
             {/each}
           </div>
         {:else}
+          {@const folded = secFolded}
+          {@const own = secOwn}
           <div class="block-header">
             {#if isMempool && $config?.genesis}
               {@const ei = epochInfo($config.genesis)}
@@ -524,30 +618,63 @@
                  displayed epoch rolls past it, show 0 until the pool's next mint re-emits. -->
             {@const cur = epochInfo($config.genesis).epoch}
             {@const n = cur === $pool.epoch ? $pool.epoch_blocks : 0}
-            <div class="epoch-blocks" style:color={poolColor($pool.pool_id)}>
+            <!-- Click to hide/show all the pool's own minted blocks; dimmed while hidden. -->
+            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+            <div
+              class="epoch-blocks"
+              class:dimmed={hideOwnBlocks}
+              style:color={poolColor($pool.pool_id)}
+              onclick={(e) => {
+                e.stopPropagation();
+                hideOwnBlocks = !hideOwnBlocks;
+                tick().then(scheduleMeasure);
+              }}
+            >
               {n} block{n > 1 ? 's' : ''}
             </div>
           {/if}
-          {#if section.block}
+          <!-- Ticker. Own blocks: a plain label (a link to your own page would be redundant, and
+               clicking it must fold like the rest of the block, so it's not a link). Stake-change
+               blocks: the minting-pool link, shown only when unfolded (hidden on the folded view,
+               whose meaning is the delegators, not the minter). -->
+          {#if section.block && own}
             {@const pn = poolBlockNumbers.get(section.id)}
-            <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
+            <span class="block-ticker"
               >{formatTicker(
                 section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '',
-              )}{#if pn != null && pn > 0}<span class="pool-block-no">&nbsp;#{pn}</span>{/if}</a
+              )}{#if pn != null && pn > 0}<span class="pool-block-no">&nbsp;#{pn}</span>{/if}</span
             >
-          {:else if section.txs.length > 0}
+          {:else if section.block && !folded}
+            <a class="block-ticker" href="/{section.block.pool_id ?? ''}"
+              >{formatTicker(section.block.pool_ticker ?? section.block.pool_id?.slice(5, 10) ?? '')}</a
+            >
+          {:else if !section.block && section.txs.length > 0}
             <!-- Hide the MEMPOOL label while the mempool is empty (no pending txs). -->
             <span class="block-ticker">MEMPOOL</span>
           {/if}
 
-          {#if section.txs.length > 0}
+          {#if section.block && folded && own}
+            <!-- Own minted block: tx count + block size, box sized by KB (--fold-size, which also
+                 caps the header/footer width so the whole block scales). Section click folds. -->
+            <div class="fold-summary own">
+              <span class="fold-count">{section.txs.length} tx{section.txs.length === 1 ? '' : 's'}</span>
+              <span class="fold-kb">{(section.block.size / 1024).toFixed(1)} KB</span>
+            </div>
+          {:else if section.txs.length > 0}
+            <!-- Unfolded: the full tx grid. Folded stake-change: the same tiles, decluttered
+                 (Transaction `folded` hides everything but each tx's stake meaning). -->
             <div
               class="tx-grid"
-              use:layoutGrid={{ landscape, availableWidth: feedWidth - BLOCK_INSET, availableHeight: txAreaHeight }}
+              use:layoutGrid={{
+                landscape,
+                availableWidth: feedWidth - BLOCK_INSET,
+                availableHeight: txAreaHeight,
+                foldRev: folded,
+              }}
             >
               {#each section.txs as tx (tx.hash)}
                 <div class="tx-grid-item">
-                  <Transaction {tx} compact={landscape && feedHeight < 500} />
+                  <Transaction {tx} compact={landscape && feedHeight < 500} folded={folded && !own} />
                 </div>
               {/each}
             </div>
@@ -671,12 +798,40 @@
     white-space: nowrap;
     gap: 8px;
   }
+  /* A foldable block: clicking anywhere on it toggles (except links / unfolded tx tiles). */
+  .section.foldable {
+    cursor: pointer;
+  }
+
+  /* Folded own-block body (replaces the tx grid): a centered tx-count/size tile whose side is
+     --fold-size (∝ block KB), so the block's height (and width, above the header/footer's
+     natural size) grows with the block's KB. */
+  .fold-summary.own {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    height: var(--fold-size); /* scales with block KB; width stays natural (header/footer) */
+    color: rgb(255 255 255 / 0.85);
+  }
+  .fold-count {
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .fold-kb {
+    font-size: 10px;
+    color: var(--meta-color, rgb(255 255 255 / 0.5));
+  }
 
   .block-footer {
     display: flex;
     justify-content: space-between;
     white-space: nowrap;
     gap: 8px;
+    /* The hash + number stay selectable/copyable (the section-click fold handler skips them). */
+    user-select: text;
+    cursor: text;
   }
 
   .block-meta {
@@ -692,6 +847,12 @@
     color: var(--meta-color, rgb(0 0 0 / 0.5));
     font-size: 10px;
     line-height: 1;
+    cursor: pointer;
+  }
+  /* Dimmed while the pool's own blocks are hidden. */
+  .epoch-blocks.dimmed {
+    opacity: 0.4;
+    filter: grayscale(1);
   }
 
   /* The block date and time read a touch heavier than the rest of the meta line. */

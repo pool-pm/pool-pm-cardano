@@ -175,6 +175,9 @@ export interface BlockTx {
   votes?: VoteInfo[];
   message?: string[];
   stake_change?: string;
+  /** Pool/DRep stake-change txs: the feed's delegator stake address(es) this tx moved (the
+   * relevant account(s) among possibly many). The folded view shows these, not raw addresses. */
+  stake_addresses?: string[];
   catalyst?: CatalystInfo;
   annotations?: TxAnnotation[];
 }
@@ -189,6 +192,8 @@ export interface BlockEvent {
   hash: string;
   number: number;
   timestamp: number;
+  /** Serialized block size in bytes (folded pool-own blocks show this as KB). */
+  size: number;
   pool_id?: string;
   pool_ticker?: string;
   txs: BlockTx[];
@@ -331,6 +336,7 @@ export interface Section {
     hash: string;
     number: number;
     timestamp: number;
+    size: number;
     pool_id?: string;
     pool_ticker?: string;
   };

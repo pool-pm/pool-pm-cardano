@@ -35,7 +35,10 @@
   // Link an address to its feed: addr1…/stake1… have one; Byron and unresolved
   // addresses don't, so they render as plain text.
   function addrHref(addr: string | null | undefined): string | undefined {
-    return addr && /^(addr1|addr_test1|stake1|stake_test1)/.test(addr) ? '/' + addr : undefined;
+    if (!addr) return undefined;
+    // A `$handle` (folded stake-address summary) links to its handle page.
+    if (addr.startsWith('$')) return '/' + addr;
+    return /^(addr1|addr_test1|stake1|stake_test1)/.test(addr) ? '/' + addr : undefined;
   }
 
   const dappLookup: Record<string, string> = Object.fromEntries(
@@ -49,7 +52,10 @@
     return dappLookup[address] ?? null;
   }
 
-  let { tx, compact = false }: { tx: FeedTx; compact?: boolean } = $props();
+  // `folded` = the decluttered rendering used on a folded stake-change block (pool/DRep
+  // feed): a delegation tx shows only its delegation change (no live_stake, no fee I/O);
+  // any other stake-affecting tx shows only its net stake change + the account(s) it moved.
+  let { tx, compact = false, folded = false }: { tx: FeedTx; compact?: boolean; folded?: boolean } = $props();
   let failedAssets = $state<Record<number, number>>({});
 
   // Above this rendered thumbnail size the art is already legible, so the hover
@@ -86,6 +92,13 @@
   let visibleDelegations: DelegationInfo[] = $derived(
     (tx.delegations ?? []).filter((d) => d.from_pool_id || d.to_pool_id || d.from_drep_id || d.to_drep_id),
   );
+  const hasDeleg = $derived(visibleDelegations.length > 0);
+  const shownAnnotations = $derived(folded ? [] : (tx.annotations ?? []));
+
+  // Folded non-delegation stake-affecting tx: show just the account(s) it moved. The server
+  // sends the *relevant* stake addresses in `tx.stake_addresses` (only the feed's delegators —
+  // not every account in a multi-party tx), so we don't derive from all I/O here.
+  const foldedStakeAddrs = $derived(folded && !hasDeleg ? (tx.stake_addresses ?? []) : []);
 
   function formatAda(lovelace: string, sign?: string): string {
     const padded = lovelace.padStart(7, '0');
@@ -172,14 +185,31 @@
       {@html formatAda(negative ? tx.stake_change.slice(1) : tx.stake_change, negative ? '−' : '+')}
     </div>
   {/if}
-  {#if tx.message?.length}
+  {#if folded && foldedStakeAddrs.length > 0}
+    <!-- Folded non-delegation tx: just the account(s) it moved. -->
+    <div class="deleg-section">
+      <div class="addr-list">
+        {#each foldedStakeAddrs as a (a)}
+          <div class="addr-item">
+            <svelte:element
+              this={addrHref(a) ? 'a' : 'span'}
+              href={addrHref(a)}
+              style:color={ownedStakeColor(a)}
+              class="addr mono">{a}</svelte:element
+            >
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
+  {#if !folded && tx.message?.length}
     <div class="msg-section">
       {#each tx.message as line}
         <span class="msg-line">{line}</span>
       {/each}
     </div>
   {/if}
-  {#if tx.votes?.length}
+  {#if !folded && tx.votes?.length}
     <div class="vote-section">
       {#each tx.votes as vote}
         <div class="vote-item">
@@ -240,7 +270,9 @@
               >
             {/if}
             <div class="stake-group" class:spaced={hasFrom}>
-              <span class="ada">{@html formatAda(deleg.live_stake)}</span>
+              {#if !folded}
+                <span class="ada">{@html formatAda(deleg.live_stake)}</span>
+              {/if}
               <svelte:element
                 this={addrHref(deleg.stake_address) ? 'a' : 'span'}
                 href={addrHref(deleg.stake_address)}
@@ -253,7 +285,7 @@
       </div>
     </div>
   {/if}
-  {#if tx.catalyst}
+  {#if !folded && tx.catalyst}
     <div class="deleg-section">
       <div class="addr-list">
         <div class="addr-item">
@@ -273,7 +305,7 @@
       </div>
     </div>
   {/if}
-  {#each tx.annotations ?? [] as ann}
+  {#each shownAnnotations as ann}
     {#if ann.kind === 'oracle'}
       <div class="annotation">
         <span class="annotation-label">{ann.source} price feed</span>
@@ -286,7 +318,7 @@
     {/if}
   {/each}
 
-  {#if tx.inputs.length > 0 || tx.outputs.length > 0}
+  {#if !folded && (tx.inputs.length > 0 || tx.outputs.length > 0)}
     <div class="tx-body">
       <div class="addr-list">
         {#each visibleOutputs as output, oi}

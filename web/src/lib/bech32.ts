@@ -96,3 +96,52 @@ export function rewardCredential(stakeAddr: string): string | null {
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
 }
+
+// --- Encode (for deriving a stake address from a payment address) ---
+
+function bech32Checksum(hrp: string, data: number[]): number[] {
+  const values = [...hrpExpand(hrp), ...data, 0, 0, 0, 0, 0, 0];
+  const mod = polymod(values) ^ 1;
+  const out: number[] = [];
+  for (let i = 0; i < 6; i++) out.push((mod >>> (5 * (5 - i))) & 31);
+  return out;
+}
+
+/** Bech32-encode raw bytes under `hrp` (no length cap — Cardano CIP-5 addresses). */
+export function bech32Encode(hrp: string, bytes: Uint8Array): string {
+  // 8-bit → 5-bit groups (pad the final group).
+  const data5: number[] = [];
+  let acc = 0;
+  let bits = 0;
+  for (const b of bytes) {
+    acc = (acc << 8) | b;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      data5.push((acc >>> bits) & 31);
+    }
+  }
+  if (bits > 0) data5.push((acc << (5 - bits)) & 31);
+  const combined = [...data5, ...bech32Checksum(hrp, data5)];
+  return hrp + '1' + combined.map((d) => BECH32_ALPHABET[d]).join('');
+}
+
+/**
+ * The reward (stake1…) address of a base payment address, or null when it has no stake
+ * part (enterprise / Byron) or isn't decodable. Rebuilds the reward address from the
+ * payment address's network + stake credential (bytes 29-56) and its script/key type
+ * (CIP-19 header nibble). Used to collapse many payment addresses of one account to a
+ * single stake address for the folded stake-change summary.
+ */
+export function stakeAddressOf(addr: string): string | null {
+  const bytes = bech32Decode(addr);
+  if (!bytes || bytes.length < 57) return null;
+  const header = bytes[0];
+  const network = header & 0x0f;
+  const stakeIsScript = ((header >> 4) & 0b0010) !== 0; // base-address type bit 1 = stake is script
+  const rewardHeader = (((0b1110 | (stakeIsScript ? 1 : 0)) << 4) | network) & 0xff;
+  const data = new Uint8Array(29);
+  data[0] = rewardHeader;
+  data.set(bytes.slice(29, 57), 1);
+  return bech32Encode(network === 1 ? 'stake' : 'stake_test', data);
+}
