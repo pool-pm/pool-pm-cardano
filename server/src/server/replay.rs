@@ -455,7 +455,12 @@ pub(super) async fn process_replay_block(
                 }
             }
         }
-        filter::apply_stake_changes(&mut txs, delegators, feed_filter);
+        {
+            // Brief read lock: apply_stake_changes is synchronous and needs the snapshot to
+            // resolve delegator ADA Handles for the folded stake-address summary.
+            let guard = ctx.chain_state.read().await;
+            filter::apply_stake_changes(&mut txs, delegators, feed_filter, ctx.mainnet, guard.current());
+        }
 
         // Stake/address feeds: walk the stake backward to the exact pre-block value
         // and attach delegations from the full db history (correct from/to at any
@@ -513,6 +518,7 @@ pub(super) async fn process_replay_block(
         hash: block.hash.clone(),
         number: block.number,
         timestamp: slot_to_timestamp(block.slot, ctx.genesis),
+        size: cbor.len(),
         pool_id,
         pool_ticker,
         txs,
@@ -605,12 +611,13 @@ pub(super) async fn send_filtered_snapshot(
     delegators: &imbl::hashset::HashSet<Vec<u8>>,
     exclude_slots: &HashSet<u64>,
     size: u16,
+    mainnet: bool,
 ) {
     for event in snapshot {
         if sender.is_closed() {
             break; // client disconnected — stop replaying
         }
-        if let Some(filtered) = filter.filter_event(&event, delegators) {
+        if let Some(filtered) = filter.filter_event(&event, delegators, mainnet, None) {
             if let crate::event::Event::Block { slot, .. } = &filtered {
                 if exclude_slots.contains(slot) {
                     continue;

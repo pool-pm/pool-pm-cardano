@@ -585,6 +585,7 @@ impl Worker {
                 hash: block_hash,
                 number: height,
                 timestamp,
+                size: cbor.len(),
                 pool_id,
                 pool_ticker,
                 txs,

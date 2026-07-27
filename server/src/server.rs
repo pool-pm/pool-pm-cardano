@@ -588,17 +588,18 @@ fn build_live_stream(
                     }
                 }
 
-                let delegators = {
+                // Filter under the read lock: `filter_event` is synchronous (no await), so
+                // holding the guard is brief, and it needs the snapshot to resolve delegator
+                // ADA Handles for the folded stake-address summary.
+                let filtered = {
                     let guard = chain_state.read().await;
-                    guard
-                        .current()
-                        .map(|snap| filter.current_delegators(snap))
-                        .unwrap_or_default()
+                    let snap = guard.current();
+                    let delegators = snap
+                        .map(|s| filter.current_delegators(s))
+                        .unwrap_or_default();
+                    filter.filter_event(&event, &delegators, mainnet, snap)
                 };
-                if let Some(sse) = filter
-                    .filter_event(&event, &delegators)
-                    .and_then(|e| serialize_event(e, size))
-                {
+                if let Some(sse) = filtered.and_then(|e| serialize_event(e, size)) {
                     return Some((
                         sse,
                         (
@@ -1433,6 +1434,7 @@ async fn filtered_events(
             &replay_delegators,
             &exclude_slots,
             size,
+            replay_state.mainnet,
         )
         .await;
     });

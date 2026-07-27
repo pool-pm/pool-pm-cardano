@@ -50,6 +50,12 @@ pub struct BlockTx {
     #[serde(default)]
     #[serde(with = "opt_string_i64")]
     pub stake_change: Option<i64>,
+    /// The feed subject's delegator stake address(es) this tx actually moved — the
+    /// relevant account(s) among possibly many in a multi-party tx. Set on pool/DRep
+    /// stake-change txs (non-delegation ones); the folded view shows these instead of the
+    /// raw payment addresses. Empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stake_addresses: Vec<String>,
     /// CIP-36/CIP-15 Catalyst voting registration (label 61284), if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub catalyst: Option<CatalystInfo>,
@@ -163,6 +169,9 @@ pub enum Event {
         hash: String,
         number: u64,
         timestamp: u64,
+        /// Serialized block size in bytes — the folded pool-own block on a feed shows this
+        /// (as KB) and scales its box to it. The whole-block size even when `txs` is filtered.
+        size: usize,
         #[serde(skip_serializing_if = "Option::is_none")]
         pool_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]

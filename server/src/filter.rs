@@ -169,12 +169,18 @@ impl FeedFilter {
         false
     }
 
-    pub fn filter_event(&self, event: &Event, delegators: &HashSet<Vec<u8>>) -> Option<Event> {
+    pub fn filter_event(
+        &self,
+        event: &Event,
+        delegators: &HashSet<Vec<u8>>,
+        mainnet: bool,
+        snap: Option<&BlockSnapshot>,
+    ) -> Option<Event> {
         match event {
             Event::MempoolTx(tx) => {
                 if self.matches_tx(tx, delegators) {
                     let mut tx = tx.clone();
-                    apply_stake_change(&mut tx, delegators, self);
+                    apply_stake_change(&mut tx, delegators, self, mainnet, snap);
                     Some(Event::MempoolTx(tx))
                 } else {
                     None
@@ -185,6 +191,7 @@ impl FeedFilter {
                 hash,
                 number,
                 timestamp,
+                size,
                 pool_id,
                 pool_ticker,
                 txs,
@@ -202,12 +209,13 @@ impl FeedFilter {
                 if filtered.is_empty() {
                     None
                 } else {
-                    apply_stake_changes(&mut filtered, delegators, self);
+                    apply_stake_changes(&mut filtered, delegators, self, mainnet, snap);
                     Some(Event::Block {
                         slot: *slot,
                         hash: hash.clone(),
                         number: *number,
                         timestamp: *timestamp,
+                        size: *size,
                         pool_id: pool_id.clone(),
                         pool_ticker: pool_ticker.clone(),
                         txs: filtered,
@@ -227,7 +235,13 @@ impl FeedFilter {
 /// Compute net stake change for a single tx relative to feed delegators.
 /// Combines UTXO changes (outputs - inputs - withdrawals) with delegation
 /// impact (live_stake gained/lost from delegation certificate changes).
-pub fn apply_stake_change(tx: &mut BlockTx, delegators: &HashSet<Vec<u8>>, filter: &FeedFilter) {
+pub fn apply_stake_change(
+    tx: &mut BlockTx,
+    delegators: &HashSet<Vec<u8>>,
+    filter: &FeedFilter,
+    mainnet: bool,
+    snap: Option<&BlockSnapshot>,
+) {
     // Address feeds: net is simply outputs to the address minus inputs from it.
     if let FeedFilter::Address(addr) = filter {
         let mut net: i64 = 0;
@@ -247,11 +261,21 @@ pub fn apply_stake_change(tx: &mut BlockTx, delegators: &HashSet<Vec<u8>>, filte
         return;
     }
 
+    // Collect the delegator credential(s) this tx actually moves — the *relevant* accounts
+    // among possibly many in a multi-party tx (only those in the feed's delegator set count).
+    // The folded view shows these stake addresses instead of every raw payment address.
     let mut net: i64 = 0;
+    let mut moved: Vec<Vec<u8>> = Vec::new();
+    let note = |cred: &[u8], moved: &mut Vec<Vec<u8>>| {
+        if !moved.iter().any(|c| c == cred) {
+            moved.push(cred.to_vec());
+        }
+    };
     for output in &tx.outputs {
         if let Some(cred) = stake_credential(&output.address) {
             if delegators.contains(&cred) {
                 net += output.lovelace as i64;
+                note(&cred, &mut moved);
             }
         }
     }
@@ -260,6 +284,7 @@ pub fn apply_stake_change(tx: &mut BlockTx, delegators: &HashSet<Vec<u8>>, filte
             if let Some(cred) = stake_credential(addr) {
                 if delegators.contains(&cred) {
                     net -= input.lovelace as i64;
+                    note(&cred, &mut moved);
                 }
             }
         }
@@ -267,6 +292,7 @@ pub fn apply_stake_change(tx: &mut BlockTx, delegators: &HashSet<Vec<u8>>, filte
     for (cred, amount) in &tx.withdrawals {
         if delegators.contains(cred) {
             net -= *amount as i64;
+            note(cred, &mut moved);
         }
     }
     // Delegation impact (live_stake gained/lost from delegation certificates)
@@ -296,6 +322,19 @@ pub fn apply_stake_change(tx: &mut BlockTx, delegators: &HashSet<Vec<u8>>, filte
     if net != 0 {
         tx.stake_change = Some(net);
     }
+    // Only pool/DRep feeds show the folded stake-address summary; a non-delegation tx there
+    // renders these instead of its raw payment addresses (delegation txs use DelegationInfo).
+    // Prefer the account's ADA Handle (`$name`) when it has one, else the stake address.
+    if matches!(filter, FeedFilter::Pool(_) | FeedFilter::DRep(_)) && !moved.is_empty() {
+        tx.stake_addresses = moved
+            .iter()
+            .map(|c| {
+                snap.and_then(|s| s.handle_for_stake(c))
+                    .map(|h| format!("${h}"))
+                    .unwrap_or_else(|| crate::pallas::stake_address_from_cred_bytes(c, mainnet))
+            })
+            .collect();
+    }
 }
 
 /// Apply stake change to multiple txs.
@@ -303,9 +342,11 @@ pub fn apply_stake_changes(
     txs: &mut [BlockTx],
     delegators: &HashSet<Vec<u8>>,
     filter: &FeedFilter,
+    mainnet: bool,
+    snap: Option<&BlockSnapshot>,
 ) {
     for tx in txs {
-        apply_stake_change(tx, delegators, filter);
+        apply_stake_change(tx, delegators, filter, mainnet, snap);
     }
 }
 
@@ -417,6 +458,7 @@ mod tests {
             votes,
             message: None,
             stake_change: None,
+            stake_addresses: Vec::new(),
             catalyst: None,
             annotations: vec![],
             stake_credentials: vec![],

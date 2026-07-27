@@ -170,6 +170,7 @@ pub async fn extract_tx(
         votes,
         message,
         stake_change: None,
+        stake_addresses: Vec::new(),
         catalyst,
         annotations,
         stake_credentials: Vec::new(),

@@ -195,6 +195,7 @@ pub(super) fn decode_block_txs(
                 votes,
                 message,
                 stake_change: None,
+                stake_addresses: Vec::new(),
                 catalyst,
                 annotations,
                 stake_credentials: vec![],
