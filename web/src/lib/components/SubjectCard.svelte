@@ -181,7 +181,10 @@
     background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-2);
     border: none;
     border-top: 3px solid var(--subject-color);
-    --glow: color-mix(in srgb, var(--subject-color) 40%, transparent);
+    /* Glow the subject/page colour (white on the homepage, pool/drep colour on their pages),
+       but softer than the feed blocks: white is intrinsically far brighter than the mid oklch
+       block colours, so a lower alpha is needed to read as equally soft. */
+    --glow: color-mix(in srgb, var(--subject-color) 22%, transparent);
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / 0.1),
       0 0 7px 0 var(--glow),
