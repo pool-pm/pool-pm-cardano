@@ -20,8 +20,11 @@
      its own tint (blocks: their colour; card: the subject colour); the recipe is shared.
      A top light-catch (inset white) keeps the panel lit from above. */
   --glow: rgb(255 255 255 / 0.06); /* fallback tint; every surface overrides it */
-  --elevation: inset 0 1px 0 rgb(255 255 255 / 0.1), 0 0 16px -1px var(--glow), 0 8px 30px -6px var(--glow);
-  --elevation-hover: inset 0 1px 0 rgb(255 255 255 / 0.14), 0 0 24px 0 var(--glow), 0 14px 40px -6px var(--glow);
+  /* Tight contact glow (0 offset, 0 spread) hugs the panel edge so the glow starts right at
+     the border — no black gap — then a wider bloom (positive spread, slight downward) blooms
+     out. No negative spread / large offset, which would pull the glow off the edge. */
+  --elevation: inset 0 1px 0 rgb(255 255 255 / 0.1), 0 0 7px 0 var(--glow), 0 3px 22px 1px var(--glow);
+  --elevation-hover: inset 0 1px 0 rgb(255 255 255 / 0.14), 0 0 11px 1px var(--glow), 0 6px 30px 2px var(--glow);
 }
 
 * {
