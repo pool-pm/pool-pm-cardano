@@ -595,13 +595,20 @@ impl Worker {
         let catchup = stage.catchup_target.load(Ordering::Relaxed);
         let mut catchup_complete = false;
         if catchup > 0 {
-            if slot >= catchup {
+            // Complete the moment we drain to the node's real tip (published by the source), not
+            // when we cross the wall-clock estimate `catchup` — that estimate is normally a bit
+            // ahead of the tip, so crossing it would force an extra wait for the next minted block
+            // before SSE opens. `node_tip` is 0 only until the first message arrives; treat that
+            // as not-yet-known and keep catching up.
+            let tip = stage.node_tip.load(Ordering::Relaxed);
+            if tip > 0 && slot >= tip {
                 stage.catchup_target.store(0, Ordering::Relaxed);
                 stage.catching_up.store(false, Ordering::Relaxed);
                 catchup_complete = true;
-                info!(slot, height, "catch-up complete");
+                info!(slot, height, tip, "catch-up complete");
             } else if height % 1000 == 0 {
-                let remaining = (catchup - slot) / 20;
+                let target = if tip > 0 { tip } else { catchup };
+                let remaining = target.saturating_sub(slot) / 20;
                 info!(slot, height, remaining, "catching up");
             }
         } else {
@@ -739,6 +746,9 @@ pub struct Stage {
     snapshot_path: PathBuf,
     snapshot_depth: usize,
     catchup_target: AtomicU64,
+    /// The node's tip slot, published by the source stage. Catch-up ends when an applied block
+    /// reaches this, so SSE opens the instant we drain to the real tip (see the completion logic).
+    node_tip: Arc<AtomicU64>,
     /// Shared flag: set to false once catch-up is complete. SSE server waits on this.
     pub catching_up: Arc<std::sync::atomic::AtomicBool>,
     /// True while an offloaded periodic snapshot save is in flight, so a slow save can't
@@ -763,6 +773,7 @@ pub struct SinkConfig {
     pub snapshot_path: PathBuf,
     pub snapshot_depth: usize,
     pub catchup_target: Option<u64>,
+    pub node_tip: Arc<AtomicU64>,
     pub catching_up: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -774,6 +785,7 @@ pub fn bootstrapper(context: &Context, config: SinkConfig) -> Result<Stage, Erro
         snapshot_path,
         snapshot_depth,
         catchup_target,
+        node_tip,
         catching_up,
     } = config;
     let genesis = GenesisValues::from(context.chain.clone());
@@ -787,6 +799,7 @@ pub fn bootstrapper(context: &Context, config: SinkConfig) -> Result<Stage, Erro
         snapshot_path,
         snapshot_depth,
         catchup_target: AtomicU64::new(catchup_target.unwrap_or(0)),
+        node_tip,
         catching_up,
         snapshot_saving: Arc::new(AtomicBool::new(false)),
         ops_count: Default::default(),

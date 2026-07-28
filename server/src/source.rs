@@ -16,6 +16,8 @@
 //! (sub-second on the local socket) instead of a multi-hour outage or a snapshot-reloading restart.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use gasket::framework::*;
@@ -66,6 +68,12 @@ pub struct Stage {
     /// whether a freeze is the N2C connection vs. runtime starvation.
     last_slot: u64,
     last_tip_slot: u64,
+
+    /// The node's tip slot, published for the sink so it can end catch-up the instant it drains to
+    /// the real tip — rather than waiting for a block to cross a wall-clock estimate (which is
+    /// normally slightly ahead of the tip, forcing an extra ~1-block wait before SSE opens).
+    /// chain-sync reports the current tip in every message, so this is exact from the first block.
+    node_tip: Arc<AtomicU64>,
 
     pub output: SourceOutputPort,
 
@@ -157,6 +165,7 @@ impl Worker {
                 stage.breadcrumbs.track(point);
                 stage.last_slot = slot;
                 stage.last_tip_slot = tip.0.slot_or_default();
+                stage.node_tip.store(stage.last_tip_slot, Ordering::Relaxed);
                 stage.chain_tip.set(stage.last_tip_slot as i64);
                 stage.current_slot.set(slot as i64);
                 stage.ops_count.inc(1);
@@ -177,6 +186,7 @@ impl Worker {
                 stage.breadcrumbs.track(point.clone());
                 stage.last_slot = point.slot_or_default();
                 stage.last_tip_slot = tip.0.slot_or_default();
+                stage.node_tip.store(stage.last_tip_slot, Ordering::Relaxed);
                 stage.chain_tip.set(stage.last_tip_slot as i64);
                 stage.current_slot.set(point.slot_or_default() as i64);
                 stage.rollback_count.inc(1);
@@ -250,11 +260,12 @@ impl gasket::framework::Worker<Stage> for Worker {
 
 /// Build the source stage. `ctx.intersect` sets the first-connect intersection (snapshot point,
 /// db-sync boundary, or tip — chosen in `daemon::run`); breadcrumbs then track our live position.
-pub fn bootstrapper(ctx: &Context, socket_path: PathBuf) -> Stage {
+pub fn bootstrapper(ctx: &Context, socket_path: PathBuf, node_tip: Arc<AtomicU64>) -> Stage {
     Stage {
         socket_path,
         chain: ctx.chain.clone().into(),
         intersect: ctx.intersect.clone(),
+        node_tip,
         // NOTE: NOT `ctx.breadcrumbs` — the daemon builds that with capacity 0, which retains
         // nothing, so a reconnect would re-intersect at the boot point and replay. We keep a real
         // window so reconnects resume at the current tip.
