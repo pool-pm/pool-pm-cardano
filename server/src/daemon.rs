@@ -1,5 +1,5 @@
 use gasket::daemon::Daemon;
-use oura::{cursor, framework::*, sources};
+use oura::{cursor, framework::*};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -32,21 +32,19 @@ fn define_gasket_policy() -> gasket::runtime::Policy {
 }
 
 fn connect_stages(
-    mut source: sources::Bootstrapper,
+    mut source: crate::source::Stage,
     mut sink: sink::Stage,
     mut cursor: cursor::Bootstrapper,
     mempool: mempool::Stage,
     policy: gasket::runtime::Policy,
 ) -> Result<Daemon, Error> {
-    let prev = source.borrow_output();
-
-    gasket::messaging::tokio::connect_ports(prev, &mut sink.input, 100);
+    gasket::messaging::tokio::connect_ports(&mut source.output, &mut sink.input, 100);
     let prev = &mut sink.cursor;
 
     gasket::messaging::tokio::connect_ports(prev, cursor.borrow_track(), 100);
 
     let tethers = vec![
-        source.spawn(policy.clone()),
+        gasket::runtime::spawn_stage(source, policy.clone()),
         gasket::runtime::spawn_stage(sink, policy.clone()),
         cursor.spawn(policy.clone()),
         gasket::runtime::spawn_stage(mempool, policy),
@@ -124,9 +122,6 @@ pub fn run(args: Args) -> Result<(), Error> {
 
     let listen = args.listen;
 
-    let source_config = sources::Config::N2C(sources::n2c::Config {
-        socket_path: args.socket.clone(),
-    });
     let mainnet = args.network.magic() == 764824073;
     let genesis = GenesisValues::from(args.network.config().clone());
     let genesis_config = server::GenesisConfig {
@@ -247,7 +242,7 @@ pub fn run(args: Args) -> Result<(), Error> {
 
     let catching_up = Arc::new(std::sync::atomic::AtomicBool::new(catchup_target.is_some()));
 
-    let source = source_config.bootstrapper(&ctx)?;
+    let source = crate::source::bootstrapper(&ctx, args.socket.clone());
     let sink = sink::bootstrapper(
         &ctx,
         sink::SinkConfig {

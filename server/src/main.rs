@@ -19,6 +19,7 @@ mod oracle;
 mod pallas;
 mod server;
 mod sink;
+mod source;
 mod state;
 
 fn main() {
