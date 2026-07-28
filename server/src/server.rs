@@ -1785,7 +1785,11 @@ pub async fn serve(config: ServeConfig) {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .unwrap_or_else(|e| panic!("failed to bind SSE server to {addr}: {e}"));
     info!(%addr, "starting SSE server");
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app)
+        .await
+        .unwrap_or_else(|e| panic!("SSE server on {addr} stopped with error: {e}"));
 }
