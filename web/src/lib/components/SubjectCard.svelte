@@ -181,10 +181,10 @@
     background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-2);
     border: none;
     border-top: 3px solid var(--subject-color);
-    /* Glow the subject/page colour (white on the homepage, pool/drep colour on their pages),
-       but softer than the feed blocks: white is intrinsically far brighter than the mid oklch
-       block colours, so a lower alpha is needed to read as equally soft. */
-    --glow: color-mix(in srgb, var(--subject-color) 22%, transparent);
+    /* Glow from the card's OWN background, exactly like the feed blocks glow from --block-bg
+       (not the subject colour). The card background is dark (--surface-2), so this is a near-
+       invisible dark glow — the card reads flat, consistent with the blocks' mechanism. */
+    --glow: color-mix(in srgb, var(--surface-2) 40%, transparent);
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / 0.1),
       0 0 7px 0 var(--glow),
