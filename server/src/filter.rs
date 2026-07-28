@@ -350,6 +350,67 @@ pub fn apply_stake_changes(
     }
 }
 
+/// For a block's txs, the max `|per-tx net stake delta|` per pool and per DRep, keyed by the
+/// subject each moved credential is delegated to **at block time** (`snap.{pool,drep}_delegations`).
+/// This mirrors `apply_stake_change`'s net computation for pool/DRep feeds — outputs to a
+/// delegator (+), inputs from one (−), withdrawals (−) — so the sink can decide index-time whether
+/// a block is above the significance threshold (`active_stake / STAKE_CHANGE_DIVISOR`) **without
+/// fetching it**, and that decision matches what the query-time render filter (`replay.rs`,
+/// `tx.stake_change.unsigned_abs() > threshold`) would do. Returns `(pool_max, drep_max)`.
+///
+/// The only divergence from the query path is the delegator scope: here a credential is attributed
+/// to the pool/DRep it was delegated to when the block was made, vs. the subject's *current*
+/// delegator set at query time — they differ only for a credential that re-delegated since, the
+/// same accepted feed-heuristic trade-off used elsewhere.
+pub fn block_stake_change_magnitudes(
+    txs: &[BlockTx],
+    snap: &BlockSnapshot,
+) -> (
+    std::collections::HashMap<Vec<u8>, i64>,
+    std::collections::HashMap<Vec<u8>, i64>,
+) {
+    let mut pool_max: std::collections::HashMap<Vec<u8>, i64> = std::collections::HashMap::new();
+    let mut drep_max: std::collections::HashMap<Vec<u8>, i64> = std::collections::HashMap::new();
+    for tx in txs {
+        let mut pool_net: std::collections::HashMap<Vec<u8>, i64> =
+            std::collections::HashMap::new();
+        let mut drep_net: std::collections::HashMap<Vec<u8>, i64> =
+            std::collections::HashMap::new();
+        let mut add = |cred: &[u8], amt: i64| {
+            if let Some(p) = snap.pool_delegations.get(cred) {
+                *pool_net.entry(p.clone()).or_default() += amt;
+            }
+            if let Some(d) = snap.drep_delegations.get(cred) {
+                *drep_net.entry(d.clone()).or_default() += amt;
+            }
+        };
+        for out in &tx.outputs {
+            if let Some(cred) = stake_credential(&out.address) {
+                add(&cred, out.lovelace as i64);
+            }
+        }
+        for inp in &tx.inputs {
+            if let Some(addr) = &inp.address {
+                if let Some(cred) = stake_credential(addr) {
+                    add(&cred, -(inp.lovelace as i64));
+                }
+            }
+        }
+        for (cred, amount) in &tx.withdrawals {
+            add(cred, -(*amount as i64));
+        }
+        for (p, net) in pool_net {
+            let e = pool_max.entry(p).or_default();
+            *e = (*e).max(net.abs());
+        }
+        for (d, net) in drep_net {
+            let e = drep_max.entry(d).or_default();
+            *e = (*e).max(net.abs());
+        }
+    }
+    (pool_max, drep_max)
+}
+
 pub fn stake_credential(addr: &str) -> Option<Vec<u8>> {
     let addr = Address::from_bech32(addr).ok()?;
     match addr {

@@ -107,12 +107,6 @@ impl Worker {
             let mut stake_changes: Vec<(Vec<u8>, i64)> = Vec::new();
             let mut withdrawal_changes: Vec<(Vec<u8>, i64)> = Vec::new();
 
-            // Feed index: track pools/dreps with stake changes in this block
-            let mut stake_change_pools: std::collections::HashSet<Vec<u8>> =
-                std::collections::HashSet::new();
-            let mut stake_change_dreps: std::collections::HashSet<Vec<u8>> =
-                std::collections::HashSet::new();
-
             // Feed index: pools (SPO) / DReps that cast a governance vote in this block.
             let mut vote_pools: std::collections::HashSet<Vec<u8>> =
                 std::collections::HashSet::new();
@@ -192,14 +186,6 @@ impl Worker {
                                 .try_into()
                                 .expect("lovelace value must fit i64");
                             stake_changes.push((cred.clone(), -amount));
-
-                            // Feed index: track pool/drep for any consumed input
-                            if let Some(pool) = snap.and_then(|s| s.pool_delegations.get(&cred)) {
-                                stake_change_pools.insert(pool.clone());
-                            }
-                            if let Some(drep) = snap.and_then(|s| s.drep_delegations.get(&cred)) {
-                                stake_change_dreps.insert(drep.clone());
-                            }
                         }
                         consumed.push((key, utxo));
                     } else {
@@ -248,16 +234,6 @@ impl Worker {
                         let amount: i64 =
                             lovelaces.try_into().expect("lovelace value must fit i64");
                         stake_changes.push((cred.clone(), amount));
-
-                        // Feed index: track pool/drep for outputs > 1000 ADA
-                        if coin > 1_000_000_000 {
-                            if let Some(pool) = snap.and_then(|s| s.pool_delegations.get(&cred)) {
-                                stake_change_pools.insert(pool.clone());
-                            }
-                            if let Some(drep) = snap.and_then(|s| s.drep_delegations.get(&cred)) {
-                                stake_change_dreps.insert(drep.clone());
-                            }
-                        }
                     }
                     let mut assets: crate::model::PolicyAssets = Vec::new();
                     for pa in output.value().assets().iter() {
@@ -318,15 +294,6 @@ impl Worker {
                 for (reward_addr, amount) in tx.withdrawals_sorted_set() {
                     if reward_addr.len() >= 29 {
                         let cred = reward_addr[1..29].to_vec();
-                        // Feed index: a withdrawal is part of the credential's activity, so
-                        // flag its pool/drep — surfaces withdrawal-only blocks in pool/drep
-                        // feeds (zero-amount script-validation withdrawals included).
-                        if let Some(pool) = snap.and_then(|s| s.pool_delegations.get(&cred)) {
-                            stake_change_pools.insert(pool.clone());
-                        }
-                        if let Some(drep) = snap.and_then(|s| s.drep_delegations.get(&cred)) {
-                            stake_change_dreps.insert(drep.clone());
-                        }
                         withdrawal_changes.push((cred, amount as i64));
                     }
                 }
@@ -428,6 +395,31 @@ impl Worker {
                 }
             }
 
+            // Feed index: which pools / DReps had a *significant* stake change this block — a
+            // single tx moving more than `active_stake / STAKE_CHANGE_DIVISOR` of the subject's
+            // stake. Filtering here (rather than flagging every touched subject) keeps the index
+            // to blocks that actually render, so a feed's replay doesn't fetch thousands of
+            // sub-threshold blocks only to discard them. The per-tx magnitude mirrors the
+            // query-time render filter (`replay.rs`), and the threshold uses the epoch-stable
+            // active stake (populated in `State`), not the O(delegators) live stake.
+            let (pool_mag, drep_mag) = match snap {
+                Some(s) => crate::filter::block_stake_change_magnitudes(&txs, s),
+                None => (
+                    std::collections::HashMap::new(),
+                    std::collections::HashMap::new(),
+                ),
+            };
+            let stake_change_pools: std::collections::HashSet<Vec<u8>> = pool_mag
+                .into_iter()
+                .filter(|(p, m)| *m as u64 > state.pool_stake_threshold(p))
+                .map(|(p, _)| p)
+                .collect();
+            let stake_change_dreps: std::collections::HashSet<Vec<u8>> = drep_mag
+                .into_iter()
+                .filter(|(d, m)| *m as u64 > state.drep_stake_threshold(d))
+                .map(|(d, _)| d)
+                .collect();
+
             (
                 txs,
                 produced,
@@ -456,25 +448,81 @@ impl Worker {
         let epoch = State::epoch_for_slot(slot, &stage.genesis);
 
         // Check for epoch boundary and fetch reward deltas + DRep activity from db-sync
-        let (reward_deltas, drep_active_until) = {
+        #[allow(clippy::type_complexity)]
+        let (reward_deltas, drep_active_until, new_active_stakes): (
+            _,
+            _,
+            Option<(
+                std::collections::HashMap<Vec<u8>, u64>,
+                std::collections::HashMap<Vec<u8>, u64>,
+            )>,
+        ) = {
             let state = stage.state.read().await;
             let last_epoch = state.current().and_then(|s| s.last_epoch);
             if last_epoch.is_some() && last_epoch != Some(epoch) {
                 info!(
                     epoch,
-                    "epoch boundary detected, fetching reward deltas + drep activity"
+                    "epoch boundary detected, fetching reward deltas + drep activity + active stake"
                 );
+                // Refresh per-subject active stake for the new epoch (the threshold denominator).
+                // Use `db()` (initializes the connection if needed) — `db_handle()` would return
+                // None if this is the first db use. Never wipe the map on an empty result/error:
+                // that would drop the threshold to 0 and leak every tiny change.
+                let new_active = if let Some(db) = state.db().await {
+                    let pools = match db.pool_active_stakes(epoch).await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!(epoch, error = %e, "epoch boundary: pool active-stake query failed");
+                            Vec::new()
+                        }
+                    };
+                    let dreps = db.drep_active_stakes(epoch).await.unwrap_or_default();
+                    let p_sum: u128 = pools.iter().map(|(_, a)| (*a).max(0) as u128).sum();
+                    info!(
+                        epoch,
+                        pools = pools.len(),
+                        dreps = dreps.len(),
+                        total_pool_active_stake_ada = (p_sum / 1_000_000) as u64,
+                        "epoch boundary: refreshed active stakes"
+                    );
+                    if pools.is_empty() {
+                        warn!(
+                            epoch,
+                            "epoch boundary: pool active-stake query empty; kept prior map"
+                        );
+                        None
+                    } else {
+                        Some((
+                            pools
+                                .into_iter()
+                                .map(|(h, a)| (h, a.max(0) as u64))
+                                .collect::<std::collections::HashMap<_, _>>(),
+                            dreps
+                                .into_iter()
+                                .map(|(h, a)| (h, a.max(0) as u64))
+                                .collect::<std::collections::HashMap<_, _>>(),
+                        ))
+                    }
+                } else {
+                    warn!(epoch, "epoch boundary: no db for active-stake refresh");
+                    None
+                };
                 (
                     state.epoch_reward_delta(epoch).await,
                     state.drep_active_until().await,
+                    new_active,
                 )
             } else {
-                (None, None)
+                (None, None, None)
             }
         };
 
         {
             let mut state = stage.state.write().await;
+            if let Some((pools, dreps)) = new_active_stakes {
+                state.pool_active_stake = pools;
+                state.drep_active_stake = dreps;
+            }
             let block_ref = BlockRef {
                 slot,
                 hash: block_hash.clone(),

@@ -622,7 +622,7 @@ impl BlockSnapshot {
 /// became `mint_slot` — different semantics, so old leaves must rebuild. v9: `FeedIndex`
 /// gained `pool_votes`/`drep_votes` (governance vote-block index); rmp-serde encodes structs
 /// positionally, so the extra fields shift the layout and old snapshots must rebuild.
-const SNAPSHOT_FORMAT: u32 = 9;
+const SNAPSHOT_FORMAT: u32 = 11;
 
 /// Serializes [`BlockSnapshot::asset_holdings`] as a plain msgpack map with the key `(cred,
 /// addr)` **deref'd off its `Arc`** — so the wire form carries no `Arc` (no serde `rc`
@@ -1067,7 +1067,19 @@ pub struct State {
     /// `Arc<AddrKey>`. Not persisted (rebuilt at `reset` / re-interned on snapshot load);
     /// rollback-safe because it only ever grows and its entries are content-addressed.
     addr_interner: AddrInterner,
+    /// Per-pool / per-DRep **active (epoch) stake**, the stable denominator for the stake-change
+    /// significance threshold used by both the feed-index build filter (`sink`) and the query
+    /// render filter (`server`). Kept in `State`, not `BlockSnapshot`: active stake is fixed for
+    /// an epoch, and a rollback never crosses a 5-day epoch boundary, so it needs no history.
+    /// Refreshed from db-sync at startup and on every epoch boundary (`populate_active_stakes`);
+    /// a subject missing here yields threshold 0 (everything renders — the safe fallback).
+    pub pool_active_stake: std::collections::HashMap<Vec<u8>, u64>,
+    pub drep_active_stake: std::collections::HashMap<Vec<u8>, u64>,
 }
+
+/// Stake-change significance threshold: a block is surfaced on a pool/DRep feed when a single tx
+/// moves more than `active_stake / STAKE_CHANGE_DIVISOR` of the subject's stake (0.1%).
+pub const STAKE_CHANGE_DIVISOR: u64 = 1_000;
 
 impl State {
     pub fn new(db_url: Url) -> Self {
@@ -1079,7 +1091,78 @@ impl State {
             pool_meta_cursor: 0,
             drep_meta_cursor: 0,
             addr_interner: AddrInterner::new(),
+            pool_active_stake: std::collections::HashMap::new(),
+            drep_active_stake: std::collections::HashMap::new(),
         }
+    }
+
+    /// The active-stake significance threshold for a pool (`active_stake / STAKE_CHANGE_DIVISOR`).
+    /// 0 when the pool isn't in the active-stake map (surfaces everything — the safe fallback).
+    pub fn pool_stake_threshold(&self, pool: &[u8]) -> u64 {
+        self.pool_active_stake.get(pool).copied().unwrap_or(0) / STAKE_CHANGE_DIVISOR
+    }
+
+    /// The active-stake significance threshold for a DRep. See [`Self::pool_stake_threshold`].
+    pub fn drep_stake_threshold(&self, drep: &[u8]) -> u64 {
+        self.drep_active_stake.get(drep).copied().unwrap_or(0) / STAKE_CHANGE_DIVISOR
+    }
+
+    /// Refresh `pool_active_stake` / `drep_active_stake` from db-sync for `epoch`. Two aggregate
+    /// queries (~3k pools + ~900 DReps); called at startup and on each epoch boundary. On query
+    /// error the previous map is kept (a stale-by-one-epoch denominator is harmless).
+    pub async fn populate_active_stakes(&mut self, epoch: u64) {
+        // `db_handle()` only returns an already-initialized connection; make sure it's initialized
+        // first (like every other populate), then take an owned clone so we can assign self's maps
+        // without holding a borrow of self.
+        if self.db().await.is_none() {
+            tracing::warn!(epoch, "active stakes: no db connection");
+            return;
+        }
+        let Some(db) = self.db_handle() else { return };
+        // Keep the previous (still-valid) map on an empty result or error — never wipe it, or the
+        // significance threshold collapses to 0 and every tiny change leaks through.
+        match db.pool_active_stakes(epoch).await {
+            Ok(rows) if !rows.is_empty() => {
+                self.pool_active_stake = rows
+                    .into_iter()
+                    .map(|(h, a)| (h, a.max(0) as u64))
+                    .collect();
+            }
+            Ok(_) => tracing::warn!(
+                epoch,
+                "active stakes: pool query returned 0 rows; kept prior"
+            ),
+            Err(e) => {
+                tracing::warn!(epoch, error = %e, "active stakes: pool query failed; kept prior")
+            }
+        }
+        match db.drep_active_stakes(epoch).await {
+            Ok(rows) if !rows.is_empty() => {
+                self.drep_active_stake = rows
+                    .into_iter()
+                    .map(|(h, a)| (h, a.max(0) as u64))
+                    .collect();
+            }
+            Ok(_) => tracing::warn!(
+                epoch,
+                "active stakes: drep query returned 0 rows; kept prior"
+            ),
+            Err(e) => {
+                tracing::warn!(epoch, error = %e, "active stakes: drep query failed; kept prior")
+            }
+        }
+        // Totals as a sanity check: pools should sum to ~all delegated stake (~22B ADA), dreps to
+        // the DRep-delegated subset. Reported in ADA (lovelace / 1e6).
+        let sum_pool: u128 = self.pool_active_stake.values().map(|&v| v as u128).sum();
+        let sum_drep: u128 = self.drep_active_stake.values().map(|&v| v as u128).sum();
+        tracing::info!(
+            pools = self.pool_active_stake.len(),
+            dreps = self.drep_active_stake.len(),
+            total_pool_active_stake_ada = (sum_pool / 1_000_000) as u64,
+            total_drep_active_stake_ada = (sum_drep / 1_000_000) as u64,
+            epoch,
+            "active stakes populated from db-sync"
+        );
     }
 
     /// Detailed per-field memory breakdown of everything held in memory: the tip snapshot's
@@ -1469,7 +1552,7 @@ impl State {
         }
     }
 
-    async fn db(&self) -> Option<&DbSync> {
+    pub(crate) async fn db(&self) -> Option<&DbSync> {
         self.db
             .get_or_try_init(|| async { DbSync::new(&self.db_url).await })
             .await
@@ -1783,6 +1866,9 @@ impl State {
         self.feed_index = FeedIndex::new();
         self.pool_meta_cursor = pool_meta_cursor;
         self.drep_meta_cursor = drep_meta_cursor;
+        // Active-stake denominators for the feed-index significance filter — must be in place
+        // before the 5-day catch-up rebuilds the index through `apply_block`.
+        self.populate_active_stakes(current_epoch).await;
 
         if let Some(snap) = self.history.last() {
             snap.log_sizes("reset complete");

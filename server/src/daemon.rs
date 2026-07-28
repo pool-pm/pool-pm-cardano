@@ -160,6 +160,11 @@ pub fn run(args: Args) -> Result<(), Error> {
             rt.block_on(state.populate_pool_retirements());
             rt.block_on(state.populate_block_counts());
             rt.block_on(state.populate_drep_active());
+            let epoch = State::epoch_for_slot(
+                snap_slot,
+                &GenesisValues::from(args.network.config().clone()),
+            );
+            rt.block_on(state.populate_active_stakes(epoch));
             state.populate_total_staked();
         }
 

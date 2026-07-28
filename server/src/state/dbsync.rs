@@ -972,6 +972,45 @@ impl DbSync {
             .collect())
     }
 
+    /// Per-pool active (epoch) stake for `epoch`, aggregated from `epoch_stake`. This is the stable
+    /// per-epoch denominator for the feed's stake-change significance threshold — one aggregate
+    /// query, refreshed once per epoch (see `State::populate_active_stakes`).
+    pub async fn pool_active_stakes(&self, epoch: u64) -> Result<Vec<(Vec<u8>, i64)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT ph.hash_raw AS "hash!", SUM(es.amount)::bigint AS "amount!"
+               FROM epoch_stake es
+               JOIN pool_hash ph ON ph.id = es.pool_id
+               WHERE es.epoch_no = $1
+               GROUP BY ph.hash_raw"#,
+            epoch as i32
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows.into_iter().map(|r| (r.hash, r.amount)).collect())
+    }
+
+    /// Per-DRep active (epoch) voting power for `epoch`, from `drep_distr`. DRep-feed analogue of
+    /// `pool_active_stakes`. The key is `[0x00 key | 0x01 script] ++ raw`, matching the DRep
+    /// credential encoding used in state (`mempool::extract_vote_subjects`, delegations).
+    pub async fn drep_active_stakes(&self, epoch: u64) -> Result<Vec<(Vec<u8>, i64)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT dh.raw AS "raw!", dh.has_script AS "has_script!", dd.amount AS "amount!"
+               FROM drep_distr dd
+               JOIN drep_hash dh ON dh.id = dd.hash_id
+               WHERE dd.epoch_no = $1 AND dh.raw IS NOT NULL"#,
+            epoch as i32
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let prefix: u8 = if r.has_script { 0x01 } else { 0x00 };
+                ([&[prefix][..], &r.raw].concat(), r.amount)
+            })
+            .collect())
+    }
+
     pub async fn pool_delegations(
         &self,
         last_tx_id: i64,

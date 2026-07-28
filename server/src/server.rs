@@ -97,7 +97,6 @@ const MAX_REPLAY_BLOCKS: usize = 30;
 
 /// Minimum stake change (as fraction of live stake) to include a block in feed
 /// replay. Must match `STAKE_CHANGE_PRUNE_DIVISOR` in Feed.svelte.
-const STAKE_CHANGE_DIVISOR: u64 = 1_000; // 0.1%
 
 /// Recent blocks to replay on a stake-address feed connection (fetched from
 /// db-sync, since stake addresses are not pre-indexed in memory).
@@ -767,10 +766,10 @@ async fn filtered_events(
             let (minted, stake_changes, mut deleg_info, deleg_slots, pool_votes, stake_threshold) = {
                 let guard = replay_state.chain_state.read().await;
                 let snap = guard.current();
-                let live_stake = snap
-                    .and_then(|s| State::pool_live_stake(s, ph))
-                    .unwrap_or(0);
-                let threshold = (live_stake as u64) / STAKE_CHANGE_DIVISOR;
+                // Significance threshold from the epoch-stable active stake (matches the sink's
+                // index-time filter), not the O(delegators) live stake. Live stake is still shown
+                // in the feed header — computed separately in the live-stream event builder.
+                let threshold = guard.pool_stake_threshold(ph);
 
                 let resolve_pool = |hash: &[u8]| -> (String, Option<String>) {
                     let ticker = snap
@@ -1015,10 +1014,8 @@ async fn filtered_events(
             let (stake_changes, mut deleg_info, deleg_slots, drep_votes, stake_threshold) = {
                 let guard = replay_state.chain_state.read().await;
                 let snap = guard.current();
-                let live_stake = snap
-                    .and_then(|s| State::drep_live_stake(s, db))
-                    .unwrap_or(0);
-                let threshold = (live_stake as u64) / STAKE_CHANGE_DIVISOR;
+                // Threshold from epoch-stable active stake; live stake stays in the header.
+                let threshold = guard.drep_stake_threshold(db);
 
                 let resolve_drep = |bytes: &[u8]| -> (String, Option<String>) {
                     let name = match bytes.first() {
