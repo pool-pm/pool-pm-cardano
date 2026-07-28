@@ -747,7 +747,7 @@
     width: var(--toolbar-w, 240px);
     border-radius: var(--panel-radius);
     padding: 3px;
-    background: var(--surface-1);
+    background: var(--surface-2);
     border: none;
   }
 
@@ -765,14 +765,14 @@
     font-family: Inter, sans-serif;
     font-size: 12px;
     outline: none;
-    background: var(--surface-2);
+    background: var(--bg);
     transition: background 0.18s ease;
   }
   .filter-input::placeholder {
     color: rgb(255 255 255 / 0.4);
   }
   .filter-input:focus {
-    background: #17171c;
+    background: #0b0b0e;
   }
 
   /* Sort button: a square on the right, flush with the container's embossed surface (no
@@ -802,7 +802,7 @@
   }
   .sort-btn:active {
     color: rgb(255 255 255 / 0.85);
-    background: var(--surface-2);
+    background: var(--bg);
   }
   /* The arrow points down for descending; ascending flips it 180° (smoothly). */
   .sort-arrow {
