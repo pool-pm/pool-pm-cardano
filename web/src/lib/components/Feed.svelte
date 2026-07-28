@@ -14,7 +14,7 @@
   const STAKE_CHANGE_PRUNE_DIVISOR = 1_000n; // 0.1%
   const PX_PER_SECOND = 2;
   const BLOCK_PADDING = 10;
-  const BLOCK_BORDER = 2;
+  const BLOCK_BORDER = 1; // hairline light edge (--panel-edge) for definition on the black page
   const BLOCK_INSET = (BLOCK_PADDING + BLOCK_BORDER) * 2;
 
   let feedEl: HTMLDivElement;
@@ -558,6 +558,7 @@
   bind:this={feedEl}
   style:--block-padding="{BLOCK_PADDING}px"
   style:--block-border="{BLOCK_BORDER}px"
+  style:--section-min-width="{TX_WIDTH + BLOCK_INSET}px"
   style:--flip-duration="{FLIP_DURATION}ms"
   onclick={onBackgroundClick}
 >
@@ -581,8 +582,7 @@
         class:fold-own={foldOwn}
         style:--fold-size={foldOwn ? `${foldSizePx(section)}px` : undefined}
         class:has-line={i > 0 && (layout?.spacing ?? 0) > 0}
-        style:border-color={colors.border}
-        style:background-color={colors.bg}
+        style:--block-bg={colors.bg}
         style:--section-color={colors.accent}
         style:--meta-color={colors.bg.startsWith('#') ? 'rgb(255 255 255 / 0.4)' : ''}
         style:--section-width={sectionMaxWidth(section)}
@@ -744,19 +744,26 @@
     direction: ltr;
   }
 
+  /* Every block container is one flat, rounded, softly-elevated panel in the shared panel
+     language (see app.css): the block's own colour (--block-bg) with a whisper of top-lit
+     gradient over it, a hairline light edge, and one soft ambient shadow. No embossing. */
   .section {
     position: absolute;
     left: 0;
     right: 0;
     margin: 0 auto;
     max-width: var(--section-width);
-    min-width: 132px;
-    border: var(--block-border) solid;
-    border-radius: 8px;
+    /* Exactly one tx column + the block inset, so a single-tx block hugs its tile with equal
+       margins (no right-side gap). Driven by the same TX_WIDTH/BLOCK_INSET as the width math. */
+    min-width: var(--section-min-width);
+    border: var(--block-border) solid var(--panel-edge);
+    border-radius: var(--panel-radius);
     padding: var(--block-padding);
     display: flex;
     flex-direction: column;
     gap: var(--block-padding);
+    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--block-bg);
+    box-shadow: var(--elevation);
   }
 
   .landscape .section {
@@ -936,10 +943,12 @@
     will-change: transform;
   }
 
-  /* Per-epoch REWARDS capsule: neutral, rounded, dashed border to set it apart from blocks. */
+  /* Per-epoch REWARDS capsule: same panel language, but a dashed, slightly more visible edge
+     and a rounder radius set it apart from the solid blocks. */
   .reward-capsule {
-    border-radius: 16px;
+    border-radius: var(--panel-radius-lg);
     border-style: dashed;
+    border-color: rgb(255 255 255 / 0.18);
   }
 
   .reward-rows {

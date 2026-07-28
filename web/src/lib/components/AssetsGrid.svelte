@@ -746,13 +746,11 @@
     /* One asset tile wide (set per render from the grid's CELL), so it lines up with the
        rightmost tile of the first row. */
     width: var(--toolbar-w, 240px);
-    border-radius: 0;
+    border-radius: var(--panel-radius);
     padding: 3px;
-    background: linear-gradient(180deg, #17171c 0%, #0c0c0f 100%);
-    box-shadow:
-      0 6px 14px -5px rgb(0 0 0 / 0.6),
-      inset 0 1px 0 rgb(255 255 255 / 0.08),
-      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
+    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), #16161b;
+    border: 1px solid var(--panel-edge);
+    box-shadow: var(--elevation);
   }
 
   /* Recessed input carved into the panel (left, fills the room): inverted darker-top →
@@ -764,7 +762,7 @@
     box-sizing: border-box;
     padding: 0 9px;
     border: none;
-    border-radius: 0;
+    border-radius: 7px;
     color: rgb(255 255 255 / 0.85);
     font-family: Inter, sans-serif;
     font-size: 12px;
@@ -795,7 +793,7 @@
     aspect-ratio: 1;
     padding: 0;
     border: none;
-    border-radius: 0;
+    border-radius: 7px;
     color: rgb(255 255 255 / 0.55);
     cursor: pointer;
     background: transparent;
@@ -875,17 +873,13 @@
     height: var(--tile-h);
     box-sizing: border-box;
     position: relative;
-    /* A dark *stretched* canvas (gallery wrap) lit from above — no frame border: the
-       depth is carried by a light catch on the top edge, the underside in shadow on the
-       bottom, a slight lighter-top → darker-bottom gradient, and a soft drop shadow so
-       the panel sits proud of the wall. Kept subtle. */
-    border-radius: 0;
-    background: linear-gradient(180deg, #17171c 0%, #0c0c0f 100%);
-    border: none;
-    box-shadow:
-      0 6px 14px -5px rgb(0 0 0 / 0.6),
-      inset 0 1px 0 rgb(255 255 255 / 0.08),
-      inset 0 -2px 3px -1px rgb(0 0 0 / 0.45);
+    /* Shared panel language (see app.css): a flat dark surface with a whisper of top-lit
+       gradient, a hairline light edge, rounded corners, and one soft ambient shadow — the
+       same treatment the feed blocks and subject card use, so the whole app reads as one system. */
+    border-radius: var(--panel-radius);
+    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), #16161b;
+    border: 1px solid var(--panel-edge);
+    box-shadow: var(--elevation);
     overflow: hidden;
     transition:
       transform 0.18s ease,
@@ -979,10 +973,8 @@
   .tile:hover .frame,
   .tile:focus-visible .frame {
     transform: translateY(-3px);
-    box-shadow:
-      0 12px 26px -7px rgb(0 0 0 / 0.7),
-      inset 0 1px 0 rgb(255 255 255 / 0.11),
-      inset 0 -2px 3px -1px rgb(0 0 0 / 0.5);
+    border-color: rgb(255 255 255 / 0.14);
+    box-shadow: var(--elevation-hover);
   }
   .tile:hover .thumb,
   .tile:focus-visible .thumb {
