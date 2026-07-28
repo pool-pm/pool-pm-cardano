@@ -4,8 +4,10 @@ use pallas::ledger::traverse::MultiEraTx;
 use pallas::network::facades::NodeClient;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::info;
+use tokio::time::timeout;
+use tracing::{info, warn};
 
 use crate::event::{
     format_quantity, AssetInfo, BlockTx, DelegationInfo, Event, TxInput, TxOutputInfo, VoteInfo,
@@ -392,6 +394,35 @@ pub struct Worker {
     pending: HashSet<String>,
 }
 
+/// If a LocalTxMonitor read (acquire / query_next_tx) produces nothing within this window, treat
+/// the connection as stalled and reconnect. This guards the *silent half-alive* failure mode —
+/// socket open, no data, no error — that `or_restart` alone can't catch (a hang isn't an `Err`),
+/// the same class the chain-sync source's read timeout was built for. Sized generously: a busy
+/// mempool advances every few seconds, so this only fires on a genuine wedge. On a quiet chain
+/// (an idle testnet) it may reconnect periodically, which is harmless — a sub-second re-handshake
+/// with no state to lose.
+const MEMPOOL_READ_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Bound a blocking LocalTxMonitor read. On timeout, log and return `Restart` so gasket tears the
+/// worker down and re-bootstraps (reconnect). Otherwise hand back the inner result so the caller
+/// applies `or_restart` (mapping a connection *error* to the same reconnect).
+async fn bounded_read<T, E>(
+    read: &str,
+    fut: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<Result<T, E>, WorkerError> {
+    match timeout(MEMPOOL_READ_TIMEOUT, fut).await {
+        Ok(res) => Ok(res),
+        Err(_elapsed) => {
+            warn!(
+                read,
+                timeout_s = MEMPOOL_READ_TIMEOUT.as_secs(),
+                "mempool read stalled (no message in window); reconnecting"
+            );
+            Err(WorkerError::Restart)
+        }
+    }
+}
+
 #[async_trait::async_trait(?Send)]
 impl gasket::framework::Worker<Stage> for Worker {
     async fn bootstrap(stage: &Stage) -> Result<Self, WorkerError> {
@@ -412,18 +443,25 @@ impl gasket::framework::Worker<Stage> for Worker {
     async fn execute(&mut self, _unit: &(), stage: &mut Stage) -> Result<(), WorkerError> {
         let monitor = self.client.monitor();
 
-        // A broken LocalTxMonitor connection (e.g. the node restarted) surfaces here as an
-        // error or an "agency is theirs" protocol desync. `or_restart` tears the worker down
-        // and re-runs `bootstrap`, reconnecting a fresh `NodeClient` — the same in-process
-        // reconnect the chain-sync source does. `or_retry` would instead hammer the *same*
-        // dead client forever, climbing to `max_retries` and (dismissible: false) taking the
-        // whole daemon down — observed live on 2026-07-28 when a node restart, which the source
-        // survived, still killed the process ~20 mempool retries later.
-        let slot = monitor.acquire().await.or_restart()?;
+        // A broken LocalTxMonitor connection surfaces two ways, both handled as a reconnect:
+        //  - a *connection error* or "agency is theirs" desync (e.g. the node restarted) →
+        //    `or_restart` tears the worker down and re-runs `bootstrap`, reconnecting a fresh
+        //    `NodeClient`. (`or_retry` would instead hammer the *same* dead client forever,
+        //    climbing to `max_retries` and — dismissible:false — taking the whole daemon down;
+        //    observed live on 2026-07-28 when a node restart the source survived still killed
+        //    the process ~20 mempool retries later.)
+        //  - a *silent half-alive hang* (no data, no error) → `bounded_read`'s timeout, since a
+        //    hang is not an `Err` and `or_restart` alone would never fire.
+        let slot = bounded_read("acquire", monitor.acquire())
+            .await?
+            .or_restart()?;
 
         let mut pending: HashSet<String> = HashSet::new();
 
-        while let Some((_era, tagged_body)) = monitor.query_next_tx().await.or_restart()? {
+        while let Some((_era, tagged_body)) = bounded_read("query_next_tx", monitor.query_next_tx())
+            .await?
+            .or_restart()?
+        {
             let body = tagged_body.0.to_vec();
             let tx = MultiEraTx::decode(&body).or_panic()?;
             let hash = tx.hash().to_string();
