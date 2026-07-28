@@ -723,7 +723,6 @@ impl gasket::framework::Worker<Stage> for Worker {
 
         stage.ops_count.inc(1);
         stage.latest_block.set(point.slot_or_default() as i64);
-        stage.cursor.send(point.clone().into()).await.or_panic()?;
 
         Ok(())
     }
@@ -747,7 +746,6 @@ pub struct Stage {
     snapshot_saving: Arc<AtomicBool>,
 
     pub input: MapperInputPort,
-    pub cursor: SinkCursorPort,
 
     #[metric]
     ops_count: gasket::metrics::Counter,
@@ -794,6 +792,5 @@ pub fn bootstrapper(context: &Context, config: SinkConfig) -> Result<Stage, Erro
         ops_count: Default::default(),
         latest_block: Default::default(),
         input: Default::default(),
-        cursor: Default::default(),
     })
 }

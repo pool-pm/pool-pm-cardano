@@ -1,5 +1,5 @@
 use gasket::daemon::Daemon;
-use oura::{cursor, framework::*};
+use oura::framework::*;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -34,19 +34,14 @@ fn define_gasket_policy() -> gasket::runtime::Policy {
 fn connect_stages(
     mut source: crate::source::Stage,
     mut sink: sink::Stage,
-    mut cursor: cursor::Bootstrapper,
     mempool: mempool::Stage,
     policy: gasket::runtime::Policy,
 ) -> Result<Daemon, Error> {
     gasket::messaging::tokio::connect_ports(&mut source.output, &mut sink.input, 100);
-    let prev = &mut sink.cursor;
-
-    gasket::messaging::tokio::connect_ports(prev, cursor.borrow_track(), 100);
 
     let tethers = vec![
         gasket::runtime::spawn_stage(source, policy.clone()),
         gasket::runtime::spawn_stage(sink, policy.clone()),
-        cursor.spawn(policy.clone()),
         gasket::runtime::spawn_stage(mempool, policy),
     ];
 
@@ -231,11 +226,6 @@ pub fn run(args: Args) -> Result<(), Error> {
 
     let state = Arc::new(RwLock::new(state));
 
-    let cursor_config = cursor::file::Config {
-        path: Some([&args.output, &"cursor.json".to_string()].iter().collect()),
-        ..Default::default()
-    };
-
     let ctx = Context {
         chain: args.network.config().clone(),
         intersect,
@@ -259,7 +249,6 @@ pub fn run(args: Args) -> Result<(), Error> {
             catching_up: catching_up.clone(),
         },
     )?;
-    let cursor = cursor::Bootstrapper::File(cursor_config.bootstrapper(&ctx)?);
     let mempool = mempool::bootstrapper(
         mempool_config,
         event_bus.clone(),
@@ -267,7 +256,7 @@ pub fn run(args: Args) -> Result<(), Error> {
         nftcdn.clone(),
     );
     let retries = define_gasket_policy();
-    let daemon = connect_stages(source, sink, cursor, mempool, retries)?;
+    let daemon = connect_stages(source, sink, mempool, retries)?;
 
     info!("daemon is running");
 
