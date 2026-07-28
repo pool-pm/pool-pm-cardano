@@ -142,15 +142,15 @@ pub(super) async fn send_stake_info(
     cred: &[u8],
     assets_count: u32,
 ) {
-    let guard = chain_state.read().await;
-    let _ = sender
-        .send(stake_sse_event(
-            stake_address,
-            cred,
-            guard.current(),
-            assets_count,
-        ))
-        .await;
+    // Build the event under the lock, then DROP the guard before sending. `sender.send().await`
+    // blocks on a slow SSE client, and holding chain_state across it would starve the sink's
+    // per-block write lock — the root cause of the 2026-07-28 freeze. Never hold the guard across
+    // a send/await (see the "never block the feeds" rule).
+    let event = {
+        let guard = chain_state.read().await;
+        stake_sse_event(stake_address, cred, guard.current(), assets_count)
+    };
+    let _ = sender.send(event).await;
 }
 
 /// The bech32 stake (reward) address of a payment address, or `None` for an
@@ -283,16 +283,12 @@ pub(super) async fn send_address_info(
     mainnet: bool,
     assets_count: u32,
 ) {
-    let guard = chain_state.read().await;
-    let _ = sender
-        .send(address_sse_event(
-            address,
-            addr_bytes,
-            guard.current(),
-            mainnet,
-            assets_count,
-        ))
-        .await;
+    // Drop the guard before sending — never hold chain_state across a client send (see stake case).
+    let event = {
+        let guard = chain_state.read().await;
+        address_sse_event(address, addr_bytes, guard.current(), mainnet, assets_count)
+    };
+    let _ = sender.send(event).await;
 }
 
 /// Distinct held-asset count for a Stake/Address feed header (0 for pool/drep). Read
@@ -340,15 +336,19 @@ pub(super) async fn send_pool_info(
     pool_hash: &[u8],
     genesis: &GenesisConfig,
 ) {
-    let guard = chain_state.read().await;
-    if let Some(snap) = guard.current() {
-        if let Some(pool) = snap.pools.get(&hex::encode(pool_hash)) {
-            let epoch = snap.last_epoch.unwrap_or(0);
-            let epoch_blocks = pool_epoch_blocks(&guard.feed_index, pool_hash, epoch, genesis);
-            let _ = sender
-                .send(pool_sse_event(pool, Some(snap), epoch, epoch_blocks))
-                .await;
-        }
+    // Build the event under the lock, then drop the guard before sending (see stake case).
+    let event = {
+        let guard = chain_state.read().await;
+        guard.current().and_then(|snap| {
+            snap.pools.get(&hex::encode(pool_hash)).map(|pool| {
+                let epoch = snap.last_epoch.unwrap_or(0);
+                let epoch_blocks = pool_epoch_blocks(&guard.feed_index, pool_hash, epoch, genesis);
+                pool_sse_event(pool, Some(snap), epoch, epoch_blocks)
+            })
+        })
+    };
+    if let Some(event) = event {
+        let _ = sender.send(event).await;
     }
 }
 
@@ -358,7 +358,10 @@ pub(super) async fn send_drep_info(
     chain_state: &RwLock<State>,
     drep_bytes: &[u8],
 ) {
-    let guard = chain_state.read().await;
-    let snap = guard.current();
-    let _ = sender.send(drep_sse_event(drep_bytes, snap)).await;
+    // Drop the guard before sending — never hold chain_state across a client send (see stake case).
+    let event = {
+        let guard = chain_state.read().await;
+        drep_sse_event(drep_bytes, guard.current())
+    };
+    let _ = sender.send(event).await;
 }

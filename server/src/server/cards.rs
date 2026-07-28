@@ -59,11 +59,15 @@ async fn build_card(state: &AppState, base_url: &str, path: &str) -> og::Card {
     // $handle → resolve to the holder address and show its card.
     if let Some(rest) = path.strip_prefix('$') {
         let name = rest.split('/').next().unwrap_or("").to_lowercase();
-        let guard = state.chain_state.read().await;
-        if let Some(snap) = guard.current() {
-            if let Some(addr) = snap.address_by_handle.get(&name).cloned() {
-                if let Some(filter) = FeedFilter::from_path(&addr) {
-                    return subject_card(base_url, &filter, Some(snap), false);
+        // Scope the guard so it drops before the home_card fallback below (which locks
+        // chain_state and awaits). Never hold the lock across an await.
+        {
+            let guard = state.chain_state.read().await;
+            if let Some(snap) = guard.current() {
+                if let Some(addr) = snap.address_by_handle.get(&name).cloned() {
+                    if let Some(filter) = FeedFilter::from_path(&addr) {
+                        return subject_card(base_url, &filter, Some(snap), false);
+                    }
                 }
             }
         }
