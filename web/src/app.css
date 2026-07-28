@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  --bg: #000;
+  --bg: #0b0b0e;
   --surface: #161b22;
   --border: #30363d;
   --text: #e6edf3;
@@ -11,15 +11,15 @@
 
   /* Shared panel language — flat, rounded, softly elevated. Used by every surface
      (feed blocks, the subject card, asset tiles, the toolbar) so they read as one
-     system. On a pure-black page a dark drop shadow barely registers, so elevation is
-     carried by a hairline light edge + a whisper of top-lit gradient, with a soft
-     ambient shadow underneath for the lift where surfaces meet lighter neighbours. */
+     system. Depth is carried by a hairline light edge + a whisper of top-lit gradient +
+     a soft ambient shadow. The shadow only registers because --bg is a near-black
+     (#0b0b0e), not pure #000 — on pure black a dark shadow is invisible. */
   --panel-radius: 10px;
   --panel-radius-lg: 14px;
   --panel-edge: rgb(255 255 255 / 0.08); /* hairline top-light border */
   --panel-sheen: rgb(255 255 255 / 0.06); /* whisper gradient, fades out by ~55% */
-  --elevation: 0 3px 12px -4px rgb(0 0 0 / 0.7);
-  --elevation-hover: 0 14px 28px -10px rgb(0 0 0 / 0.65);
+  --elevation: 0 4px 16px -4px rgb(0 0 0 / 0.85);
+  --elevation-hover: 0 16px 30px -8px rgb(0 0 0 / 0.8);
 }
 
 * {
