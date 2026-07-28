@@ -412,11 +412,18 @@ impl gasket::framework::Worker<Stage> for Worker {
     async fn execute(&mut self, _unit: &(), stage: &mut Stage) -> Result<(), WorkerError> {
         let monitor = self.client.monitor();
 
-        let slot = monitor.acquire().await.or_retry()?;
+        // A broken LocalTxMonitor connection (e.g. the node restarted) surfaces here as an
+        // error or an "agency is theirs" protocol desync. `or_restart` tears the worker down
+        // and re-runs `bootstrap`, reconnecting a fresh `NodeClient` — the same in-process
+        // reconnect the chain-sync source does. `or_retry` would instead hammer the *same*
+        // dead client forever, climbing to `max_retries` and (dismissible: false) taking the
+        // whole daemon down — observed live on 2026-07-28 when a node restart, which the source
+        // survived, still killed the process ~20 mempool retries later.
+        let slot = monitor.acquire().await.or_restart()?;
 
         let mut pending: HashSet<String> = HashSet::new();
 
-        while let Some((_era, tagged_body)) = monitor.query_next_tx().await.or_retry()? {
+        while let Some((_era, tagged_body)) = monitor.query_next_tx().await.or_restart()? {
             let body = tagged_body.0.to_vec();
             let tx = MultiEraTx::decode(&body).or_panic()?;
             let hash = tx.hash().to_string();
