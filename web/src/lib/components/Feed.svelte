@@ -757,6 +757,7 @@
        margins (no right-side gap). Driven by the same TX_WIDTH/BLOCK_INSET as the width math. */
     min-width: var(--section-min-width);
     border: var(--block-border) solid var(--panel-edge);
+    border-top-color: var(--panel-edge-top);
     border-radius: var(--panel-radius);
     padding: var(--block-padding);
     display: flex;

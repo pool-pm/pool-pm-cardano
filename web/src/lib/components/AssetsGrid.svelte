@@ -750,6 +750,7 @@
     padding: 3px;
     background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), #16161b;
     border: 1px solid var(--panel-edge);
+    border-top-color: var(--panel-edge-top);
     box-shadow: var(--elevation);
   }
 
@@ -879,6 +880,7 @@
     border-radius: var(--panel-radius);
     background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), #16161b;
     border: 1px solid var(--panel-edge);
+    border-top-color: var(--panel-edge-top);
     box-shadow: var(--elevation);
     overflow: hidden;
     transition:

@@ -16,7 +16,12 @@
      (#0b0b0e), not pure #000 — on pure black a dark shadow is invisible. */
   --panel-radius: 10px;
   --panel-radius-lg: 14px;
-  --panel-edge: rgb(255 255 255 / 0.08); /* hairline top-light border */
+  /* On a near-black page a cast shadow is invisible (it can't be darker than the ground),
+     so elevation is read the dark-mode way: a lighter surface than the page, lit from above.
+     The top edge catches the light (brighter); the sides and bottom stay a faint hairline so
+     the panel doesn't get a bright bottom line that fights the light-from-above direction. */
+  --panel-edge: rgb(255 255 255 / 0.05); /* faint hairline: sides + bottom */
+  --panel-edge-top: rgb(255 255 255 / 0.12); /* top light-catch */
   --panel-sheen: rgb(255 255 255 / 0.06); /* whisper gradient, fades out by ~55% */
   --elevation: 0 4px 16px -4px rgb(0 0 0 / 0.85);
   --elevation-hover: 0 16px 30px -8px rgb(0 0 0 / 0.8);
