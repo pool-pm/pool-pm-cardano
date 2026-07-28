@@ -19,12 +19,14 @@
      lifts the panel and gives the whole app a neon/cyberpunk feel. Each surface sets --glow to
      its own tint (blocks: their colour; card: the subject colour); the recipe is shared.
      A top light-catch (inset white) keeps the panel lit from above. */
-  --glow: rgb(255 255 255 / 0.06); /* fallback tint; every surface overrides it */
-  /* Tight contact glow (0 offset, 0 spread) hugs the panel edge so the glow starts right at
-     the border — no black gap — then a wider bloom (positive spread, slight downward) blooms
-     out. No negative spread / large offset, which would pull the glow off the edge. */
-  --elevation: inset 0 1px 0 rgb(255 255 255 / 0.1), 0 0 7px 0 var(--glow), 0 3px 22px 1px var(--glow);
-  --elevation-hover: inset 0 1px 0 rgb(255 255 255 / 0.14), 0 0 11px 1px var(--glow), 0 6px 30px 2px var(--glow);
+  --glow: rgb(255 255 255 / 0.06); /* fallback tint; every surface overrides --glow with its own */
+  /* The elevation glow is applied via the two mixins below, NOT a single --elevation custom
+     property: a custom property that references var(--glow) is resolved once where it's declared
+     (here at :root, with the grey default), so a per-element --glow override would never reach it.
+     Instead each surface writes box-shadow directly (a real property resolves var(--glow) on that
+     element). Recipe — keep in sync across .section / .frame / .filter / .subject-card:
+       box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.1), 0 0 7px 0 var(--glow), 0 3px 22px 1px var(--glow);
+     hover: inset 0 1px 0 rgb(255 255 255 / 0.14), 0 0 11px 1px var(--glow), 0 6px 30px 2px var(--glow); */
 }
 
 * {

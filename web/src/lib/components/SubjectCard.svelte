@@ -183,8 +183,11 @@
     border: none;
     border-top: 3px solid var(--subject-color);
     --glow: color-mix(in srgb, var(--subject-color) 35%, transparent);
+    /* Glow recipe inlined (see app.css) so var(--glow) = the subject colour, plus a wider halo. */
     box-shadow:
-      var(--elevation),
+      inset 0 1px 0 rgb(255 255 255 / 0.1),
+      0 0 7px 0 var(--glow),
+      0 3px 22px 1px var(--glow),
       0 0 32px -6px color-mix(in srgb, var(--subject-color) 22%, transparent);
     display: flex;
     flex-direction: column;

@@ -750,7 +750,10 @@
     background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-1);
     border: none;
     --glow: rgb(150 165 205 / 0.1); /* subtle cool lift on black (neutral tiles have no colour) */
-    box-shadow: var(--elevation);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.1),
+      0 0 7px 0 var(--glow),
+      0 3px 22px 1px var(--glow);
   }
 
   /* Recessed input carved into the panel (left, fills the room): inverted darker-top →
@@ -880,7 +883,10 @@
     background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-1);
     border: none;
     --glow: rgb(150 165 205 / 0.1); /* subtle cool lift on black (neutral tiles have no colour) */
-    box-shadow: var(--elevation);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.1),
+      0 0 7px 0 var(--glow),
+      0 3px 22px 1px var(--glow);
     overflow: hidden;
     transition:
       transform 0.18s ease,
@@ -975,7 +981,10 @@
   .tile:focus-visible .frame {
     transform: translateY(-3px);
     border-color: rgb(255 255 255 / 0.14);
-    box-shadow: var(--elevation-hover);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.14),
+      0 0 11px 1px var(--glow),
+      0 6px 30px 2px var(--glow);
   }
   .tile:hover .thumb,
   .tile:focus-visible .thumb {

@@ -767,7 +767,11 @@
     gap: var(--block-padding);
     background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--block-bg);
     --glow: color-mix(in srgb, var(--block-bg) 40%, transparent);
-    box-shadow: var(--elevation);
+    /* Glow recipe inlined (see app.css) so var(--glow) resolves to THIS block's colour. */
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.1),
+      0 0 7px 0 var(--glow),
+      0 3px 22px 1px var(--glow);
   }
 
   .landscape .section {
