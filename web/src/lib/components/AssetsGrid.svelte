@@ -747,13 +747,8 @@
     width: var(--toolbar-w, 240px);
     border-radius: var(--panel-radius);
     padding: 3px;
-    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-1);
+    background: var(--surface-1);
     border: none;
-    --glow: rgb(150 165 205 / 0.1); /* subtle cool lift on black (neutral tiles have no colour) */
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.1),
-      0 0 7px 0 var(--glow),
-      0 3px 22px 1px var(--glow);
   }
 
   /* Recessed input carved into the panel (left, fills the room): inverted darker-top →
@@ -770,19 +765,14 @@
     font-family: Inter, sans-serif;
     font-size: 12px;
     outline: none;
-    background: linear-gradient(180deg, #08080a 0%, #131318 100%);
-    box-shadow:
-      inset 0 2px 4px -1px rgb(0 0 0 / 0.7),
-      inset 0 -1px 0 rgb(255 255 255 / 0.05);
-    transition: box-shadow 0.18s ease;
+    background: var(--surface-2);
+    transition: background 0.18s ease;
   }
   .filter-input::placeholder {
     color: rgb(255 255 255 / 0.4);
   }
   .filter-input:focus {
-    box-shadow:
-      inset 0 2px 5px -1px rgb(0 0 0 / 0.75),
-      inset 0 -1px 0 rgb(255 255 255 / 0.09);
+    background: #17171c;
   }
 
   /* Sort button: a square on the right, flush with the container's embossed surface (no
@@ -812,10 +802,7 @@
   }
   .sort-btn:active {
     color: rgb(255 255 255 / 0.85);
-    background: linear-gradient(180deg, #08080a 0%, #131318 100%);
-    box-shadow:
-      inset 0 2px 4px -1px rgb(0 0 0 / 0.7),
-      inset 0 -1px 0 rgb(255 255 255 / 0.05);
+    background: var(--surface-2);
   }
   /* The arrow points down for descending; ascending flips it 180° (smoothly). */
   .sort-arrow {
@@ -876,22 +863,13 @@
     height: var(--tile-h);
     box-sizing: border-box;
     position: relative;
-    /* Shared panel language (see app.css): the darker surface (--surface-2, the mempool tx-chip
-       tone, same as the subject card) with a whisper of top-lit gradient and a colored glow, so
-       the whole app reads as one system. */
+    /* Pure flat: the darker surface (--surface-2, the mempool tx-chip tone, same as the subject
+       card and mempool chips), solid — no gradient, glow or border. */
     border-radius: var(--panel-radius);
-    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-2);
+    background: var(--surface-2);
     border: none;
-    --glow: rgb(150 165 205 / 0.1); /* subtle cool lift on black (neutral tiles have no colour) */
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.1),
-      0 0 7px 0 var(--glow),
-      0 3px 22px 1px var(--glow);
     overflow: hidden;
-    transition:
-      transform 0.18s ease,
-      border-color 0.18s ease,
-      box-shadow 0.18s ease;
+    transition: transform 0.18s ease;
   }
 
   /* Owned amount above the media — no background, half opacity. The band is always
@@ -935,9 +913,9 @@
     transition: transform 0.25s ease;
   }
 
-  /* Non-image token (image 404'd): the name/fingerprint stands in for the missing art. */
+  /* Non-image token (image 404'd): the name/fingerprint stands in for the missing art. Flat. */
   .frame.text .art {
-    background: radial-gradient(120% 120% at 50% 0%, #17171b, #0b0b0d);
+    background: var(--surface-2);
   }
   .cell-text {
     padding: 8px;
@@ -975,16 +953,10 @@
     overflow: hidden;
   }
 
-  /* Hover/focus: the container lifts and brightens with a neutral light ring (no subject
-     colour) and the art zooms slightly. */
+  /* Hover/focus: the container lifts slightly and the art zooms — no glow, no ring. */
   .tile:hover .frame,
   .tile:focus-visible .frame {
     transform: translateY(-3px);
-    border-color: rgb(255 255 255 / 0.14);
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.14),
-      0 0 11px 1px var(--glow),
-      0 6px 30px 2px var(--glow);
   }
   .tile:hover .thumb,
   .tile:focus-visible .thumb {
@@ -1000,10 +972,8 @@
     position: absolute;
     border-radius: 3px;
     background: #161616;
-    /* A mat-coloured matte separates overlapping cards into a visible stack. */
-    box-shadow:
-      0 0 0 2px var(--mat-bg),
-      0 1px 4px rgb(0 0 0 / 0.55);
+    /* A flat mat-coloured ring separates overlapping cards into a visible stack (no shadow). */
+    box-shadow: 0 0 0 2px var(--mat-bg);
     overflow: hidden;
   }
 

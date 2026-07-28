@@ -176,19 +176,12 @@
     width: 290px;
     max-width: calc(100vw - 32px);
     border-radius: var(--panel-radius-lg);
-    /* Darker surface (the mempool tx-chip tone) with a subject-colour top ridge and the exact
-       same subject-tinted glow as the feed blocks — no extra halo (it was too strong). */
-    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-2);
+    /* Pure flat: the darker surface (the mempool tx-chip tone), solid — no gradient or glow.
+       The one accent is a flat subject-colour ridge (top + bottom) identifying the feed. */
+    background: var(--surface-2);
     border: none;
     border-top: 3px solid var(--subject-color);
-    /* Glow from the card's OWN background, exactly like the feed blocks glow from --block-bg
-       (not the subject colour). The card background is dark (--surface-2), so this is a near-
-       invisible dark glow — the card reads flat, consistent with the blocks' mechanism. */
-    --glow: color-mix(in srgb, var(--surface-2) 40%, transparent);
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.1),
-      0 0 7px 0 var(--glow),
-      0 3px 22px 1px var(--glow);
+    border-bottom: 3px solid var(--subject-color);
     display: flex;
     flex-direction: column;
     align-items: center;

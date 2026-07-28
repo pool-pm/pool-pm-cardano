@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  --bg: #000; /* pool.pm identity: pure black. Elevation is a colored glow, not a shadow. */
+  --bg: #000; /* pool.pm identity: pure black. Panels are pure flat — solid colour, no elevation. */
   --surface: #161b22;
   --border: #30363d;
   --text: #e6edf3;
@@ -11,24 +11,8 @@
 
   --panel-radius: 10px;
   --panel-radius-lg: 14px;
-  --surface-1: #26262c; /* elevated neutral panel: mempool block, reward capsule */
-  --surface-2: #0f0f12; /* darker panel = the mempool tx-chip colour (rgba(0 0 0/.6) over --surface-1);
-                           used for the subject/header card and asset tiles */
-  --panel-sheen: rgb(255 255 255 / 0.06); /* whisper top-lit gradient */
-  /* Elevation on the black page = light *emitted* by each panel and caught by a slightly
-     reflective black floor: a glow lighter than black, tinted the panel's own colour and at
-     much lower brightness. A dark shadow is invisible on #000, but a colored glow is not — it
-     lifts the panel and gives the whole app a neon/cyberpunk feel. Each surface sets --glow to
-     its own tint (blocks: their colour; card: the subject colour); the recipe is shared.
-     A top light-catch (inset white) keeps the panel lit from above. */
-  --glow: rgb(255 255 255 / 0.06); /* fallback tint; every surface overrides --glow with its own */
-  /* The elevation glow is applied via the two mixins below, NOT a single --elevation custom
-     property: a custom property that references var(--glow) is resolved once where it's declared
-     (here at :root, with the grey default), so a per-element --glow override would never reach it.
-     Instead each surface writes box-shadow directly (a real property resolves var(--glow) on that
-     element). Recipe — keep in sync across .section / .frame / .filter / .subject-card:
-       box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.1), 0 0 7px 0 var(--glow), 0 3px 22px 1px var(--glow);
-     hover: inset 0 1px 0 rgb(255 255 255 / 0.14), 0 0 11px 1px var(--glow), 0 6px 30px 2px var(--glow); */
+  --surface-1: #26262c; /* neutral panel: mempool block, reward capsule */
+  --surface-2: #0f0f12; /* darker panel = the mempool tx-chip colour; subject/header card + asset tiles */
 }
 
 * {

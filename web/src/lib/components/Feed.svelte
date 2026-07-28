@@ -746,10 +746,8 @@
     direction: ltr;
   }
 
-  /* Every block container is one flat, rounded panel that *glows* its own colour onto the
-     black page (see --elevation in app.css): the block's colour (--block-bg) with a whisper
-     of top-lit gradient over it, and a dim block-tinted glow that lifts it. --glow is the
-     block's colour at low alpha (much dimmer than the block) — the emitted-light effect. */
+  /* Every block container is one flat, rounded panel: its own solid colour (--block-bg) on the
+     black page — no gradient, no glow, no border. */
   .section {
     position: absolute;
     left: 0;
@@ -765,13 +763,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--block-padding);
-    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--block-bg);
-    --glow: color-mix(in srgb, var(--block-bg) 40%, transparent);
-    /* Glow recipe inlined (see app.css) so var(--glow) resolves to THIS block's colour. */
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.1),
-      0 0 7px 0 var(--glow),
-      0 3px 22px 1px var(--glow);
+    background: var(--block-bg);
   }
 
   .landscape .section {
