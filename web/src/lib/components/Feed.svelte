@@ -14,7 +14,7 @@
   const STAKE_CHANGE_PRUNE_DIVISOR = 1_000n; // 0.1%
   const PX_PER_SECOND = 2;
   const BLOCK_PADDING = 10;
-  const BLOCK_BORDER = 1; // hairline light edge (--panel-edge) for definition on the black page
+  const BLOCK_BORDER = 0; // no border — elevation is the shadow + inset top light-catch
   const BLOCK_INSET = (BLOCK_PADDING + BLOCK_BORDER) * 2;
 
   let feedEl: HTMLDivElement;
@@ -484,8 +484,10 @@
 
   function sectionColors(section: Section): { bg: string; border: string; accent: string } {
     // Reward capsule: neutral (not pool-colored) with a visible gray border.
-    if (section.reward) return { bg: '#1c1c1c', border: '#555', accent: 'rgb(255 255 255 / 0.4)' };
-    if (!section.block) return { bg: '#222', border: '#222', accent: 'rgb(255 255 255 / 0.4)' };
+    // Neutral panels (reward capsule, mempool) sit at the shared elevated surface tone
+    // (--surface-1 = #26262c), a touch lighter than the grey page so the shadow lifts them.
+    if (section.reward) return { bg: '#26262c', border: '#555', accent: 'rgb(255 255 255 / 0.4)' };
+    if (!section.block) return { bg: '#26262c', border: '#26262c', accent: 'rgb(255 255 255 / 0.4)' };
     const c = poolColor(section.block.pool_id);
     return { bg: c, border: c, accent: c };
   }
@@ -756,8 +758,7 @@
     /* Exactly one tx column + the block inset, so a single-tx block hugs its tile with equal
        margins (no right-side gap). Driven by the same TX_WIDTH/BLOCK_INSET as the width math. */
     min-width: var(--section-min-width);
-    border: var(--block-border) solid var(--panel-edge);
-    border-top-color: var(--panel-edge-top);
+    border: none;
     border-radius: var(--panel-radius);
     padding: var(--block-padding);
     display: flex;
@@ -944,12 +945,11 @@
     will-change: transform;
   }
 
-  /* Per-epoch REWARDS capsule: same panel language, but a dashed, slightly more visible edge
-     and a rounder radius set it apart from the solid blocks. */
+  /* Per-epoch REWARDS capsule: same elevated surface, but a dashed edge and rounder radius
+     set it apart from the solid blocks (blocks are borderless). */
   .reward-capsule {
     border-radius: var(--panel-radius-lg);
-    border-style: dashed;
-    border-color: rgb(255 255 255 / 0.18);
+    border: 1px dashed rgb(255 255 255 / 0.18);
   }
 
   .reward-rows {

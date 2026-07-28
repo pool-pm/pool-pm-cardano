@@ -748,9 +748,8 @@
     width: var(--toolbar-w, 240px);
     border-radius: var(--panel-radius);
     padding: 3px;
-    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), #16161b;
-    border: 1px solid var(--panel-edge);
-    border-top-color: var(--panel-edge-top);
+    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-1);
+    border: none;
     box-shadow: var(--elevation);
   }
 
@@ -878,9 +877,8 @@
        gradient, a hairline light edge, rounded corners, and one soft ambient shadow — the
        same treatment the feed blocks and subject card use, so the whole app reads as one system. */
     border-radius: var(--panel-radius);
-    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), #16161b;
-    border: 1px solid var(--panel-edge);
-    border-top-color: var(--panel-edge-top);
+    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-1);
+    border: none;
     box-shadow: var(--elevation);
     overflow: hidden;
     transition:

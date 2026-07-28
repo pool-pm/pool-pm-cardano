@@ -176,13 +176,13 @@
     width: 290px;
     max-width: calc(100vw - 32px);
     border-radius: var(--panel-radius-lg);
-    /* Shared panel language (whisper of top-lit gradient + hairline edge + soft ambient
-       shadow), plus this card's own identity: a subject-colour top ridge and a tight glow. */
-    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), rgb(0 0 0 / 0.6);
-    border: 1px solid var(--panel-edge);
+    /* Shared elevated surface (top-lit whisper gradient + shadow + inset light-catch), plus
+       this card's own identity: a subject-colour top ridge and a tight glow. */
+    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-1);
+    border: none;
     border-top: 3px solid var(--subject-color);
-    /* Keep the halo tight and faint: on the pure-black page a wide/strong glow
-       lights up the whole area around the card and the page stops reading as black. */
+    /* Keep the halo tight and faint so the page still reads as its dark grey rather than
+       lighting up around the card. */
     box-shadow:
       var(--elevation),
       0 0 32px -6px color-mix(in srgb, var(--subject-color) 22%, transparent);
