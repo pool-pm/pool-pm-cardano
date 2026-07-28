@@ -390,6 +390,13 @@ pub fn rss_mb() -> u64 {
         .map_or(0, |pages| pages * 4096 / (1024 * 1024))
 }
 
+/// Open file-descriptor count (entries in `/proc/self/fd`). A cheap heartbeat alongside RSS:
+/// an fd leak — e.g. reconnect churn or N2N replay `PeerClient`s not being dropped — shows up
+/// as a steady climb toward `LimitNOFILE` well before exhaustion starts failing connections.
+pub fn fd_count() -> usize {
+    std::fs::read_dir("/proc/self/fd").map_or(0, |d| d.count())
+}
+
 impl BlockSnapshot {
     /// Log the entry count of every in-memory map plus current RSS. O(addresses) — skips
     /// the ~15M asset-holdings leaf walk (its leaf count is logged at build time). A rough

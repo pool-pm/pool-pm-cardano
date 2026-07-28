@@ -111,7 +111,11 @@ pub fn run(args: Args) -> Result<(), Error> {
     const MEM_WATCHDOG_INTERVAL: Duration = Duration::from_secs(300);
     std::thread::spawn(|| loop {
         std::thread::sleep(MEM_WATCHDOG_INTERVAL);
-        tracing::info!(rss_mb = crate::state::rss_mb(), "mem watchdog");
+        tracing::info!(
+            rss_mb = crate::state::rss_mb(),
+            fd_count = crate::state::fd_count(),
+            "mem watchdog"
+        );
     });
 
     let nftcdn = NftcdnConfig::new(&args.network);
