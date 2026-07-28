@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  --bg: #1c1c20;
+  --bg: #000; /* pool.pm identity: pure black. Elevation is a colored glow, not a shadow. */
   --surface: #161b22;
   --border: #30363d;
   --text: #e6edf3;
@@ -9,23 +9,19 @@
   --positive: #3fb950;
   --negative: #f85149;
 
-  /* Shared panel language — flat, rounded, softly elevated. Used by every surface
-     (feed blocks, the subject card, asset tiles, the toolbar) so they read as one
-     system. Depth is carried by a hairline light edge + a whisper of top-lit gradient +
-     a soft ambient shadow. The shadow only registers because --bg is a near-black
-     (#0b0b0e), not pure #000 — on pure black a dark shadow is invisible. */
   --panel-radius: 10px;
   --panel-radius-lg: 14px;
-  /* Dark-grey base (not black) so panels cast a real, visible soft shadow — the Material
-     dark-theme model: elevated surfaces sit a touch lighter than the page and lift off it
-     with a shadow plus a top light-catch (the inset highlight in --elevation). No light
-     border outline — the shadow carries the edge, so panels never get a glowing bottom line. */
   --surface-1: #26262c; /* elevated neutral panel (mempool, asset tiles, toolbar) */
   --panel-sheen: rgb(255 255 255 / 0.06); /* whisper top-lit gradient */
-  --elevation:
-    inset 0 1px 0 rgb(255 255 255 / 0.07), 0 3px 5px -1px rgb(0 0 0 / 0.8), 0 16px 34px -10px rgb(0 0 0 / 0.65);
-  --elevation-hover:
-    inset 0 1px 0 rgb(255 255 255 / 0.09), 0 5px 8px -1px rgb(0 0 0 / 0.8), 0 26px 44px -12px rgb(0 0 0 / 0.65);
+  /* Elevation on the black page = light *emitted* by each panel and caught by a slightly
+     reflective black floor: a glow lighter than black, tinted the panel's own colour and at
+     much lower brightness. A dark shadow is invisible on #000, but a colored glow is not — it
+     lifts the panel and gives the whole app a neon/cyberpunk feel. Each surface sets --glow to
+     its own tint (blocks: their colour; card: the subject colour); the recipe is shared.
+     A top light-catch (inset white) keeps the panel lit from above. */
+  --glow: rgb(255 255 255 / 0.06); /* fallback tint; every surface overrides it */
+  --elevation: inset 0 1px 0 rgb(255 255 255 / 0.1), 0 0 16px -1px var(--glow), 0 8px 30px -6px var(--glow);
+  --elevation-hover: inset 0 1px 0 rgb(255 255 255 / 0.14), 0 0 24px 0 var(--glow), 0 14px 40px -6px var(--glow);
 }
 
 * {

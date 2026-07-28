@@ -746,9 +746,10 @@
     direction: ltr;
   }
 
-  /* Every block container is one flat, rounded, softly-elevated panel in the shared panel
-     language (see app.css): the block's own colour (--block-bg) with a whisper of top-lit
-     gradient over it, a hairline light edge, and one soft ambient shadow. No embossing. */
+  /* Every block container is one flat, rounded panel that *glows* its own colour onto the
+     black page (see --elevation in app.css): the block's colour (--block-bg) with a whisper
+     of top-lit gradient over it, and a dim block-tinted glow that lifts it. --glow is the
+     block's colour at low alpha (much dimmer than the block) — the emitted-light effect. */
   .section {
     position: absolute;
     left: 0;
@@ -765,6 +766,7 @@
     flex-direction: column;
     gap: var(--block-padding);
     background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--block-bg);
+    --glow: color-mix(in srgb, var(--block-bg) 40%, transparent);
     box-shadow: var(--elevation);
   }
 

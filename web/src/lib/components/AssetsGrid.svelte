@@ -749,6 +749,7 @@
     padding: 3px;
     background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-1);
     border: none;
+    --glow: rgb(150 165 205 / 0.1); /* subtle cool lift on black (neutral tiles have no colour) */
     box-shadow: var(--elevation);
   }
 
@@ -878,6 +879,7 @@
     border-radius: var(--panel-radius);
     background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-1);
     border: none;
+    --glow: rgb(150 165 205 / 0.1); /* subtle cool lift on black (neutral tiles have no colour) */
     box-shadow: var(--elevation);
     overflow: hidden;
     transition:

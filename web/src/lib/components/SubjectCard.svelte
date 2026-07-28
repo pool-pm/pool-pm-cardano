@@ -176,13 +176,13 @@
     width: 290px;
     max-width: calc(100vw - 32px);
     border-radius: var(--panel-radius-lg);
-    /* Shared elevated surface (top-lit whisper gradient + shadow + inset light-catch), plus
-       this card's own identity: a subject-colour top ridge and a tight glow. */
+    /* Shared elevated surface, plus this card's own identity: a subject-colour top ridge and
+       a subject-colour glow. --glow drives the shared elevation in the card's colour; the
+       extra wide halo below reinforces it (the original design this whole glow model came from). */
     background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-1);
     border: none;
     border-top: 3px solid var(--subject-color);
-    /* Keep the halo tight and faint so the page still reads as its dark grey rather than
-       lighting up around the card. */
+    --glow: color-mix(in srgb, var(--subject-color) 35%, transparent);
     box-shadow:
       var(--elevation),
       0 0 32px -6px color-mix(in srgb, var(--subject-color) 22%, transparent);
