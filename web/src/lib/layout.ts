@@ -145,7 +145,6 @@ function layoutPortrait(
   heights: number[],
   gap: number,
   availableWidth: number,
-  containerWidth: number,
 ): { gridWidth: number; gridHeight: number } {
   const colCount = Math.max(1, Math.floor((availableWidth + gap) / (TX_WIDTH + gap)));
   const colHeights = new Array(colCount).fill(0);
@@ -180,11 +179,14 @@ function layoutPortrait(
   const totalHeight = Math.max(0, Math.max(...colHeights) - gap);
   const actualCols = maxColUsed + 1;
   const gridWidth = actualCols * TX_WIDTH + Math.max(0, actualCols - 1) * gap;
-  // Center within the actual container width, not the available layout width
-  const offsetX = Math.max(0, (containerWidth - gridWidth) / 2);
 
+  // Pack tiles from the grid's left edge (x = 0). Centering is NOT done here: the grid is set
+  // to exactly gridWidth and centered within the section by CSS (margin-inline: auto), so a
+  // header wider than one tile column can enlarge the section without pushing the tiles
+  // off-centre (the old JS offset centred within the measured node width, which was stale/wrong
+  // whenever the header — not the grid — determined the section width).
   for (const { idx, col, y, height } of itemData) {
-    const displayX = offsetX + col * (TX_WIDTH + gap);
+    const displayX = col * (TX_WIDTH + gap);
     const displayY = totalHeight - y - height;
     items[idx].style.transform = `translate(${displayX}px, ${displayY}px)`;
   }
@@ -282,8 +284,10 @@ export function layoutGrid(node: HTMLElement, params: LayoutGridParams) {
       node.style.width = `${gridWidth}px`;
     } else {
       const w = availableWidth || node.offsetWidth;
-      ({ gridWidth, gridHeight } = layoutPortrait(items, heights, gap, w, node.offsetWidth));
-      node.style.width = '';
+      ({ gridWidth, gridHeight } = layoutPortrait(items, heights, gap, w));
+      // Size the grid to exactly its packed width; CSS margin-inline:auto then centres it in the
+      // section, so the tiles stay centred even when a wide header widens the section.
+      node.style.width = `${gridWidth}px`;
       node.dispatchEvent(new CustomEvent('gridwidth', { detail: gridWidth, bubbles: true }));
     }
     const maxHeight = landscape ? availableHeight : Infinity;

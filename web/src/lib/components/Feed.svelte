@@ -941,7 +941,12 @@
   }
 
   .feed:not(.landscape) .tx-grid {
+    /* Width is set to the exact packed grid width by layoutGrid (JS); margin-inline:auto then
+       centres the grid in the section, so tiles stay centred even when a wide header (e.g. the
+       mempool's "Epoch … / MEMPOOL") widens the section past one tile column. 100% is only the
+       pre-layout fallback. */
     width: 100%;
+    margin-inline: auto;
   }
 
   .tx-grid-item {
