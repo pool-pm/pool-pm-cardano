@@ -876,11 +876,11 @@
     height: var(--tile-h);
     box-sizing: border-box;
     position: relative;
-    /* Shared panel language (see app.css): a flat dark surface with a whisper of top-lit
-       gradient, a hairline light edge, rounded corners, and one soft ambient shadow — the
-       same treatment the feed blocks and subject card use, so the whole app reads as one system. */
+    /* Shared panel language (see app.css): the darker surface (--surface-2, the mempool tx-chip
+       tone, same as the subject card) with a whisper of top-lit gradient and a colored glow, so
+       the whole app reads as one system. */
     border-radius: var(--panel-radius);
-    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-1);
+    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-2);
     border: none;
     --glow: rgb(150 165 205 / 0.1); /* subtle cool lift on black (neutral tiles have no colour) */
     box-shadow:

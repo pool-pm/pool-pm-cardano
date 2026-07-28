@@ -176,19 +176,16 @@
     width: 290px;
     max-width: calc(100vw - 32px);
     border-radius: var(--panel-radius-lg);
-    /* Shared elevated surface, plus this card's own identity: a subject-colour top ridge and
-       a subject-colour glow. --glow drives the shared elevation in the card's colour; the
-       extra wide halo below reinforces it (the original design this whole glow model came from). */
-    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-1);
+    /* Darker surface (the mempool tx-chip tone) with a subject-colour top ridge and the exact
+       same subject-tinted glow as the feed blocks — no extra halo (it was too strong). */
+    background: linear-gradient(180deg, var(--panel-sheen) 0%, transparent 55%), var(--surface-2);
     border: none;
     border-top: 3px solid var(--subject-color);
-    --glow: color-mix(in srgb, var(--subject-color) 35%, transparent);
-    /* Glow recipe inlined (see app.css) so var(--glow) = the subject colour, plus a wider halo. */
+    --glow: color-mix(in srgb, var(--subject-color) 40%, transparent);
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / 0.1),
       0 0 7px 0 var(--glow),
-      0 3px 22px 1px var(--glow),
-      0 0 32px -6px color-mix(in srgb, var(--subject-color) 22%, transparent);
+      0 3px 22px 1px var(--glow);
     display: flex;
     flex-direction: column;
     align-items: center;

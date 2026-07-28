@@ -11,7 +11,9 @@
 
   --panel-radius: 10px;
   --panel-radius-lg: 14px;
-  --surface-1: #26262c; /* elevated neutral panel (mempool, asset tiles, toolbar) */
+  --surface-1: #26262c; /* elevated neutral panel: mempool block, reward capsule */
+  --surface-2: #0f0f12; /* darker panel = the mempool tx-chip colour (rgba(0 0 0/.6) over --surface-1);
+                           used for the subject/header card and asset tiles */
   --panel-sheen: rgb(255 255 255 / 0.06); /* whisper top-lit gradient */
   /* Elevation on the black page = light *emitted* by each panel and caught by a slightly
      reflective black floor: a glow lighter than black, tinted the panel's own colour and at
