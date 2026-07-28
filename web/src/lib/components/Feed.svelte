@@ -847,11 +847,6 @@
     height: var(--fold-size);
     box-sizing: border-box;
   }
-  /* Keep the date/time and hash/number centred rather than spread across a wide square. */
-  .section.fold-own .block-header,
-  .section.fold-own .block-footer {
-    justify-content: center;
-  }
   .fold-summary.own {
     display: flex;
     flex-direction: column;
