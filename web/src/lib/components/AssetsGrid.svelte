@@ -588,14 +588,13 @@
   .page {
     /* Matte behind the stacked-card thumbnails. */
     --mat-bg: #0e0e11;
-    /* The area behind the cards is lifted a hair above pure black so each card's soft
-       bottom shadow is actually visible (a black shadow on #000 shows nothing). */
-    --surface: #09090b;
     display: flex;
     flex-direction: column;
     height: 100dvh;
     box-sizing: border-box;
-    background: var(--surface);
+    /* Same page background as everywhere else (the feed, the homepage) so surfaces match
+       across the app; the dark-grey --bg is what lets each tile's soft shadow show. */
+    background: var(--bg);
   }
 
   /* Top row: minimalist subject on the left (aligned to the leftmost tile), filter+sort on the
@@ -616,7 +615,7 @@
        first row's tiles (past the grid's scrollbar + centering slack). Bottom 0. */
     padding: 12px 20px 0;
     box-sizing: border-box;
-    background: var(--surface);
+    background: var(--bg);
   }
   .subject {
     min-width: 0;
@@ -706,7 +705,7 @@
        this padding shrinks the usable width the column math sees. */
     padding-inline: 20px;
     box-sizing: border-box;
-    background: var(--surface);
+    background: var(--bg);
   }
 
   /* Filter + sort, pinned to the bottom-right of the head row: margin-left:auto keeps it right
