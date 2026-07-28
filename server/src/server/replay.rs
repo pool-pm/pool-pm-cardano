@@ -459,7 +459,13 @@ pub(super) async fn process_replay_block(
             // Brief read lock: apply_stake_changes is synchronous and needs the snapshot to
             // resolve delegator ADA Handles for the folded stake-address summary.
             let guard = ctx.chain_state.read().await;
-            filter::apply_stake_changes(&mut txs, delegators, feed_filter, ctx.mainnet, guard.current());
+            filter::apply_stake_changes(
+                &mut txs,
+                delegators,
+                feed_filter,
+                ctx.mainnet,
+                guard.current(),
+            );
         }
 
         // Stake/address feeds: walk the stake backward to the exact pre-block value
