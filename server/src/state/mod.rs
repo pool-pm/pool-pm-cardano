@@ -1747,17 +1747,11 @@ impl State {
         }
     }
 
-    /// The pool for the *current* runtime, opening one on first use. `DbSync` is a cheap
-    /// handle (an `Arc`ed `PgPool`), so callers get an owned clone rather than a borrow.
+    /// The pool for the *current* runtime, created on first use. `DbSync` is a cheap handle
+    /// (an `Arc`ed `PgPool`) so callers get an owned clone, and creation doesn't connect —
+    /// hence no await, and [`Self::db_handle`] can do exactly the same thing synchronously.
     pub(crate) async fn db(&self) -> Option<DbSync> {
-        let id = tokio::runtime::Handle::try_current().ok()?.id();
-        if let Some(db) = self.db.lock().ok()?.get(&id).cloned() {
-            return Some(db);
-        }
-        let db = DbSync::new(&self.db_url).await.ok()?;
-        // Two callers on the same runtime can race here; whoever inserted first wins and the
-        // loser's pool is dropped, which costs nothing but a closed connection.
-        Some(self.db.lock().ok()?.entry(id).or_insert(db).clone())
+        self.db_handle()
     }
 
     /// Synchronous, lock-friendly clone of the db handle for callers that
@@ -1766,12 +1760,19 @@ impl State {
     /// e.g. a whale's `assets_count` — would otherwise stall every other
     /// reader behind the sink's pending writer).
     ///
-    /// Returns `None` until `db()` has been awaited at least once; the
-    /// daemon's startup `populate_*` calls do this before SSE accepts
-    /// connections, so handlers can rely on `Some`.
+    /// Creates this runtime's pool if it doesn't have one yet, so it is `Some` for any caller
+    /// with a valid db URL — a handler must never be silently starved of the db because some
+    /// other runtime happened to open the pool first.
     pub fn db_handle(&self) -> Option<DbSync> {
         let id = tokio::runtime::Handle::try_current().ok()?.id();
-        self.db.lock().ok()?.get(&id).cloned()
+        let mut pools = self.db.lock().ok()?;
+        if let Some(db) = pools.get(&id) {
+            return Some(db.clone());
+        }
+        // Creating a pool is just building the config (`connect_lazy_with`), so this stays
+        // sync and cheap; the first query on it opens a connection on *this* runtime.
+        let db = DbSync::new(&self.db_url).ok()?;
+        Some(pools.entry(id).or_insert(db).clone())
     }
 
     pub fn current(&self) -> Option<&BlockSnapshot> {
@@ -1908,7 +1909,7 @@ impl State {
         // `reset` runs on whatever runtime called it; `db()` gives that runtime its own pool.
         let db = match self.db().await {
             Some(db) => db,
-            None => DbSync::new(&self.db_url).await?,
+            None => DbSync::new(&self.db_url)?,
         };
 
         let (last_tx_id, block_hash) = db.slot_info(slot).await?;
@@ -2485,7 +2486,7 @@ impl State {
     /// Find the most recent block at or before the given slot.
     /// Creates a temporary db connection (for use at startup before State is fully initialized).
     pub async fn boundary_block(db_url: &Url, boundary_slot: u64) -> Option<(u64, String)> {
-        let db = DbSync::new(db_url).await.ok()?;
+        let db = DbSync::new(db_url).ok()?;
         db.boundary_block(boundary_slot).await
     }
 
@@ -3068,6 +3069,31 @@ mod tests {
 
         // The reverse index follows the target, and the old set is left empty (not pruned).
         assert!(d6.len() == 1 && r4.get(&pool_q).unwrap().is_empty());
+    }
+
+    /// `db_handle()` is what every SSE handler uses to reach the db, from the axum runtime,
+    /// inside await-free guard scopes. Pools are per-runtime, so it has to be able to *create*
+    /// one — when it could only look one up, every db-backed detail (an asset's mint date,
+    /// owner, policy, quantity; feed replay; search) silently vanished from the pages while
+    /// the in-memory parts still rendered. Creating a pool doesn't connect, so this needs no
+    /// database.
+    #[test]
+    fn db_handle_creates_a_pool_for_a_runtime_that_never_awaited_db() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let state = State::new(Url::parse("postgresql:///pool_pm_test").unwrap());
+            assert!(
+                state.db_handle().is_some(),
+                "db_handle must open this runtime's pool, not wait for another one to do it"
+            );
+            // And it's the same pool on the second call, not a new one per query.
+            let (a, b) = (state.db_handle(), state.db_handle());
+            assert!(a.is_some() && b.is_some());
+            assert_eq!(state.db.lock().unwrap().len(), 1);
+        });
     }
 
     /// One fake block that touches **every** value `apply_block` maintains, then a rollback.

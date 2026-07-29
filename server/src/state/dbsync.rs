@@ -132,7 +132,12 @@ pub struct DelegationFill {
 }
 
 impl DbSync {
-    pub async fn new(url: &Url) -> Result<Self, sqlx::Error> {
+    /// Build this runtime's pool **without connecting**. `connect_lazy_with` returns
+    /// immediately and opens connections on first use — i.e. on whatever runtime runs the
+    /// first query — which is what lets the *synchronous* `State::db_handle()` (called inside
+    /// await-free guard scopes) create a pool for its own runtime. Pools must not be shared
+    /// across runtimes: sqlx binds a connection to the one that created it.
+    pub fn new(url: &Url) -> Result<Self, sqlx::Error> {
         let options = PgConnectOptions::from_url(url)?
             .log_slow_statements(log::LevelFilter::Warn, SLOW_QUERY_THRESHOLD);
 
@@ -153,8 +158,7 @@ impl DbSync {
                     Ok(())
                 })
             })
-            .connect_with(options)
-            .await?;
+            .connect_lazy_with(options);
 
         Ok(Self { db })
     }
