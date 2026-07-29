@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AssetInfo, DelegationInfo, FeedTx } from '../types';
-  import { config, stake, address } from '../stores';
+  import { config, pool, drep, stake, address } from '../stores';
   import { poolColor, formatTicker } from '../layout';
   import { nonChangeOutputs as computeNonChangeOutputs } from '../change';
   import { stakeCredential, rewardCredential } from '../bech32';
@@ -95,10 +95,19 @@
   const hasDeleg = $derived(visibleDelegations.length > 0);
   const shownAnnotations = $derived(folded ? [] : (tx.annotations ?? []));
 
+  // The subject's *own* governance vote survives folding: on a DRep feed a vote is the
+  // headline content, exactly like a pool's own minted block on a pool feed (and an SPO
+  // vote on a pool feed). Such a tx then renders the vote *only* — its ADA movement is
+  // just the fee, so the stake change and the moved account would be noise.
+  const feedSubjectId = $derived($drep?.drep_id ?? $pool?.pool_id ?? null);
+  const ownVotes = $derived(feedSubjectId ? (tx.votes ?? []).filter((v) => v.voter_id === feedSubjectId) : []);
+  const voteOnly = $derived(folded && ownVotes.length > 0);
+  const shownVotes = $derived(folded ? ownVotes : (tx.votes ?? []));
+
   // Folded non-delegation stake-affecting tx: show just the account(s) it moved. The server
   // sends the *relevant* stake addresses in `tx.stake_addresses` (only the feed's delegators —
   // not every account in a multi-party tx), so we don't derive from all I/O here.
-  const foldedStakeAddrs = $derived(folded && !hasDeleg ? (tx.stake_addresses ?? []) : []);
+  const foldedStakeAddrs = $derived(folded && !hasDeleg && !voteOnly ? (tx.stake_addresses ?? []) : []);
 
   function formatAda(lovelace: string, sign?: string): string {
     const padded = lovelace.padStart(7, '0');
@@ -179,7 +188,7 @@
 </script>
 
 <div class="tx-card" style:--thumb-size="{thumbSize}px">
-  {#if tx.stake_change}
+  {#if tx.stake_change && !voteOnly}
     {@const negative = tx.stake_change.startsWith('-')}
     <div class="stake-change" style:color={negative ? 'oklch(0.7 0.25 25)' : 'oklch(0.7 0.25 145)'}>
       {@html formatAda(negative ? tx.stake_change.slice(1) : tx.stake_change, negative ? '−' : '+')}
@@ -209,11 +218,14 @@
       {/each}
     </div>
   {/if}
-  {#if !folded && tx.votes?.length}
-    <div class="vote-section">
-      {#each tx.votes as vote}
+  {#if shownVotes.length > 0}
+    <div class="vote-section" class:vote-only={voteOnly}>
+      {#each shownVotes as vote}
         <div class="vote-item">
-          <span class="vote-voter">{vote.voter_name ?? vote.voter_id.slice(0, 12)}</span>
+          <!-- On the voter's own folded feed the name is the page itself — drop it. -->
+          {#if !voteOnly}
+            <span class="vote-voter">{vote.voter_name ?? vote.voter_id.slice(0, 12)}</span>
+          {/if}
           voted
           <span
             class="vote-badge"
@@ -455,6 +467,21 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+
+  /* The subject's own vote on a folded block: it *is* the block's meaning (the DRep-feed
+     counterpart of a pool's own minted block), so it reads louder than the vote line
+     shown inline inside an unfolded tx. */
+  .vote-section.vote-only .vote-item {
+    font-size: 12px;
+  }
+
+  .vote-section.vote-only .vote-badge {
+    font-size: 11px;
+  }
+
+  .vote-section.vote-only .vote-action {
+    color: rgb(255 255 255 / 0.6);
   }
 
   .vote-item {
