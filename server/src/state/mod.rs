@@ -639,7 +639,13 @@ impl BlockSnapshot {
 /// became `mint_slot` — different semantics, so old leaves must rebuild. v9: `FeedIndex`
 /// gained `pool_votes`/`drep_votes` (governance vote-block index); rmp-serde encodes structs
 /// positionally, so the extra fields shift the layout and old snapshots must rebuild.
-const SNAPSHOT_FORMAT: u32 = 14;
+const SNAPSHOT_FORMAT: u32 = 15;
+
+/// The previous format: holdings grouped by address but one full `policy ++ name` per token,
+/// byte strings encoded as msgpack arrays. Still *readable* ([`LegacyHoldingsSeed`]) so a
+/// deploy resumes from the snapshot on disk instead of a multi-minute cold reset; never
+/// written. Remove once every deployment has rolled over.
+const SNAPSHOT_FORMAT_LEGACY_PER_TOKEN: u32 = 14;
 
 /// Serializes [`BlockSnapshot::asset_holdings`] **grouped by address**: a msgpack map of
 /// `AddrKey → [(AssetId, Held)]`, with the key `deref'd off its `Arc`` (the wire form carries
@@ -657,37 +663,205 @@ struct HoldingsSer<'a>(&'a AssetHoldings);
 impl serde::Serialize for HoldingsSer<'_> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        // The entry count isn't the map length (that's tokens, not addresses) and counting
-        // addresses up front would mean a second full walk; msgpack needs the length, so the
-        // groups are collected as reference slices — pointers into the live map, no clones.
-        let mut groups: Vec<(&AddrKey, Vec<(&AssetId, &Held)>)> = Vec::new();
-        for ((arc, aid), held) in self.0.iter() {
-            match groups.last_mut() {
-                // Compare by value, never `Arc::ptr_eq`: sorted order guarantees one run per
-                // address, but two runs of the same address would merely split, not corrupt.
-                Some((addr, tokens)) if *addr == arc.as_ref() => tokens.push((aid, held)),
-                _ => groups.push((arc.as_ref(), vec![(aid, held)])),
+        // msgpack needs every length up front, so the address count comes from one cheap
+        // counting pass rather than a global index of all ~15M entry refs (that index was
+        // ~350MB of transient pointers on every write; a snapshot happens every 50 blocks).
+        let addresses = {
+            let mut n = 0usize;
+            let mut last: Option<&AddrKey> = None;
+            for ((arc, _), _) in self.0.iter() {
+                if last != Some(arc.as_ref()) {
+                    n += 1;
+                    last = Some(arc.as_ref());
+                }
             }
+            n
+        };
+
+        let mut m = s.serialize_map(Some(addresses))?;
+        // Sorted order means one contiguous run per address, and within it one per policy, so
+        // a single walk emits both levels with only the current address's tokens buffered
+        // (~11 on average).
+        let mut addr: Option<&AddrKey> = None;
+        let mut tokens: Vec<(&AssetId, &Held)> = Vec::new();
+        for ((arc, aid), held) in self.0.iter() {
+            // Compare by value, never `Arc::ptr_eq` (prev/curr snapshots may hold distinct
+            // Arcs for the same address).
+            if addr != Some(arc.as_ref()) {
+                if let Some(prev) = addr {
+                    m.serialize_entry(prev, &PolicyGroups(&tokens))?;
+                }
+                addr = Some(arc.as_ref());
+                tokens.clear();
+            }
+            tokens.push((aid, held));
         }
-        let mut m = s.serialize_map(Some(groups.len()))?;
-        for (addr, tokens) in &groups {
-            m.serialize_entry(addr, tokens)?;
+        if let Some(prev) = addr {
+            m.serialize_entry(prev, &PolicyGroups(&tokens))?;
         }
         m.end()
     }
 }
 
-/// Deserializes the grouped holdings map produced by [`HoldingsSer`], **interning each
-/// address once** and inserting its tokens straight into the map as they stream — the
-/// un-shared full-size map is never materialized (the warm-resume RSS spike a naive
-/// `Arc`-per-entry decode would cause), and no per-address `Vec` is built either. Seeds
-/// `interner`.
+/// One address's tokens as `[(policy, [(name, Held)])]`: the 28-byte policy goes on the wire
+/// once per (address, policy) run instead of once per token — 6.3M times instead of 14.8M on
+/// mainnet, ~240MB less file. `AssetId` is `policy ++ name`, so the split is a slice, and the
+/// reader concatenates them back into one allocation per entry ([`AssetIdSeed`]).
+struct PolicyGroups<'a>(&'a [(&'a AssetId, &'a Held)]);
+
+/// Length of a Cardano policy id (blake2b-224), the fixed prefix of every `AssetId`.
+const POLICY_LEN: usize = 28;
+
+fn split_asset_id(aid: &AssetId) -> (&[u8], &[u8]) {
+    let at = POLICY_LEN.min(aid.len());
+    (&aid[..at], &aid[at..])
+}
+
+impl serde::Serialize for PolicyGroups<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut runs = 0usize;
+        let mut last: Option<&[u8]> = None;
+        for (aid, _) in self.0 {
+            let (policy, _) = split_asset_id(aid);
+            if last != Some(policy) {
+                runs += 1;
+                last = Some(policy);
+            }
+        }
+        let mut seq = s.serialize_seq(Some(runs))?;
+        let mut i = 0;
+        while i < self.0.len() {
+            let (policy, _) = split_asset_id(self.0[i].0);
+            let start = i;
+            while i < self.0.len() && split_asset_id(self.0[i].0).0 == policy {
+                i += 1;
+            }
+            seq.serialize_element(&(serde_bytes::Bytes::new(policy), Names(&self.0[start..i])))?;
+        }
+        seq.end()
+    }
+}
+
+/// The `[(name, Held)]` half of a policy run.
+struct Names<'a>(&'a [(&'a AssetId, &'a Held)]);
+
+impl serde::Serialize for Names<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut seq = s.serialize_seq(Some(self.0.len()))?;
+        for (aid, held) in self.0 {
+            let (_, name) = split_asset_id(aid);
+            seq.serialize_element(&(serde_bytes::Bytes::new(name), held))?;
+        }
+        seq.end()
+    }
+}
+
+/// Deserializes the holdings map produced by [`HoldingsSer`]: `address → [(policy,
+/// [(name, Held)])]`. Each address is interned **once** and its tokens are inserted as they
+/// stream, so the un-shared full-size map is never materialized (the warm-resume RSS spike a
+/// naive `Arc`-per-entry decode would cause) and nothing is buffered per address or per policy.
+/// Each entry costs exactly one allocation: [`AssetIdSeed`] writes `policy ++ name` straight
+/// into it. Seeds `interner`.
 struct HoldingsSeed<'a>(&'a mut AddrInterner);
 
-/// One address's token list, inserted into `out` as it streams under the shared `addr`.
+/// Rebuilds one `AssetId` (`policy ++ name`) in a single allocation: the policy comes from the
+/// enclosing run, the name straight off the wire.
+struct AssetIdSeed<'a>(&'a [u8]);
+
+impl<'de> serde::de::DeserializeSeed<'de> for AssetIdSeed<'_> {
+    type Value = AssetId;
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<AssetId, D::Error> {
+        struct V<'a>(&'a [u8]);
+        impl<'de> serde::de::Visitor<'de> for V<'_> {
+            type Value = AssetId;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an asset name (bytes)")
+            }
+            fn visit_bytes<E: serde::de::Error>(self, name: &[u8]) -> Result<AssetId, E> {
+                let mut aid = Vec::with_capacity(self.0.len() + name.len());
+                aid.extend_from_slice(self.0);
+                aid.extend_from_slice(name);
+                Ok(aid.into_boxed_slice())
+            }
+            fn visit_byte_buf<E: serde::de::Error>(self, name: Vec<u8>) -> Result<AssetId, E> {
+                self.visit_bytes(&name)
+            }
+        }
+        d.deserialize_bytes(V(self.0))
+    }
+}
+
+/// One `(name, Held)` pair, with the run's policy folded into the key.
+struct TokenSeed<'a> {
+    out: &'a mut AssetHoldings,
+    addr: &'a Arc<AddrKey>,
+    policy: &'a [u8],
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for TokenSeed<'_> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+        struct V<'a>(TokenSeed<'a>);
+        impl<'de> serde::de::Visitor<'de> for V<'_> {
+            type Value = ();
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a (name, Held) pair")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+                use serde::de::Error;
+                let aid = seq
+                    .next_element_seed(AssetIdSeed(self.0.policy))?
+                    .ok_or_else(|| A::Error::custom("missing asset name"))?;
+                let held: Held = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::custom("missing Held"))?;
+                self.0.out.insert((self.0.addr.clone(), aid), held);
+                Ok(())
+            }
+        }
+        d.deserialize_seq(V(self))
+    }
+}
+
+/// One `(policy, [(name, Held)])` run.
+struct PolicyRunSeed<'a> {
+    out: &'a mut AssetHoldings,
+    addr: &'a Arc<AddrKey>,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for PolicyRunSeed<'_> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+        struct V<'a>(PolicyRunSeed<'a>);
+        impl<'de> serde::de::Visitor<'de> for V<'_> {
+            type Value = ();
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a (policy, tokens) run")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+                use serde::de::Error;
+                let policy: serde_bytes::ByteBuf = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::custom("missing policy"))?;
+                seq.next_element_seed(TokensSeed {
+                    out: self.0.out,
+                    addr: self.0.addr,
+                    policy: &policy,
+                })?
+                .ok_or_else(|| A::Error::custom("missing token list"))
+            }
+        }
+        d.deserialize_seq(V(self))
+    }
+}
+
+/// The token list inside one policy run.
 struct TokensSeed<'a> {
     out: &'a mut AssetHoldings,
-    addr: Arc<AddrKey>,
+    addr: &'a Arc<AddrKey>,
+    policy: &'a [u8],
 }
 
 impl<'de> serde::de::DeserializeSeed<'de> for TokensSeed<'_> {
@@ -697,12 +871,47 @@ impl<'de> serde::de::DeserializeSeed<'de> for TokensSeed<'_> {
         impl<'de> serde::de::Visitor<'de> for V<'_> {
             type Value = ();
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("an address's [(policy++name, Held)] list")
+                f.write_str("a list of (name, Held)")
             }
             fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-                while let Some((aid, held)) = seq.next_element::<(AssetId, Held)>()? {
-                    self.0.out.insert((self.0.addr.clone(), aid), held);
-                }
+                while seq
+                    .next_element_seed(TokenSeed {
+                        out: self.0.out,
+                        addr: self.0.addr,
+                        policy: self.0.policy,
+                    })?
+                    .is_some()
+                {}
+                Ok(())
+            }
+        }
+        d.deserialize_seq(V(self))
+    }
+}
+
+/// All of one address's policy runs.
+struct AddrRunsSeed<'a> {
+    out: &'a mut AssetHoldings,
+    addr: Arc<AddrKey>,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for AddrRunsSeed<'_> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+        struct V<'a>(AddrRunsSeed<'a>);
+        impl<'de> serde::de::Visitor<'de> for V<'_> {
+            type Value = ();
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an address's policy runs")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+                while seq
+                    .next_element_seed(PolicyRunSeed {
+                        out: self.0.out,
+                        addr: &self.0.addr,
+                    })?
+                    .is_some()
+                {}
                 Ok(())
             }
         }
@@ -711,6 +920,38 @@ impl<'de> serde::de::DeserializeSeed<'de> for TokensSeed<'_> {
 }
 
 impl<'de> serde::de::DeserializeSeed<'de> for HoldingsSeed<'_> {
+    type Value = AssetHoldings;
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<AssetHoldings, D::Error> {
+        struct V<'a>(&'a mut AddrInterner);
+        impl<'de> serde::de::Visitor<'de> for V<'_> {
+            type Value = AssetHoldings;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map of (cred, addr) → [(policy, [(name, Held)])]")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<AssetHoldings, A::Error> {
+                let mut out: AssetHoldings = OrdMap::new();
+                while let Some(addr_key) = map.next_key::<AddrKey>()? {
+                    let addr = intern_owned(self.0, addr_key);
+                    map.next_value_seed(AddrRunsSeed {
+                        out: &mut out,
+                        addr,
+                    })?;
+                }
+                Ok(out)
+            }
+        }
+        d.deserialize_map(V(self.0))
+    }
+}
+
+/// Reads `SNAPSHOT_FORMAT` 14: grouped by address already, but each token carrying its whole
+/// `policy ++ name`. Only needed until deployments have written a format-15 snapshot.
+struct LegacyHoldingsSeed<'a>(&'a mut AddrInterner);
+
+impl<'de> serde::de::DeserializeSeed<'de> for LegacyHoldingsSeed<'_> {
     type Value = AssetHoldings;
     fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<AssetHoldings, D::Error> {
         struct V<'a>(&'a mut AddrInterner);
@@ -726,10 +967,9 @@ impl<'de> serde::de::DeserializeSeed<'de> for HoldingsSeed<'_> {
                 let mut out: AssetHoldings = OrdMap::new();
                 while let Some(addr_key) = map.next_key::<AddrKey>()? {
                     let addr = intern_owned(self.0, addr_key);
-                    map.next_value_seed(TokensSeed {
-                        out: &mut out,
-                        addr,
-                    })?;
+                    for (aid, held) in map.next_value::<Vec<(AssetId, Held)>>()? {
+                        out.insert((addr.clone(), aid), held);
+                    }
                 }
                 Ok(out)
             }
@@ -2604,14 +2844,26 @@ impl State {
                 return None;
             }
         };
-        if format != SNAPSHOT_FORMAT {
-            tracing::warn!(
-                "snapshot format mismatch: snapshot={}, expected={} — rebuilding from db-sync",
-                format,
-                SNAPSHOT_FORMAT
-            );
-            return None;
-        }
+        let policy_grouped = match format {
+            SNAPSHOT_FORMAT => true,
+            SNAPSHOT_FORMAT_LEGACY_PER_TOKEN => {
+                tracing::info!(
+                    "snapshot is format {} (a policy id per token) — reading it once; the next \
+                     periodic write stores format {}",
+                    SNAPSHOT_FORMAT_LEGACY_PER_TOKEN,
+                    SNAPSHOT_FORMAT
+                );
+                false
+            }
+            _ => {
+                tracing::warn!(
+                    "snapshot format mismatch: snapshot={}, expected={} — rebuilding from db-sync",
+                    format,
+                    SNAPSHOT_FORMAT
+                );
+                return None;
+            }
+        };
         match u64::deserialize(&mut de) {
             Ok(magic) if magic == network_magic => {}
             Ok(magic) => {
@@ -2639,7 +2891,11 @@ impl State {
             fields_ms = t.elapsed().as_millis() as u64;
 
             let t = std::time::Instant::now();
-            snap.asset_holdings = HoldingsSeed(&mut interner).deserialize(&mut de)?;
+            snap.asset_holdings = if policy_grouped {
+                HoldingsSeed(&mut interner).deserialize(&mut de)?
+            } else {
+                LegacyHoldingsSeed(&mut interner).deserialize(&mut de)?
+            };
             holdings_ms = t.elapsed().as_millis() as u64;
 
             let t = std::time::Instant::now();
