@@ -166,6 +166,7 @@ pub fn run(args: Args) -> Result<(), Error> {
             );
             rt.block_on(state.populate_active_stakes(epoch));
             rt.block_on(state.populate_drep_vote_counts(epoch));
+            rt.block_on(state.populate_delegation_slots());
             state.populate_total_staked();
         }
 

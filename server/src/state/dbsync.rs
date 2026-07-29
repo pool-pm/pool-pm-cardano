@@ -8,7 +8,7 @@ use sqlx::{
 use tokio::time::Duration;
 use url::Url;
 
-use crate::model::{parse_handle_name, DRep, Pool, CIP67_LABEL_222};
+use crate::model::{parse_handle_name, DRep, Delegation, Pool, CIP67_LABEL_222};
 
 /// Raw on-chain bytes of a bech32 payment address — db-sync's `address.raw`
 /// (same serialization pallas produces). `None` for Byron / non-bech32 input
@@ -1066,48 +1066,69 @@ impl DbSync {
             .collect())
     }
 
+    /// Current pool delegations as of `last_tx_id`, each with the slot at which the
+    /// credential's **current uninterrupted run** with that pool began (see [`Delegation`]):
+    /// re-delegating to the same pool doesn't restart the run, switching away (or a stake
+    /// deregistration) and coming back does.
+    ///
+    /// Gaps-and-islands over `delegation ∪ stake_deregistration` (deregs as a NULL target, so
+    /// they break a run like any other change): `LAG` marks each target change, a running sum
+    /// numbers the runs, and the last run per credential is its current one. Ordering is
+    /// `(tx_id, cert_index)` — 112 mainnet credentials have a dereg and a delegation in the
+    /// same tx, and `tx_id` alone gets them wrong. `slot_no` is on `delegation` itself, so
+    /// nothing joins `tx`/`block` here. ~13 s on mainnet, paid once per cold reset.
     pub async fn pool_delegations(
         &self,
         last_tx_id: i64,
     ) -> Result<
         (
-            HashMap<Vec<u8>, Vec<u8>>,
+            HashMap<Vec<u8>, Delegation>,
             HashMap<Vec<u8>, HashSet<Vec<u8>>>,
         ),
         sqlx::Error,
     > {
-        // The deregistration anti-join is pushed *inside* the DISTINCT ON subquery
-        // (not applied after it): filtering out delegations that have a later
-        // deregistration before picking the latest per addr_id yields the same
-        // active delegation, but lets the planner use a Merge Anti Join (delegation
-        // ⋈ stake_deregistration in addr_id order) + Incremental Sort instead of a
-        // full sort of all ~3.5M delegations (reset 28s → ~7s).
         let mut rows = sqlx::query!(
-            r#"SELECT stake_address.hash_raw as stake_address, pool_hash.hash_raw as pool_id FROM
-                (SELECT DISTINCT ON (addr_id) *
-                    FROM delegation d
-                    WHERE d.tx_id <= $1
-                    AND NOT EXISTS
-                        (SELECT TRUE
-                            FROM stake_deregistration sd
-                            WHERE sd.tx_id <= $1
-                            AND sd.addr_id = d.addr_id
-                            AND sd.tx_id >= d.tx_id
-                        )
-                    ORDER BY addr_id, id DESC
-            ) delegation
-            JOIN stake_address ON stake_address.id = delegation.addr_id
-            JOIN pool_hash ON pool_hash.id = delegation.pool_hash_id"#,
+            r#"WITH ev AS (
+                SELECT addr_id, tx_id, cert_index, pool_hash_id AS target, slot_no::bigint AS slot
+                FROM delegation WHERE tx_id <= $1
+                UNION ALL
+                SELECT addr_id, tx_id, cert_index, NULL::bigint, NULL::bigint
+                FROM stake_deregistration WHERE tx_id <= $1
+            ), lagged AS (
+                SELECT addr_id, tx_id, cert_index, target, slot,
+                       (target IS DISTINCT FROM
+                        LAG(target) OVER (PARTITION BY addr_id ORDER BY tx_id, cert_index))::int
+                        AS brk
+                FROM ev
+            ), grouped AS (
+                SELECT addr_id, target, slot,
+                       SUM(brk) OVER (PARTITION BY addr_id ORDER BY tx_id, cert_index) AS grp
+                FROM lagged
+            ), runs AS (
+                SELECT addr_id, target, grp, MIN(slot) AS since_slot
+                FROM grouped GROUP BY addr_id, target, grp
+            ), cur AS (
+                SELECT DISTINCT ON (addr_id) addr_id, target, since_slot
+                FROM runs ORDER BY addr_id, grp DESC
+            )
+            SELECT sa.hash_raw AS "stake_address!", ph.hash_raw AS "pool_id!",
+                   cur.since_slot AS "since_slot!"
+            FROM cur
+            JOIN stake_address sa ON sa.id = cur.addr_id
+            JOIN pool_hash ph ON ph.id = cur.target"#,
             last_tx_id
         )
         .fetch(&self.db);
 
-        let mut delegations: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut delegations: HashMap<Vec<u8>, Delegation> = HashMap::new();
         let mut delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>> = HashMap::new();
         while let Some(row) = rows.try_next().await? {
             // db-sync hash_raw is 29 bytes (header + 28-byte credential); strip header
             let cred = row.stake_address[1..].to_vec();
-            delegations.insert(cred.clone(), row.pool_id.clone());
+            delegations.insert(
+                cred.clone(),
+                Delegation::new(&row.pool_id, row.since_slot.max(0) as u64),
+            );
             delegators.entry(row.pool_id).or_default().insert(cred);
         }
 
@@ -1271,44 +1292,65 @@ impl DbSync {
         Ok(deltas)
     }
 
+    /// Current DRep delegations as of `last_tx_id`, each with its run's start slot — the
+    /// `delegation_vote` twin of [`Self::pool_delegations`], same gaps-and-islands shape and
+    /// same "a re-delegation to the same DRep doesn't restart the run" rule.
+    ///
+    /// One difference that costs real time: `delegation_vote` has no `slot_no`, so the start
+    /// slot needs a `tx → block` hop. That join is done **once, set-based, on the surviving
+    /// ~280k rows at the end** — doing it per event inside the window pass is ~5× slower
+    /// against the 122M-row `tx` table.
     pub async fn drep_delegations(
         &self,
         last_tx_id: i64,
     ) -> Result<
         (
-            HashMap<Vec<u8>, Vec<u8>>,
+            HashMap<Vec<u8>, Delegation>,
             HashMap<Vec<u8>, HashSet<Vec<u8>>>,
         ),
         sqlx::Error,
     > {
-        // Deregistration anti-join pushed inside the DISTINCT ON subquery — see
-        // `pool_delegations` for the rationale (Merge Anti Join + Incremental Sort
-        // instead of a full sort of all delegation_vote rows).
         let mut rows = sqlx::query!(
-            r#"SELECT stake_address.hash_raw as stake_address,
-                drep_hash.raw as drep_raw,
-                drep_hash.has_script as drep_has_script,
-                drep_hash.view as drep_view
-            FROM
-                (SELECT DISTINCT ON (addr_id) *
-                    FROM delegation_vote dv
-                    WHERE dv.tx_id <= $1
-                    AND NOT EXISTS
-                        (SELECT TRUE
-                            FROM stake_deregistration sd
-                            WHERE sd.tx_id <= $1
-                            AND sd.addr_id = dv.addr_id
-                            AND sd.tx_id >= dv.tx_id
-                        )
-                    ORDER BY addr_id, id DESC
-                ) dv
-            JOIN stake_address ON stake_address.id = dv.addr_id
-            JOIN drep_hash ON drep_hash.id = dv.drep_hash_id"#,
+            r#"WITH ev AS (
+                SELECT addr_id, tx_id, cert_index, drep_hash_id AS target
+                FROM delegation_vote WHERE tx_id <= $1
+                UNION ALL
+                SELECT addr_id, tx_id, cert_index, NULL::bigint
+                FROM stake_deregistration
+                WHERE tx_id <= $1
+                  AND tx_id >= (SELECT MIN(tx_id) FROM delegation_vote)
+            ), lagged AS (
+                SELECT addr_id, tx_id, cert_index, target,
+                       (target IS DISTINCT FROM
+                        LAG(target) OVER (PARTITION BY addr_id ORDER BY tx_id, cert_index))::int
+                        AS brk
+                FROM ev
+            ), grouped AS (
+                SELECT addr_id, target, tx_id,
+                       SUM(brk) OVER (PARTITION BY addr_id ORDER BY tx_id, cert_index) AS grp
+                FROM lagged
+            ), runs AS (
+                SELECT addr_id, target, grp, MIN(tx_id) AS since_tx
+                FROM grouped GROUP BY addr_id, target, grp
+            ), cur AS (
+                SELECT DISTINCT ON (addr_id) addr_id, target, since_tx
+                FROM runs ORDER BY addr_id, grp DESC
+            )
+            SELECT sa.hash_raw AS "stake_address!",
+                   dh.raw AS drep_raw,
+                   dh.has_script AS "drep_has_script!",
+                   dh.view AS "drep_view!",
+                   b.slot_no AS "since_slot!"
+            FROM cur
+            JOIN stake_address sa ON sa.id = cur.addr_id
+            JOIN drep_hash dh ON dh.id = cur.target
+            JOIN tx t ON t.id = cur.since_tx
+            JOIN block b ON b.id = t.block_id"#,
             last_tx_id
         )
         .fetch(&self.db);
 
-        let mut delegations: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut delegations: HashMap<Vec<u8>, Delegation> = HashMap::new();
         let mut delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>> = HashMap::new();
         while let Some(row) = rows.try_next().await? {
             let drep_bytes = if row.drep_view.starts_with("drep_always_abstain") {
@@ -1323,7 +1365,10 @@ impl DbSync {
             };
             // db-sync hash_raw is 29 bytes (header + 28-byte credential); strip header
             let cred = row.stake_address[1..].to_vec();
-            delegations.insert(cred.clone(), drep_bytes.clone());
+            delegations.insert(
+                cred.clone(),
+                Delegation::new(&drep_bytes, row.since_slot.max(0) as u64),
+            );
             delegators.entry(drep_bytes).or_default().insert(cred);
         }
 

@@ -8,7 +8,7 @@ use url::Url;
 
 use crate::cip26;
 use crate::model::{
-    asset_fingerprint, parse_virtual_handle_address, DRep, DRepVotes, Pool, TxOutput,
+    asset_fingerprint, parse_virtual_handle_address, DRep, DRepVotes, Delegation, Pool, TxOutput,
     HANDLE_POLICIES,
 };
 use crate::pallas::{
@@ -24,9 +24,12 @@ pub struct BlockSnapshot {
     pub last_epoch: Option<u64>,
     pub utxos: HashMap<(Vec<u8>, i16), TxOutput>,
     pub pools: HashMap<String, Pool>,
-    pub pool_delegations: HashMap<Vec<u8>, Vec<u8>>,
+    /// Stake credential → the pool it backs + the slot its current run there began
+    /// (see [`Delegation`]).
+    pub pool_delegations: HashMap<Vec<u8>, Delegation>,
     pub pool_delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
-    pub drep_delegations: HashMap<Vec<u8>, Vec<u8>>,
+    /// Stake credential → the DRep it backs (tagged bytes) + its run's start slot.
+    pub drep_delegations: HashMap<Vec<u8>, Delegation>,
     pub drep_delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
     pub stakes: HashMap<Vec<u8>, i64>,
     pub rewards: HashMap<Vec<u8>, i64>,
@@ -460,15 +463,16 @@ impl BlockSnapshot {
         let rewards_b = sum_vec_i64(&self.rewards);
         let addr_bal_b = sum_vec_i64(&self.address_balances);
 
-        // delegations: Vec<u8> key -> Vec<u8> target
-        let sum_vec_vec = |m: &HashMap<Vec<u8>, Vec<u8>>| -> usize {
-            m.len() * size_of::<(Vec<u8>, Vec<u8>)>()
+        // delegations: Vec<u8> key -> Delegation { Box<[u8]> target, u64 since_slot }. The boxed
+        // target keeps the pair at the same 48 bytes a bare `Vec<u8>` value cost (see `Delegation`).
+        let sum_deleg = |m: &HashMap<Vec<u8>, Delegation>| -> usize {
+            m.len() * size_of::<(Vec<u8>, Delegation)>()
                 + m.iter()
-                    .map(|(k, v)| k.capacity() + v.capacity())
+                    .map(|(k, v)| k.capacity() + v.target.len())
                     .sum::<usize>()
         };
-        let pool_deleg_b = sum_vec_vec(&self.pool_delegations);
-        let drep_deleg_b = sum_vec_vec(&self.drep_delegations);
+        let pool_deleg_b = sum_deleg(&self.pool_delegations);
+        let drep_deleg_b = sum_deleg(&self.drep_delegations);
 
         // delegators: Vec<u8> key -> HashSet<Vec<u8>> members
         let sum_deleg_sets = |m: &HashMap<Vec<u8>, HashSet<Vec<u8>>>| -> (usize, usize) {
@@ -629,7 +633,7 @@ impl BlockSnapshot {
 /// became `mint_slot` — different semantics, so old leaves must rebuild. v9: `FeedIndex`
 /// gained `pool_votes`/`drep_votes` (governance vote-block index); rmp-serde encodes structs
 /// positionally, so the extra fields shift the layout and old snapshots must rebuild.
-const SNAPSHOT_FORMAT: u32 = 12;
+const SNAPSHOT_FORMAT: u32 = 13;
 
 /// Serializes [`BlockSnapshot::asset_holdings`] as a plain msgpack map with the key `(cred,
 /// addr)` **deref'd off its `Arc`** — so the wire form carries no `Arc` (no serde `rc`
@@ -1030,7 +1034,7 @@ pub fn stake_tile_diff(
 /// A delegation map plus its reverse index: `(cred -> target, target -> {creds})`.
 /// Returned by `apply_delegation_changes` for both pool and DRep delegations.
 type DelegationIndex = (
-    HashMap<Vec<u8>, Vec<u8>>,
+    HashMap<Vec<u8>, Delegation>,
     HashMap<Vec<u8>, HashSet<Vec<u8>>>,
 );
 
@@ -1321,7 +1325,7 @@ impl State {
     /// Σ over `pool_delegations` of `stakes[cred] + rewards[cred]` — the total live
     /// stake delegated to pools. The one-time full scan behind `total_staked`.
     fn sum_delegated_stake(
-        pool_delegations: &HashMap<Vec<u8>, Vec<u8>>,
+        pool_delegations: &HashMap<Vec<u8>, Delegation>,
         stakes: &HashMap<Vec<u8>, i64>,
         rewards: &HashMap<Vec<u8>, i64>,
     ) -> i64 {
@@ -1469,6 +1473,74 @@ impl State {
         tracing::info!(
             active = active.len(),
             "drep active_until backfilled from db-sync"
+        );
+    }
+
+    /// Backfill `Delegation::since_slot` from db-sync when resuming from a snapshot saved
+    /// before the field existed (every slot 0). `reset` gets it inline from the delegation
+    /// queries; thereafter `apply_delegation_changes` maintains it. Gated on all-zero, so a
+    /// populated snapshot is left untouched — and it re-runs the two full delegation queries,
+    /// so it only ever fires on that one transitional resume.
+    pub async fn populate_delegation_slots(&mut self) {
+        let needs = self
+            .history
+            .last()
+            .map(|s| {
+                !s.pool_delegations.is_empty()
+                    && s.pool_delegations.values().all(|d| d.since_slot == 0)
+            })
+            .unwrap_or(false);
+        if !needs {
+            return;
+        }
+        let Some(snap_slot) = self.history.last().map(|s| s.slot) else {
+            return;
+        };
+        let Some(db) = self.db().await else { return };
+        let last_tx_id = match db.slot_info(snap_slot).await {
+            Ok((id, _)) => id,
+            Err(e) => {
+                tracing::warn!("failed to resolve slot {snap_slot} for delegation slots: {e}");
+                return;
+            }
+        };
+        let pool = match db.pool_delegations(last_tx_id).await {
+            Ok((d, _)) => d,
+            Err(e) => {
+                tracing::warn!("failed to fetch pool delegation slots: {e}");
+                return;
+            }
+        };
+        let drep = match db.drep_delegations(last_tx_id).await {
+            Ok((d, _)) => d,
+            Err(e) => {
+                tracing::warn!("failed to fetch drep delegation slots: {e}");
+                return;
+            }
+        };
+        let Some(snap) = self.history.last_mut() else {
+            return;
+        };
+        // Only the slot is taken from db-sync: the target and the delegator sets stay as the
+        // snapshot has them (it is at the chain tip, db-sync may lag a few seconds).
+        let apply = |current: &mut HashMap<Vec<u8>, Delegation>,
+                     fresh: &HashMap<Vec<u8>, Delegation>| {
+            let keys: Vec<Vec<u8>> = current.keys().cloned().collect();
+            for key in keys {
+                let Some(slot) = fresh.get(&key).map(|d| d.since_slot) else {
+                    continue;
+                };
+                if let Some(d) = current.get_mut(&key) {
+                    d.since_slot = slot;
+                }
+            }
+        };
+        apply(&mut snap.pool_delegations, &pool);
+        apply(&mut snap.drep_delegations, &drep);
+        tracing::info!(
+            pool_delegations = pool.len(),
+            drep_delegations = drep.len(),
+            "delegation start slots backfilled from db-sync"
         );
     }
 
@@ -2082,12 +2154,14 @@ impl State {
             &prev.pool_delegations,
             &prev.pool_delegators,
             pool_delegation_changes,
+            slot,
         );
 
         let (drep_delegations, drep_delegators) = Self::apply_delegation_changes(
             &prev.drep_delegations,
             &prev.drep_delegators,
             drep_delegation_changes,
+            slot,
         );
 
         // Cloned every block (cheap, O(1) structural share) since the issuer's lifetime
@@ -2228,7 +2302,7 @@ impl State {
     /// (deregistration) subtracts it, and re-delegation pool→pool is a no-op. Valued
     /// at the post-block `stakes`/`rewards`. Pure — unit-tested.
     fn delegation_stake_delta(
-        prev_pool_delegations: &HashMap<Vec<u8>, Vec<u8>>,
+        prev_pool_delegations: &HashMap<Vec<u8>, Delegation>,
         pool_delegation_changes: &[(Vec<u8>, Option<Vec<u8>>)],
         stakes: &HashMap<Vec<u8>, i64>,
         rewards: &HashMap<Vec<u8>, i64>,
@@ -2251,10 +2325,17 @@ impl State {
         delta
     }
 
+    /// Apply this block's delegation certs to the forward map and its reverse index.
+    ///
+    /// `slot` is the block's slot, used to stamp [`Delegation::since_slot`] when a credential
+    /// *starts* a run with a target: re-delegating to the target you're already on carries the
+    /// old slot over (that's not a new run), while switching targets — or returning after a
+    /// deregistration, which arrives as `(cred, None)` and drops the entry — restamps it.
     fn apply_delegation_changes(
-        prev_delegations: &HashMap<Vec<u8>, Vec<u8>>,
+        prev_delegations: &HashMap<Vec<u8>, Delegation>,
         prev_delegators: &HashMap<Vec<u8>, HashSet<Vec<u8>>>,
         changes: &[(Vec<u8>, Option<Vec<u8>>)],
+        slot: u64,
     ) -> DelegationIndex {
         if changes.is_empty() {
             return (prev_delegations.clone(), prev_delegators.clone());
@@ -2262,13 +2343,18 @@ impl State {
         let mut delegations = prev_delegations.clone();
         let mut delegators = prev_delegators.clone();
         for (stake_addr, maybe_target) in changes {
-            if let Some(old_target) = delegations.remove(stake_addr) {
-                if let Some(set) = delegators.get_mut(&old_target) {
+            let old = delegations.remove(stake_addr);
+            if let Some(old) = &old {
+                if let Some(set) = delegators.get_mut(old.target.as_ref()) {
                     set.remove(stake_addr);
                 }
             }
             if let Some(target) = maybe_target {
-                delegations.insert(stake_addr.clone(), target.clone());
+                let since_slot = match &old {
+                    Some(old) if old.target.as_ref() == target.as_slice() => old.since_slot,
+                    _ => slot,
+                };
+                delegations.insert(stake_addr.clone(), Delegation::new(target, since_slot));
                 delegators
                     .entry(target.clone())
                     .or_default()
@@ -2797,7 +2883,7 @@ mod tests {
 
         // A already delegates to `pool`; B does not yet.
         let mut prev_delegations = HashMap::new();
-        prev_delegations.insert(cred_a.clone(), pool.clone());
+        prev_delegations.insert(cred_a.clone(), Delegation::new(&pool, 0));
 
         // New delegation: B enters the set → +(stake + rewards) = +30.
         let changes = vec![(cred_b.clone(), Some(pool.clone()))];
@@ -2826,6 +2912,56 @@ mod tests {
             State::delegation_stake_delta(&prev_delegations, &changes, &stakes, &rewards),
             0
         );
+    }
+
+    /// `Delegation::since_slot` marks the start of a credential's *current uninterrupted run*
+    /// with a target: re-delegating to the same target carries it over, switching away — or a
+    /// deregistration followed by a return — restamps it to the block that started the new run.
+    #[test]
+    fn delegation_since_slot_tracks_the_current_run() {
+        let cred = vec![0xaa; 28];
+        let pool_p = vec![0x01; 28];
+        let pool_q = vec![0x02; 28];
+        let empty_delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>> = HashMap::new();
+        let since = |m: &HashMap<Vec<u8>, Delegation>| m.get(&cred).map(|d| d.since_slot);
+        let target = |m: &HashMap<Vec<u8>, Delegation>| m.get(&cred).map(|d| d.target.to_vec());
+
+        // First delegation at slot 100: the run starts here.
+        let (d1, r1) = State::apply_delegation_changes(
+            &HashMap::new(),
+            &empty_delegators,
+            &[(cred.clone(), Some(pool_p.clone()))],
+            100,
+        );
+        assert_eq!(since(&d1), Some(100));
+        assert_eq!(target(&d1), Some(pool_p.clone()));
+
+        // Re-delegating to the SAME pool at slot 200 is not a new run — the clock doesn't move.
+        let (d2, r2) =
+            State::apply_delegation_changes(&d1, &r1, &[(cred.clone(), Some(pool_p.clone()))], 200);
+        assert_eq!(since(&d2), Some(100));
+
+        // Switching to another pool at slot 300 starts a new run.
+        let (d3, r3) =
+            State::apply_delegation_changes(&d2, &r2, &[(cred.clone(), Some(pool_q.clone()))], 300);
+        assert_eq!(since(&d3), Some(300));
+        assert_eq!(target(&d3), Some(pool_q.clone()));
+
+        // Coming back to the first pool at slot 400 restamps too (the run was broken).
+        let (d4, r4) =
+            State::apply_delegation_changes(&d3, &r3, &[(cred.clone(), Some(pool_p.clone()))], 400);
+        assert_eq!(since(&d4), Some(400));
+
+        // A deregistration arrives as `(cred, None)`: the entry is dropped…
+        let (d5, r5) = State::apply_delegation_changes(&d4, &r4, &[(cred.clone(), None)], 500);
+        assert_eq!(since(&d5), None);
+        // …so re-delegating to the very same pool afterwards starts a fresh run.
+        let (d6, _) =
+            State::apply_delegation_changes(&d5, &r5, &[(cred.clone(), Some(pool_p.clone()))], 600);
+        assert_eq!(since(&d6), Some(600));
+
+        // The reverse index follows the target, and the old set is left empty (not pruned).
+        assert!(d6.len() == 1 && r4.get(&pool_q).unwrap().is_empty());
     }
 
     /// One fake block that touches **every** value `apply_block` maintains, then a rollback.
@@ -2910,15 +3046,17 @@ mod tests {
         initial.stakes.insert(cred_b.clone(), 50);
         initial.rewards.insert(cred_a.clone(), 5);
         initial.rewards.insert(cred_b.clone(), 2);
+        // cred_a has been on pool_p since slot 42 — the block below moves it to pool_q, which
+        // must restamp the run to the block's slot.
         initial
             .pool_delegations
-            .insert(cred_a.clone(), pool_p.clone());
+            .insert(cred_a.clone(), Delegation::new(&pool_p, 42));
         initial
             .pool_delegators
             .insert(pool_p.clone(), set(&[&cred_a]));
         initial
             .drep_delegations
-            .insert(cred_a.clone(), drep_x.clone());
+            .insert(cred_a.clone(), Delegation::new(&drep_x, 42));
         initial
             .drep_delegators
             .insert(drep_x.clone(), set(&[&cred_a]));
@@ -3054,9 +3192,17 @@ mod tests {
         assert_eq!(pp.retiring_epoch, Some(15));
         assert_eq!(pp.pledge, Decimal::from(1500u64));
 
-        // Pool delegations / delegators / live stake.
-        assert_eq!(cur.pool_delegations.get(&cred_a), Some(&pool_q));
-        assert_eq!(cur.pool_delegations.get(&cred_c), Some(&pool_q));
+        // Pool delegations / delegators / live stake. Both credentials start a run with
+        // pool_q in this block, so both are stamped with its slot (cred_a's old slot 42 is
+        // dropped — it switched pools).
+        assert_eq!(
+            cur.pool_delegations.get(&cred_a),
+            Some(&Delegation::new(&pool_q, 200))
+        );
+        assert_eq!(
+            cur.pool_delegations.get(&cred_c),
+            Some(&Delegation::new(&pool_q, 200))
+        );
         let q_del = cur.pool_delegators.get(&pool_q).unwrap();
         assert!(q_del.len() == 2 && q_del.contains(&cred_a) && q_del.contains(&cred_c));
         assert!(cur.pool_delegators.get(&pool_p).unwrap().is_empty());
@@ -3065,7 +3211,10 @@ mod tests {
 
         // DRep delegations / delegators / live stake.
         assert_eq!(cur.drep_delegations.get(&cred_a), None);
-        assert_eq!(cur.drep_delegations.get(&cred_b), Some(&drep_x));
+        assert_eq!(
+            cur.drep_delegations.get(&cred_b),
+            Some(&Delegation::new(&drep_x, 200))
+        );
         let x_del = cur.drep_delegators.get(&drep_x).unwrap();
         assert!(x_del.len() == 1 && x_del.contains(&cred_b));
         assert_eq!(State::drep_live_stake(cur, &drep_x), Some(41)); // 40 + 1

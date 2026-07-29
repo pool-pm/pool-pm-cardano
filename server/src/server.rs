@@ -29,6 +29,7 @@ use crate::nftcdn::{rung_for_dpr, NftcdnConfig, SIZE_LADDER};
 use crate::og;
 
 mod assets;
+mod delegators;
 mod subject;
 use subject::*;
 mod decode;
@@ -82,8 +83,18 @@ fn slot_to_timestamp(slot: u64, genesis: &GenesisConfig) -> u64 {
         + slot.saturating_sub(genesis.shelley_known_slot) * genesis.shelley_slot_length as u64
 }
 
+/// The epoch a slot falls in — `State::epoch_for_slot` against the server's `GenesisConfig`
+/// (the state helper takes Oura's `GenesisValues`). Used to show the epoch a delegation
+/// started in, from the slot the snapshot stores.
+fn epoch_for_slot(slot: u64, genesis: &GenesisConfig) -> u64 {
+    let shelley_start_epoch = genesis.shelley_known_slot * genesis.byron_slot_length as u64
+        / genesis.byron_epoch_length as u64;
+    shelley_start_epoch
+        + slot.saturating_sub(genesis.shelley_known_slot) / genesis.shelley_epoch_length as u64
+}
+
 /// First slot of a (Shelley) epoch — the epoch-change boundary. Inverse of
-/// `State::epoch_for_slot`; used to position per-epoch reward items on the feed.
+/// `epoch_for_slot`; used to position per-epoch reward items on the feed.
 fn slot_for_epoch(epoch: u64, genesis: &GenesisConfig) -> u64 {
     let shelley_start_epoch = genesis.shelley_known_slot * genesis.byron_slot_length as u64
         / genesis.byron_epoch_length as u64;
@@ -241,7 +252,10 @@ fn pool_drep_info(
     Option<String>,
     Option<String>,
 ) {
-    let (pool_id, pool_ticker) = match snap.and_then(|s| s.pool_delegations.get(cred)) {
+    let (pool_id, pool_ticker) = match snap
+        .and_then(|s| s.pool_delegations.get(cred))
+        .map(|d| &d.target)
+    {
         Some(hash) => {
             let ticker = snap
                 .and_then(|s| s.pools.get(&hex::encode(hash)))
@@ -250,13 +264,16 @@ fn pool_drep_info(
         }
         None => (None, None),
     };
-    let (drep_id, drep_name) = match snap.and_then(|s| s.drep_delegations.get(cred)) {
+    let (drep_id, drep_name) = match snap
+        .and_then(|s| s.drep_delegations.get(cred))
+        .map(|d| &d.target)
+    {
         Some(bytes) => {
             let name = match bytes.first() {
                 Some(0x02) => Some("Always Abstain".to_string()),
                 Some(0x03) => Some("Always No Confidence".to_string()),
                 _ => snap
-                    .and_then(|s| s.dreps.get(bytes))
+                    .and_then(|s| s.dreps.get(bytes.as_ref()))
                     .and_then(|d| d.given_name.clone()),
             };
             (Some(drep_bech32_id(bytes)), name)
@@ -348,6 +365,16 @@ fn asset_delta_event(
 /// decide whether to re-emit the info header. Different filter kinds use
 /// different subsets: Pool tracks `(pool, balance)`; DRep tracks `(balance, votes)`;
 /// Stake / Address track `(balance, assets_count)`.
+/// Which live grid deltas a connection derives, on top of the subject-header re-emits:
+/// the assets page diffs its holdings, the delegators page its delegator set, an ordinary
+/// feed neither.
+#[derive(Clone, Copy, PartialEq)]
+enum LiveTiles {
+    None,
+    Assets,
+    Delegators,
+}
+
 #[derive(Default, Clone)]
 struct LiveState {
     pool: Option<Pool>,
@@ -370,9 +397,8 @@ fn build_live_stream(
     // Genesis params for `slot_for_epoch` when re-emitting a pool's current-epoch block count
     // (captured by the `move` closure below; `GenesisConfig` is `Copy`).
     genesis: GenesisConfig,
-    // True for the assets-page endpoint: this connection also emits live grid tile
-    // deltas (derived by diffing its subject's holdings between snapshots).
-    wants_tiles: bool,
+    // Which live grid deltas this connection derives on top of the header re-emits.
+    tiles: LiveTiles,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> {
     futures::stream::unfold(
         (
@@ -385,7 +411,7 @@ fn build_live_stream(
             nftcdn,
             mainnet,
             None::<crate::state::AssetHoldings>,
-            wants_tiles,
+            (tiles, None::<delegators::LiveDelegators>),
         ),
         move |(
             mut rx,
@@ -397,7 +423,7 @@ fn build_live_stream(
             nftcdn,
             mainnet,
             mut prev_holdings,
-            wants_tiles,
+            (tiles, mut prev_delegators),
         )| async move {
             loop {
                 if let Some(sse) = buf.pop_front() {
@@ -413,7 +439,7 @@ fn build_live_stream(
                             nftcdn,
                             mainnet,
                             prev_holdings,
-                            wants_tiles,
+                            (tiles, prev_delegators),
                         ),
                     ));
                 }
@@ -525,7 +551,7 @@ fn build_live_stream(
                     // Live grid tile deltas for an open assets page: diff this subject's
                     // holdings against the previous snapshot. A rollback is just the
                     // corrective diff (curr = the reverted snapshot), so no special case.
-                    if wants_tiles {
+                    if tiles == LiveTiles::Assets {
                         let slot = match &event {
                             crate::event::Event::Block { slot, .. }
                             | crate::event::Event::Rollback { slot } => *slot,
@@ -590,6 +616,23 @@ fn build_live_stream(
                             prev_holdings = Some(curr);
                         }
                     }
+
+                    // Live tiles for an open delegators grid: the block's own credentials,
+                    // checked against the subject's delegator set before and after.
+                    if tiles == LiveTiles::Delegators {
+                        if let Some(sse) = delegators::delegator_delta_event(
+                            &event,
+                            &filter,
+                            &chain_state,
+                            &mut prev_delegators,
+                            mainnet,
+                            &genesis,
+                        )
+                        .await
+                        {
+                            buf.push_back(sse);
+                        }
+                    }
                 }
 
                 // Filter under the read lock: `filter_event` is synchronous (no await), so
@@ -616,7 +659,7 @@ fn build_live_stream(
                             nftcdn,
                             mainnet,
                             prev_holdings,
-                            wants_tiles,
+                            (tiles, prev_delegators),
                         ),
                     ));
                 }
@@ -1507,7 +1550,7 @@ async fn filtered_events(
         state.nftcdn.clone(),
         state.mainnet,
         state.genesis,
-        false, // regular feed: header/count only, no grid tiles
+        LiveTiles::None, // regular feed: header/count only, no grid tiles
     );
     let stream = replay.chain(live);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
@@ -1595,7 +1638,84 @@ async fn asset_feed_events(
         state.nftcdn.clone(),
         state.mainnet,
         state.genesis,
-        true, // assets page: emit live grid tile deltas via per-block holdings diff
+        LiveTiles::Assets, // emit live grid tile deltas via per-block holdings diff
+    );
+    let stream = replay.chain(live);
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// SSE feed backing the delegators page (`/<pool|drep>/delegators`). The delegators-grid
+/// twin of `asset_feed_events`: `Config` + the pool/DRep header (so the page shows the
+/// subject's ticker/name, live stake and counts, and re-emits them as they change), then
+/// the shared live stream carrying `DelegatorDelta` events. The grid loads its tiles over
+/// HTTP (`/api/delegators`), so no tx replay or snapshot is sent. Only pool/DRep feeds have
+/// delegators; stake/address ids return 400.
+async fn delegator_feed_events(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(feed_id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<SseQuery>,
+) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, StatusCode> {
+    info!("/events/{feed_id}/delegators");
+    let size = rung_for_dpr(query.dpr.unwrap_or(1.0));
+    let filter = filter::FeedFilter::from_path(&feed_id).ok_or(StatusCode::BAD_REQUEST)?;
+    if !matches!(
+        filter,
+        filter::FeedFilter::Pool(_) | filter::FeedFilter::DRep(_)
+    ) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    // Subscribe for live events; the snapshot (tx history) is intentionally dropped.
+    let (_snapshot, rx) = state.bus.subscribe().await;
+
+    let config = config_event(state.nftcdn.subdomain, &state.genesis, state.magic);
+    let (header, initial_live) = {
+        let guard = state.chain_state.read().await;
+        let snap = guard.current();
+        match &filter {
+            filter::FeedFilter::Pool(hash) => {
+                let epoch = snap.and_then(|s| s.last_epoch).unwrap_or(0);
+                let epoch_blocks =
+                    pool_epoch_blocks(&guard.feed_index, hash, epoch, &state.genesis);
+                let pool = snap.and_then(|s| s.pools.get(&hex::encode(hash)).cloned());
+                let header = pool
+                    .as_ref()
+                    .map(|p| pool_sse_event(p, snap, epoch, epoch_blocks));
+                let balance = snap.and_then(|s| State::pool_live_stake(s, hash));
+                (
+                    header,
+                    LiveState {
+                        pool,
+                        balance,
+                        assets_count: None,
+                        votes: None,
+                    },
+                )
+            }
+            filter::FeedFilter::DRep(bytes) => (
+                Some(drep_sse_event(bytes, snap)),
+                LiveState {
+                    pool: None,
+                    balance: snap.and_then(|s| State::drep_live_stake(s, bytes)),
+                    assets_count: None,
+                    votes: Some(drep_vote_counts(snap, bytes)),
+                },
+            ),
+            // Guarded above: only Pool / DRep feeds reach here.
+            _ => unreachable!(),
+        }
+    };
+
+    let replay = futures::stream::iter(std::iter::once(config).chain(header));
+    let live = build_live_stream(
+        rx,
+        filter,
+        state.chain_state.clone(),
+        initial_live,
+        size,
+        state.nftcdn.clone(),
+        state.mainnet,
+        state.genesis,
+        LiveTiles::Delegators,
     );
     let stream = replay.chain(live);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
@@ -1778,10 +1898,15 @@ pub async fn serve(config: ServeConfig) {
         .fallback(cards::og_page)
         .route("/events", get(events))
         .route("/events/{feed_id}/assets", get(asset_feed_events))
+        .route("/events/{feed_id}/delegators", get(delegator_feed_events))
         .route("/events/{feed_id}", get(filtered_events))
         .route("/api/asset/{fingerprint}", get(assets::asset_media))
         .route("/api/policy/{policy_id}", get(assets::policy_assets))
         .route("/api/assets/{feed_id}", get(assets::owned_assets))
+        .route(
+            "/api/delegators/{feed_id}",
+            get(delegators::subject_delegators),
+        )
         .route(
             "/api/assets/{feed_id}/{policy}",
             get(assets::owned_assets_by_policy),

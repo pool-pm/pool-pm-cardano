@@ -301,7 +301,7 @@ type HeldList = Vec<(Vec<u8>, Vec<u8>, u128, u32)>;
 
 /// Sort direction from the `?order=` query param. Defaults to descending (highest quantity /
 /// newest mint first); `?order=asc` reverses it.
-fn is_descending(order: &Option<String>) -> bool {
+pub(super) fn is_descending(order: &Option<String>) -> bool {
     order.as_deref() != Some("asc")
 }
 

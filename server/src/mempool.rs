@@ -345,7 +345,7 @@ pub fn extract_delegations(
             let (from_pool_id, from_ticker) = if has_pool {
                 snap.pool_delegations
                     .get(&cred_bytes)
-                    .map(|h| resolve_pool(h))
+                    .map(|d| resolve_pool(&d.target))
                     .unwrap_or((None, None))
             } else {
                 (None, None)
@@ -359,7 +359,7 @@ pub fn extract_delegations(
             let (from_drep_id, from_drep_name) = if has_drep {
                 snap.drep_delegations
                     .get(&cred_bytes)
-                    .map(|h| resolve_drep(h, snap))
+                    .map(|d| resolve_drep(&d.target, snap))
                     .unwrap_or((None, None))
             } else {
                 (None, None)

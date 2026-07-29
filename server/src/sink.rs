@@ -350,7 +350,7 @@ impl Worker {
 
                     // Skip same-pool re-delegation
                     if let (Some(from), Some(to)) = (from_pool, &cert.target_pool) {
-                        if from == to {
+                        if from.target.as_ref() == to.as_slice() {
                             continue;
                         }
                     }
@@ -365,7 +365,7 @@ impl Worker {
                         tx_hash: cert.tx_hash.clone(),
                         cred: cert.cred_bytes.clone(),
                         live_stake,
-                        from: from_pool.cloned(),
+                        from: from_pool.map(|d| d.target.to_vec()),
                         to: cert.target_pool.clone(),
                     });
                 }
@@ -379,7 +379,7 @@ impl Worker {
 
                     // Skip same-drep re-delegation
                     if let (Some(from), Some(to)) = (from_drep, &cert.target_drep) {
-                        if from == to {
+                        if from.target.as_ref() == to.as_slice() {
                             continue;
                         }
                     }
@@ -394,7 +394,7 @@ impl Worker {
                         tx_hash: cert.tx_hash.clone(),
                         cred: cert.cred_bytes.clone(),
                         live_stake,
-                        from: from_drep.cloned(),
+                        from: from_drep.map(|d| d.target.to_vec()),
                         to: cert.target_drep.clone(),
                     });
                 }

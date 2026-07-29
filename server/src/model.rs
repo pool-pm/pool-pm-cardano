@@ -60,6 +60,36 @@ pub struct DRep {
     pub active_until: Option<i64>,
 }
 
+/// A stake credential's current delegation: the target it backs, plus the slot at which its
+/// **current uninterrupted run** with that target began.
+///
+/// A re-delegation cert to the same target carries `since_slot` over — delegating again to the
+/// pool/DRep you're already on doesn't reset the clock; only switching away, or a stake
+/// deregistration followed by a return, restamps it. The slot (not the epoch) is stored so the
+/// exact moment survives: the epoch is derived on demand with `State::epoch_for_slot` and the
+/// wall-clock time with `slot_to_timestamp`.
+///
+/// `target` is a `Box<[u8]>` rather than a `Vec<u8>` deliberately: the hash is fixed-size, so
+/// `Vec`'s capacity word is dead weight, and dropping it pays for `since_slot` exactly — the map
+/// entry stays the same 48 bytes it was when the value was a bare `Vec<u8>` (24 B key + 24 B
+/// value), over ~1.7M entries. Same reasoning as the boxed asset ids in `asset_holdings`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Delegation {
+    /// Pool hash (28 B) or tagged DRep bytes (1 + 28 B).
+    pub target: Box<[u8]>,
+    /// Slot of the first cert of the current run; 0 = unknown (pre-backfill snapshot).
+    pub since_slot: u64,
+}
+
+impl Delegation {
+    pub fn new(target: &[u8], since_slot: u64) -> Self {
+        Self {
+            target: target.into(),
+            since_slot,
+        }
+    }
+}
+
 /// Governance votes cast by a DRep — the DRep-feed counterpart of `Pool::blocks` +
 /// the pool's current-epoch block count.
 ///

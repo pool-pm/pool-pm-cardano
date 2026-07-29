@@ -378,10 +378,10 @@ pub fn block_stake_change_magnitudes(
             std::collections::HashMap::new();
         let mut add = |cred: &[u8], amt: i64| {
             if let Some(p) = snap.pool_delegations.get(cred) {
-                *pool_net.entry(p.clone()).or_default() += amt;
+                *pool_net.entry(p.target.to_vec()).or_default() += amt;
             }
             if let Some(d) = snap.drep_delegations.get(cred) {
-                *drep_net.entry(d.clone()).or_default() += amt;
+                *drep_net.entry(d.target.to_vec()).or_default() += amt;
             }
         };
         for out in &tx.outputs {
