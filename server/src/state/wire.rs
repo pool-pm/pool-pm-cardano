@@ -7,8 +7,7 @@
 //! `#[serde(with = "…")]`.
 //!
 //! This only changes the wire: the in-memory types stay `Vec<u8>` / `Box<[u8]>`, so lookups,
-//! hashing and every call site are untouched. Readers accept **either** encoding, so a snapshot
-//! written before this needs no format bump and no cold reset.
+//! hashing and every call site are untouched.
 
 use imbl::{hashmap::HashMap, hashset::HashSet};
 use serde::de::{Deserializer, MapAccess, SeqAccess, Visitor};
@@ -18,14 +17,13 @@ use serde::Deserialize;
 /// The reverse index shape: subject bytes → the set of credential bytes under it.
 type ByteKeySets = HashMap<Vec<u8>, HashSet<Vec<u8>>>;
 
-/// Accepts a byte string as `bin` (what we write) or as a sequence of integers (what a plain
-/// `Vec<u8>` used to produce).
+/// Reads a byte string written as msgpack `bin`.
 struct BytesVisitor;
 
-impl<'de> Visitor<'de> for BytesVisitor {
+impl Visitor<'_> for BytesVisitor {
     type Value = Vec<u8>;
     fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str("a byte string (msgpack bin, or a sequence of bytes)")
+        f.write_str("a byte string (msgpack bin)")
     }
     fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Vec<u8>, E> {
         Ok(v.to_vec())
@@ -33,21 +31,13 @@ impl<'de> Visitor<'de> for BytesVisitor {
     fn visit_byte_buf<E: serde::de::Error>(self, v: Vec<u8>) -> Result<Vec<u8>, E> {
         Ok(v)
     }
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
-        let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(32));
-        while let Some(b) = seq.next_element::<u8>()? {
-            out.push(b);
-        }
-        Ok(out)
-    }
 }
 
-/// msgpack is self-describing, so `deserialize_any` is what lets one reader take both shapes.
 fn read_bytes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-    d.deserialize_any(BytesVisitor)
+    d.deserialize_byte_buf(BytesVisitor)
 }
 
-/// A byte string as a map key or set member, read permissively.
+/// A byte string as a map key or set member.
 struct Bytes(Vec<u8>);
 
 impl<'de> Deserialize<'de> for Bytes {
@@ -176,10 +166,10 @@ pub mod boxed_bytes {
 mod tests {
     use super::*;
 
-    /// The point of the permissive reader: a snapshot written before this change encoded byte
-    /// strings as sequences of integers, and must still load.
+    /// The point of the whole module: `bin` is smaller than the integer array a plain `Vec<u8>`
+    /// produces, and a map written through it round-trips.
     #[test]
-    fn reads_both_encodings() {
+    fn byte_keys_go_on_the_wire_as_bin() {
         #[derive(serde::Serialize)]
         struct OldShape {
             // plain Vec<u8> — what rmp-serde turns into an array of integers
@@ -209,9 +199,7 @@ mod tests {
             old_bytes.len()
         );
 
-        for (label, bytes) in [("old", old_bytes), ("new", new_bytes)] {
-            let got: NewShape = rmp_serde::from_slice(&bytes).unwrap();
-            assert_eq!(got.map.get(&key), Some(&42), "{label} encoding must load");
-        }
+        let got: NewShape = rmp_serde::from_slice(&new_bytes).unwrap();
+        assert_eq!(got.map.get(&key), Some(&42));
     }
 }
