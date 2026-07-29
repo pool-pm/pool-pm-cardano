@@ -2,6 +2,7 @@
 //! User-Agents to `og_page`; humans get the SPA. The pure card model + HTML
 //! renderer + formatters live in `crate::og`.
 use super::*;
+use axum::response::IntoResponse;
 
 /// axum fallback: a social-card HTML document for any page path. The Host header gives the
 /// absolute base for `og:url` / `og:image` (works across pool.pm / preprod / preview).
@@ -9,20 +10,28 @@ pub(super) async fn og_page(
     axum::extract::State(state): axum::extract::State<AppState>,
     headers: axum::http::HeaderMap,
     uri: axum::http::Uri,
-) -> axum::response::Html<String> {
+) -> axum::response::Response {
+    // A machine endpoint that didn't match a route is a 404, not a card. An `/events/…` shape
+    // we don't serve (an old link, a stray sub-path, a trailing slash) would otherwise answer
+    // an EventSource with 200 `text/html`, which it treats as a hard failure — and a client
+    // that reconnects on error then retries that dead URL forever. Same for `/api/…`, where a
+    // caller would try to parse the card as JSON.
+    let path = uri.path().trim_start_matches('/');
+    if path == "events" || path.starts_with("events/") || path.starts_with("api/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let host = headers
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("pool.pm");
     let base_url = format!("https://{host}");
-    let path = uri.path().trim_start_matches('/');
     let url = if path.is_empty() {
         format!("{base_url}/")
     } else {
         format!("{base_url}/{path}")
     };
     let card = build_card(&state, &base_url, path).await;
-    axum::response::Html(og::render(&card, &url))
+    axum::response::Html(og::render(&card, &url)).into_response()
 }
 
 /// Pick the card for a page path, mirroring the frontend's route parsing (`App.svelte`).

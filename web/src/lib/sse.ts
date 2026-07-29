@@ -25,6 +25,17 @@ function sectionSlot(sec: Section): number {
 let source: EventSource | null = null;
 let pendingPrune = new Set<string>();
 
+// Reconnection backoff. The browser gives up for good on a *hard* failure — a non-200, or a
+// 200 that isn't `text/event-stream` — so we reconnect ourselves; that's what brings feeds
+// back after a deploy, when nginx answers 502 while the server restarts. But a URL that can
+// never stream (an old link with a stray sub-path, say, which the server answers with the
+// crawler page) would then be retried at a fixed 3s forever, so the delay doubles up to a
+// cap and resets once a connection actually opens.
+const SSE_RETRY_MIN_MS = 3000;
+const SSE_RETRY_MAX_MS = 30000;
+let retryDelay = SSE_RETRY_MIN_MS;
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
 // The assets grid registers a single handler here to receive live asset deltas (it
 // loads its initial page over HTTP and isn't a store consumer).
 let assetLiveHandler: ((e: AssetDelta) => void) | null = null;
@@ -380,14 +391,23 @@ export function connectSSE(url: string): void {
     }
   };
 
+  // A connection that opened and streamed is healthy: any later drop starts backing off
+  // from the minimum again.
+  source.onopen = () => {
+    retryDelay = SSE_RETRY_MIN_MS;
+  };
+
   source.onerror = () => {
     source?.close();
     source = null;
-    setTimeout(() => connectSSE(url), 3000);
+    const delay = retryDelay;
+    retryDelay = Math.min(retryDelay * 2, SSE_RETRY_MAX_MS);
+    retryTimer = setTimeout(() => connectSSE(url), delay);
   };
 }
 
 export function disconnectSSE(): void {
+  clearTimeout(retryTimer);
   source?.close();
   source = null;
 }

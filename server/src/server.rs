@@ -1925,3 +1925,31 @@ pub async fn serve(config: ServeConfig) {
         .await
         .unwrap_or_else(|e| panic!("SSE server on {addr} stopped with error: {e}"));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The route table is built inside `serve()`, which needs a node socket — so it can only
+    /// be exercised on a real deployment, and axum *panics at registration* on a conflicting
+    /// pattern. Register the same paths on a bare router here, so a bad combination fails in
+    /// `cargo test` rather than at startup in production. Keep in sync with `serve()`.
+    #[test]
+    fn route_patterns_do_not_conflict() {
+        let stub = get(|| async { StatusCode::NOT_FOUND });
+        let _: Router = Router::new()
+            .fallback(|| async { StatusCode::NOT_FOUND })
+            .route("/events", stub.clone())
+            .route("/events/{feed_id}/assets", stub.clone())
+            .route("/events/{feed_id}/delegators", stub.clone())
+            .route("/events/{feed_id}", stub.clone())
+            .route("/api/asset/{fingerprint}", stub.clone())
+            .route("/api/policy/{policy_id}", stub.clone())
+            .route("/api/assets/{feed_id}", stub.clone())
+            .route("/api/delegators/{feed_id}", stub.clone())
+            .route("/api/assets/{feed_id}/{policy}", stub.clone())
+            .route("/api/feed/{feed_id}/older", stub.clone())
+            .route("/api/search", stub.clone())
+            .route("/api/handle/{name}", stub);
+    }
+}
