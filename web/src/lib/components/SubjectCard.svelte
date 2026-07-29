@@ -41,8 +41,14 @@
   <div class="subject-card" class:landscape style:--subject-color={color}>
     <span class="pool-name" style:color>{formatTicker(pool.ticker ?? pool.pool_id.slice(5, 10))}</span>
     <span class="pool-stake">{formatAda(pool.live_stake)}</span>
+    <!-- The delegator count opens the delegators grid (nothing to show at zero). -->
     <span class="pool-delegators">
-      {pool.delegators.toLocaleString()} delegators · {pool.blocks.toLocaleString()} blocks
+      {#if pool.delegators > 0}
+        <a class="delegators-link" href="/{pool.pool_id}/delegators">{pool.delegators.toLocaleString()} delegators</a>
+      {:else}
+        {pool.delegators.toLocaleString()} delegators
+      {/if}
+      · {pool.blocks.toLocaleString()} blocks
     </span>
     <div class="pool-params pool-stats">
       <div class="pool-param">
@@ -66,7 +72,12 @@
     <span class="pool-stake">{formatAda(drep.live_stake)}</span>
     <!-- Votes are to a DRep what minted blocks are to a pool — same line, same shape. -->
     <span class="pool-delegators">
-      {drep.delegators.toLocaleString()} delegators · {drep.votes.toLocaleString()}
+      {#if drep.delegators > 0}
+        <a class="delegators-link" href="/{drep.drep_id}/delegators">{drep.delegators.toLocaleString()} delegators</a>
+      {:else}
+        {drep.delegators.toLocaleString()} delegators
+      {/if}
+      · {(drep.votes ?? 0).toLocaleString()}
       vote{drep.votes === 1 ? '' : 's'}
     </span>
   </div>
@@ -278,6 +289,17 @@
      address/stake cards); dim slightly on hover to hint it's clickable. */
   a.pool-stake:hover {
     opacity: 0.8;
+  }
+
+  /* The delegator count is a link to the delegators grid; it wears the muted text colour
+     until hover, like the other stat links on this card. */
+  .delegators-link {
+    color: inherit;
+    text-decoration: none;
+  }
+  .delegators-link:hover {
+    color: #fff;
+    text-decoration: underline;
   }
 
   .pool-delegators {

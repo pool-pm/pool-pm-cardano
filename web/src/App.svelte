@@ -4,6 +4,7 @@
   import Feed from './lib/components/Feed.svelte';
   import AssetPage from './lib/components/AssetPage.svelte';
   import AssetsGrid from './lib/components/AssetsGrid.svelte';
+  import DelegatorsGrid from './lib/components/DelegatorsGrid.svelte';
   import SearchBar from './lib/components/SearchBar.svelte';
   import HandleRedirect from './lib/components/HandleRedirect.svelte';
   import NotFound from './lib/components/NotFound.svelte';
@@ -30,6 +31,9 @@
   const ownedPolicySubject = ownedPolicyMatch?.[1] ?? null;
   const ownedPolicy = ownedPolicyMatch?.[4] ?? null;
 
+  // `/<pool|drep bech32>/delegators` renders that subject's delegators grid.
+  const delegatorsSubject = /^((pool|drep|drep_script)1[a-z0-9]+)\/delegators$/.exec(path)?.[1] ?? null;
+
   // `/$handle` resolves an ADA Handle to its holder's address and redirects there. Only a
   // `$`-prefixed path is a handle — `pool.pm/handle` (no `$`) is not, and falls to Not Found.
   const handleSeg = path.startsWith('$') ? path.slice(1) : null;
@@ -46,6 +50,7 @@
     !policyId &&
     !ownedAssetsSubject &&
     !(ownedPolicySubject && ownedPolicy) &&
+    !delegatorsSubject &&
     !isFeedPath(path);
 
   // The owned-assets drill-down shares the subject's SSE feed (drop the /policy suffix).
@@ -192,6 +197,12 @@
       mode="text-fallback"
       grouped
       subject={ownedAssetsSubject}
+      {uiVisible}
+    />
+  {:else if delegatorsSubject}
+    <DelegatorsGrid
+      endpoint={`/api/delegators/${delegatorsSubject}`}
+      title={`${delegatorsSubject.slice(0, 12)}… delegators`}
       {uiVisible}
     />
   {:else if ownedPolicySubject && ownedPolicy}

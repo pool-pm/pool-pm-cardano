@@ -107,6 +107,56 @@ export interface AssetDeltaEvent {
 /** What `onAssetLive` delivers to the assets grid: one corrective delta to apply. */
 export type AssetDelta = { slot: number; added: PolicyAsset[]; removed: AssetRef[] };
 
+/** One tile on the pool/DRep delegators grid (`/api/delegators/{bech32}`). `live_stake`
+ * is a lovelace string (large-integer rule); `epoch`/`since` describe when this
+ * delegator's *current run* with the subject began (re-delegating to the same subject
+ * doesn't restart it), and are absent only for a pre-backfill snapshot. */
+export interface Delegator {
+  stake_address: string;
+  handle?: string;
+  live_stake: string;
+  epoch?: number;
+  /** Unix seconds of the delegation that started the run — the tile's tooltip. */
+  since?: number;
+}
+
+export interface DelegatorsResponse {
+  delegators: Delegator[];
+  /** Offset of the next page; pass back as `?cursor=`. */
+  cursor?: number;
+  has_more: boolean;
+  /** Delegators matching the current filter — the whole set, not just this page. */
+  total: number;
+}
+
+/** Live `DelegatorDelta` SSE message on a delegators feed: one block's changes to the
+ * subject's delegator set. `updated` carries live-stake changes for tiles already shown;
+ * `resync` means the page can't be patched incrementally (a rollback, or an epoch
+ * boundary crediting rewards to everyone) and should reload. */
+export interface DelegatorDeltaEvent {
+  type: 'DelegatorDelta';
+  slot: number;
+  added?: Delegator[];
+  /** Stake addresses that left the subject. */
+  removed?: string[];
+  updated?: DelegatorStakeUpdate[];
+  resync?: boolean;
+}
+
+export interface DelegatorStakeUpdate {
+  stake_address: string;
+  live_stake: string;
+}
+
+/** What `onDelegatorLive` delivers to the delegators grid. */
+export type DelegatorDelta = {
+  slot: number;
+  added: Delegator[];
+  removed: string[];
+  updated: DelegatorStakeUpdate[];
+  resync: boolean;
+};
+
 /** Response for both `/api/policy/{id}` and `/api/assets/{bech32}` — same
  * pagination scheme; the subject (policy id or address) is implicit in the URL. */
 export interface AssetsResponse {

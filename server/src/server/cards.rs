@@ -53,7 +53,14 @@ async fn build_card(state: &AppState, base_url: &str, path: &str) -> og::Card {
     if let Some((subj, _)) = path.split_once("/assets") {
         if let Some(filter) = FeedFilter::from_path(subj) {
             let guard = state.chain_state.read().await;
-            return subject_card(base_url, &filter, guard.current(), true);
+            return subject_card(base_url, &filter, guard.current(), " assets");
+        }
+    }
+    // Delegators grid: <pool|drep subject>/delegators.
+    if let Some((subj, "")) = path.split_once("/delegators") {
+        if let Some(filter) = FeedFilter::from_path(subj) {
+            let guard = state.chain_state.read().await;
+            return subject_card(base_url, &filter, guard.current(), " delegators");
         }
     }
     // $handle → resolve to the holder address and show its card.
@@ -66,7 +73,7 @@ async fn build_card(state: &AppState, base_url: &str, path: &str) -> og::Card {
             if let Some(snap) = guard.current() {
                 if let Some(addr) = snap.address_by_handle.get(&name).cloned() {
                     if let Some(filter) = FeedFilter::from_path(&addr) {
-                        return subject_card(base_url, &filter, Some(snap), false);
+                        return subject_card(base_url, &filter, Some(snap), "");
                     }
                 }
             }
@@ -76,7 +83,7 @@ async fn build_card(state: &AppState, base_url: &str, path: &str) -> og::Card {
     // Feed subject: pool / drep / stake / addr bech32.
     if let Some(filter) = FeedFilter::from_path(path) {
         let guard = state.chain_state.read().await;
-        return subject_card(base_url, &filter, guard.current(), false);
+        return subject_card(base_url, &filter, guard.current(), "");
     }
     home_card(state, base_url).await
 }
@@ -106,12 +113,13 @@ async fn home_card(state: &AppState, base_url: &str) -> og::Card {
 }
 
 /// Card for a feed subject (pool/drep/stake/addr), read synchronously from the snapshot (no await
-/// while the chain-state guard is held). `owned` = the `…/assets` grid variant.
+/// while the chain-state guard is held). `suffix` names the sub-page the card is for
+/// (`" assets"`, `" delegators"`), or is empty for the feed itself.
 fn subject_card(
     base_url: &str,
     filter: &FeedFilter,
     snap: Option<&BlockSnapshot>,
-    owned: bool,
+    suffix: &str,
 ) -> og::Card {
     let (mut title, description) = match filter {
         FeedFilter::Pool(hash) => {
@@ -211,9 +219,7 @@ fn subject_card(
             )
         }
     };
-    if owned {
-        title.push_str(" assets");
-    }
+    title.push_str(suffix);
     og::Card::branded(base_url, title, description)
 }
 

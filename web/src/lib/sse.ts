@@ -7,6 +7,7 @@ import type {
   Config,
   DRepInfo,
   AssetDelta,
+  DelegatorDelta,
   Event,
   MempoolTxEvent,
   PoolInfo,
@@ -31,6 +32,15 @@ export function onAssetLive(fn: (e: AssetDelta) => void): () => void {
   assetLiveHandler = fn;
   return () => {
     if (assetLiveHandler === fn) assetLiveHandler = null;
+  };
+}
+
+// Same arrangement for the delegators grid.
+let delegatorLiveHandler: ((e: DelegatorDelta) => void) | null = null;
+export function onDelegatorLive(fn: (e: DelegatorDelta) => void): () => void {
+  delegatorLiveHandler = fn;
+  return () => {
+    if (delegatorLiveHandler === fn) delegatorLiveHandler = null;
   };
 }
 
@@ -351,6 +361,14 @@ export function connectSSE(url: string): void {
           slot: data.slot,
           added: data.added ?? [],
           removed: data.removed ?? [],
+        });
+      } else if (data.type === 'DelegatorDelta') {
+        delegatorLiveHandler?.({
+          slot: data.slot,
+          added: data.added ?? [],
+          removed: data.removed ?? [],
+          updated: data.updated ?? [],
+          resync: !!data.resync,
         });
       } else if (Array.isArray(data)) {
         handleSnapshot(data as Event[]);
