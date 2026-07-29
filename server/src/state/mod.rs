@@ -3032,8 +3032,8 @@ mod tests {
     /// control which addresses share a stake credential. Its stake credential is `scred(stake)`.
     fn base_addr(payment: u8, stake: u8) -> String {
         let mut bytes = vec![0x01u8];
-        bytes.extend(std::iter::repeat(payment).take(28));
-        bytes.extend(std::iter::repeat(stake).take(28));
+        bytes.extend(std::iter::repeat_n(payment, 28));
+        bytes.extend(std::iter::repeat_n(stake, 28));
         bech32::encode::<bech32::Bech32>(bech32::Hrp::parse("addr").unwrap(), &bytes).unwrap()
     }
     fn scred(stake: u8) -> Vec<u8> {

@@ -495,7 +495,7 @@ mod tests {
         }
 
         // A different credential doesn't match a 12-char prefix of this one.
-        let other = reward_payload(&vec![0x43u8; 28], true);
+        let other = reward_payload(&[0x43u8; 28], true);
         let (bytes, bits) = bech32_bit_prefix(&data[..12]).unwrap();
         assert!(!has_bit_prefix(&other, &bytes, bits));
 
@@ -529,12 +529,12 @@ mod tests {
         let f = delegator_filter(&Some(addr.clone()), true).unwrap();
         assert!(matches!(f, DelegatorFilter::Cred(_)));
         assert!(matches_filter(&f, &cred, None, true));
-        assert!(!matches_filter(&f, &vec![0x43u8; 28], None, true));
+        assert!(!matches_filter(&f, &[0x43u8; 28], None, true));
 
         // A partial address is a prefix match.
         let f = delegator_filter(&Some(addr[..20].to_string()), true).unwrap();
         assert!(matches!(f, DelegatorFilter::AddressPrefix { .. }));
         assert!(matches_filter(&f, &cred, None, true));
-        assert!(!matches_filter(&f, &vec![0x43u8; 28], None, true));
+        assert!(!matches_filter(&f, &[0x43u8; 28], None, true));
     }
 }
