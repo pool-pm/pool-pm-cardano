@@ -635,11 +635,6 @@ impl BlockSnapshot {
 /// positionally, so the extra fields shift the layout and old snapshots must rebuild.
 const SNAPSHOT_FORMAT: u32 = 14;
 
-/// The previous format, identical except that holdings were written one entry per token
-/// rather than grouped by address. Still *readable* (see `LegacyHoldingsSeed`) so a deploy
-/// resumes from the snapshot on disk rather than cold-resetting; never written.
-const SNAPSHOT_FORMAT_LEGACY_UNGROUPED: u32 = 13;
-
 /// Serializes [`BlockSnapshot::asset_holdings`] **grouped by address**: a msgpack map of
 /// `AddrKey → [(AssetId, Held)]`, with the key `deref'd off its `Arc`` (the wire form carries
 /// no `Arc`, so no serde `rc` feature).
@@ -729,39 +724,6 @@ impl<'de> serde::de::DeserializeSeed<'de> for HoldingsSeed<'_> {
                         out: &mut out,
                         addr,
                     })?;
-                }
-                Ok(out)
-            }
-        }
-        d.deserialize_map(V(self.0))
-    }
-}
-
-/// Reader for the pre-grouped (`SNAPSHOT_FORMAT` 13) holdings shape: one `((cred, addr),
-/// asset)` entry per token. Kept so a running deployment resumes from its existing snapshot
-/// instead of paying a multi-minute cold reset; the next periodic write puts the new shape on
-/// disk, after which this path is dead. Remove once every deployment has rolled over.
-struct LegacyHoldingsSeed<'a>(&'a mut AddrInterner);
-
-impl<'de> serde::de::DeserializeSeed<'de> for LegacyHoldingsSeed<'_> {
-    type Value = AssetHoldings;
-    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<AssetHoldings, D::Error> {
-        struct V<'a>(&'a mut AddrInterner);
-        impl<'de> serde::de::Visitor<'de> for V<'_> {
-            type Value = AssetHoldings;
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a map of ((cred, addr), policy++name) → Held")
-            }
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                mut map: A,
-            ) -> Result<AssetHoldings, A::Error> {
-                let mut out: AssetHoldings = OrdMap::new();
-                while let Some(((addr_key, aid), held)) =
-                    map.next_entry::<(AddrKey, AssetId), Held>()?
-                {
-                    let arc = intern_owned(self.0, addr_key);
-                    out.insert((arc, aid), held);
                 }
                 Ok(out)
             }
@@ -2617,26 +2579,14 @@ impl State {
                 return None;
             }
         };
-        let grouped = match format {
-            SNAPSHOT_FORMAT => true,
-            SNAPSHOT_FORMAT_LEGACY_UNGROUPED => {
-                tracing::info!(
-                    "snapshot is the pre-grouped format {} — reading it once; the next \
-                     periodic write stores format {}",
-                    SNAPSHOT_FORMAT_LEGACY_UNGROUPED,
-                    SNAPSHOT_FORMAT
-                );
-                false
-            }
-            _ => {
-                tracing::warn!(
-                    "snapshot format mismatch: snapshot={}, expected={} — rebuilding from db-sync",
-                    format,
-                    SNAPSHOT_FORMAT
-                );
-                return None;
-            }
-        };
+        if format != SNAPSHOT_FORMAT {
+            tracing::warn!(
+                "snapshot format mismatch: snapshot={}, expected={} — rebuilding from db-sync",
+                format,
+                SNAPSHOT_FORMAT
+            );
+            return None;
+        }
         match u64::deserialize(&mut de) {
             Ok(magic) if magic == network_magic => {}
             Ok(magic) => {
@@ -2664,11 +2614,7 @@ impl State {
             fields_ms = t.elapsed().as_millis() as u64;
 
             let t = std::time::Instant::now();
-            snap.asset_holdings = if grouped {
-                HoldingsSeed(&mut interner).deserialize(&mut de)?
-            } else {
-                LegacyHoldingsSeed(&mut interner).deserialize(&mut de)?
-            };
+            snap.asset_holdings = HoldingsSeed(&mut interner).deserialize(&mut de)?;
             holdings_ms = t.elapsed().as_millis() as u64;
 
             let t = std::time::Instant::now();

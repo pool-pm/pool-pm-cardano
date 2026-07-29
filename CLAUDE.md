@@ -172,8 +172,8 @@ tuned hard (mainnet cold-reset RSS ~8.5 GB); any change here must preserve these
   measured back-to-back). Load interns each address **once** and inserts its tokens as they
   stream (`HoldingsSeed` + `TokensSeed`), so the un-shared full map is never materialized.
   Bump `SNAPSHOT_FORMAT` on any persisted-shape change so old snapshots rebuild from db-sync;
-  when the change is cheap to read both ways, keep a one-release read-only compat path
-  instead (`SNAPSHOT_FORMAT_LEGACY_UNGROUPED`) so a deploy resumes rather than cold-resetting.
+  when the change is cheap to read both ways, a one-release read-only compat path lets a deploy
+  resume rather than cold-reset (the grouping change shipped one, then removed it).
   Two `#[ignore]`d benches in `state/mod.rs` time a real file end to end — see
   `SNAPSHOT_BENCH=… cargo test --release snapshot_load_timing -- --nocapture --ignored`.
 

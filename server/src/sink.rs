@@ -67,6 +67,10 @@ impl Worker {
     async fn handle_apply(&self, cbor: &[u8], stage: &Stage) -> Result<(), WorkerError> {
         let apply_started = std::time::Instant::now();
         let decode_started = apply_started;
+        // Per-block phase figures (the atomics accumulate the same values for the catch-up
+        // summary; these are what the per-block line reports).
+        let db_us;
+        let prefetched_keys;
         let block = MultiEraBlock::decode(cbor).or_panic()?;
         let slot = block.slot();
         let height = block.number();
@@ -165,6 +169,7 @@ impl Worker {
                 spent.sort_unstable();
                 spent.dedup();
                 let db_started = std::time::Instant::now();
+                prefetched_keys = spent.len();
                 let resolved = match (spent.is_empty(), state.db_handle()) {
                     (false, Some(db)) => db
                         .resolve_utxos_batch(&spent)
@@ -187,9 +192,8 @@ impl Worker {
                         .collect(),
                     _ => std::collections::HashMap::new(),
                 };
-                stage
-                    .catchup_db_us
-                    .fetch_add(db_started.elapsed().as_micros() as u64, Ordering::Relaxed);
+                db_us = db_started.elapsed().as_micros() as u64;
+                stage.catchup_db_us.fetch_add(db_us, Ordering::Relaxed);
                 resolved
             };
 
@@ -521,10 +525,10 @@ impl Worker {
                 handle_changes,
             )
         };
-        stage.catchup_decode_us.fetch_add(
-            decode_started.elapsed().as_micros() as u64,
-            Ordering::Relaxed,
-        );
+        let decode_us = decode_started.elapsed().as_micros() as u64;
+        stage
+            .catchup_decode_us
+            .fetch_add(decode_us, Ordering::Relaxed);
 
         let timestamp = crate::mempool::slot_to_timestamp(slot, &stage.genesis);
         let epoch = State::epoch_for_slot(slot, &stage.genesis);
@@ -707,10 +711,10 @@ impl Worker {
                 }
             }
         }
-        stage.catchup_state_us.fetch_add(
-            state_started.elapsed().as_micros() as u64,
-            Ordering::Relaxed,
-        );
+        let state_us = state_started.elapsed().as_micros() as u64;
+        stage
+            .catchup_state_us
+            .fetch_add(state_us, Ordering::Relaxed);
 
         let tx_count = txs.len();
 
@@ -746,9 +750,23 @@ impl Worker {
                 )
                 .ok();
             stage.catchup_blocks.fetch_add(1, Ordering::Relaxed);
-            stage.catchup_apply_us.fetch_add(
-                apply_started.elapsed().as_micros() as u64,
-                Ordering::Relaxed,
+            let total_us = apply_started.elapsed().as_micros() as u64;
+            stage
+                .catchup_apply_us
+                .fetch_add(total_us, Ordering::Relaxed);
+            // One line per block while catching up. A resume replays tens of blocks, so this
+            // stays readable, and it's the only way to see whether the cost is uniform (fixed
+            // per-block overhead) or carried by a few fat blocks.
+            info!(
+                slot,
+                height,
+                txs = tx_count,
+                db_keys = prefetched_keys,
+                total_ms = total_us / 1000,
+                decode_ms = decode_us / 1000,
+                db_ms = db_us / 1000,
+                state_ms = state_us / 1000,
+                "catch-up block"
             );
             // Complete the moment we drain to the node's real tip (published by the source), not
             // when we cross the wall-clock estimate `catchup` — that estimate is normally a bit
