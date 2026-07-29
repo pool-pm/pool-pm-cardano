@@ -134,7 +134,13 @@ impl Worker {
             // Anything the batch doesn't return (no db handle yet, a query error) still falls
             // back to the per-input lookup below, so behaviour is unchanged — only the number
             // of round trips is.
-            let prefetched: std::collections::HashMap<(Vec<u8>, i16), TxOutput> = {
+            //
+            // The block's own outputs are added as they're decoded, so this doubles as the
+            // `block_utxos` map `extract_tx` resolves against — that's the second consumer of
+            // these lookups (it renders each input's address/value into the SSE tx) and it has
+            // the same one-at-a-time fallback. Kept separate from `produced`, which must stay
+            // exactly the outputs this block *creates* (`apply_block` inserts those as UTXOs).
+            let mut known_utxos: std::collections::HashMap<(Vec<u8>, i16), TxOutput> = {
                 let mut in_block: std::collections::HashSet<(Vec<u8>, i16)> =
                     std::collections::HashSet::new();
                 let mut spent: Vec<(Vec<u8>, i16)> = Vec::new();
@@ -226,7 +232,7 @@ impl Worker {
                         Some(utxo.clone())
                     } else if let Some(utxo) = snap.and_then(|s| s.utxos.get(&key)) {
                         Some(utxo.clone())
-                    } else if let Some(utxo) = prefetched.get(&key) {
+                    } else if let Some(utxo) = known_utxos.get(&key) {
                         Some(utxo.clone())
                     } else {
                         let (addr_str, lovelace, assets) = state
@@ -273,7 +279,7 @@ impl Worker {
                         &tx,
                         &state,
                         &stage.nftcdn,
-                        &produced,
+                        &known_utxos,
                         stage.mainnet,
                         &stage.genesis,
                     )
@@ -339,14 +345,14 @@ impl Worker {
                             assets.push((policy_id.to_vec(), tokens));
                         }
                     }
-                    produced.insert(
-                        (hash.as_ref().to_vec(), *idx as i16),
-                        TxOutput {
-                            lovelaces,
-                            address: addr,
-                            assets,
-                        },
-                    );
+                    let key = (hash.as_ref().to_vec(), *idx as i16);
+                    let utxo = TxOutput {
+                        lovelaces,
+                        address: addr,
+                        assets,
+                    };
+                    known_utxos.insert(key.clone(), utxo.clone());
+                    produced.insert(key, utxo);
                 }
 
                 // An invalid tx's withdrawals and certificates never take effect — only its
