@@ -164,10 +164,18 @@ tuned hard (mainnet cold-reset RSS ~8.5 GB); any change here must preserve these
   variable-length: `(mint_slot, Qty)` where `Qty` is 1 byte for small values, a `(lo, hi)`
   pair above `u64`.
 - **Rollback is automatic** (the map lives in `BlockSnapshot` history). The map is
-  `#[serde(skip)]` and (de)serialized manually in `write_snapshot` / `load_snapshot`: keys go
-  on the wire deref'd off their `Arc` (`HoldingsSer`), and load interns each key **as it
-  streams** (`HoldingsSeed`) so the un-shared full map is never materialized. Bump
-  `SNAPSHOT_FORMAT` on any persisted-shape change so old snapshots rebuild from db-sync.
+  `#[serde(skip)]` and (de)serialized manually in `write_snapshot` / `load_snapshot`, **grouped
+  by address**: `AddrKey → [(AssetId, Held)]`, keys deref'd off their `Arc` (`HoldingsSer`).
+  Because the map is sorted by `(cred, addr, …)` an address's tokens are contiguous, so its
+  `(cred, addr)` is written once per address (1.3M) instead of once per token (14.8M) — that
+  alone halved both the file (3.6 GB → 2.0 GB) and the holdings load (30.0 s → 16.5 s,
+  measured back-to-back). Load interns each address **once** and inserts its tokens as they
+  stream (`HoldingsSeed` + `TokensSeed`), so the un-shared full map is never materialized.
+  Bump `SNAPSHOT_FORMAT` on any persisted-shape change so old snapshots rebuild from db-sync;
+  when the change is cheap to read both ways, keep a one-release read-only compat path
+  instead (`SNAPSHOT_FORMAT_LEGACY_UNGROUPED`) so a deploy resumes rather than cold-resetting.
+  Two `#[ignore]`d benches in `state/mod.rs` time a real file end to end — see
+  `SNAPSHOT_BENCH=… cargo test --release snapshot_load_timing -- --nocapture --ignored`.
 
 `BlockSnapshot::log_memory` / `State::log_memory` (called after reset and warm resume) print
 a per-field byte breakdown — content bytes, the `asset_holdings` inline/heap split, and the

@@ -633,32 +633,117 @@ impl BlockSnapshot {
 /// became `mint_slot` — different semantics, so old leaves must rebuild. v9: `FeedIndex`
 /// gained `pool_votes`/`drep_votes` (governance vote-block index); rmp-serde encodes structs
 /// positionally, so the extra fields shift the layout and old snapshots must rebuild.
-const SNAPSHOT_FORMAT: u32 = 13;
+const SNAPSHOT_FORMAT: u32 = 14;
 
-/// Serializes [`BlockSnapshot::asset_holdings`] as a plain msgpack map with the key `(cred,
-/// addr)` **deref'd off its `Arc`** — so the wire form carries no `Arc` (no serde `rc`
-/// feature) and pairs with [`HoldingsSeed`], which re-interns on the way back in.
+/// The previous format, identical except that holdings were written one entry per token
+/// rather than grouped by address. Still *readable* (see `LegacyHoldingsSeed`) so a deploy
+/// resumes from the snapshot on disk rather than cold-resetting; never written.
+const SNAPSHOT_FORMAT_LEGACY_UNGROUPED: u32 = 13;
+
+/// Serializes [`BlockSnapshot::asset_holdings`] **grouped by address**: a msgpack map of
+/// `AddrKey → [(AssetId, Held)]`, with the key `deref'd off its `Arc`` (the wire form carries
+/// no `Arc`, so no serde `rc` feature).
+///
+/// Grouping is a load-time optimisation, and the reason the map is an `OrdMap` sorted by
+/// `(cred, addr, policy, name)` pays off twice: an address's tokens are contiguous, so its
+/// `(cred, addr)` goes on the wire **once per address (1.3M) instead of once per token
+/// (14.8M)**. Measured on mainnet, the old per-token shape spent 11.4s of a 19.6s holdings
+/// load just decoding — dominated by allocating a throwaway cred+addr per entry and looking
+/// each one up in the interner. Grouping removes ~13.5M of those allocations and lookups,
+/// and makes the file smaller as well. Pairs with [`HoldingsSeed`].
 struct HoldingsSer<'a>(&'a AssetHoldings);
 
 impl serde::Serialize for HoldingsSer<'_> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut m = s.serialize_map(Some(self.0.len()))?;
+        // The entry count isn't the map length (that's tokens, not addresses) and counting
+        // addresses up front would mean a second full walk; msgpack needs the length, so the
+        // groups are collected as reference slices — pointers into the live map, no clones.
+        let mut groups: Vec<(&AddrKey, Vec<(&AssetId, &Held)>)> = Vec::new();
         for ((arc, aid), held) in self.0.iter() {
-            // Key on the wire: `(AddrKey, AssetId)` — the `Arc` is transparent.
-            m.serialize_entry(&(arc.as_ref(), aid), held)?;
+            match groups.last_mut() {
+                // Compare by value, never `Arc::ptr_eq`: sorted order guarantees one run per
+                // address, but two runs of the same address would merely split, not corrupt.
+                Some((addr, tokens)) if *addr == arc.as_ref() => tokens.push((aid, held)),
+                _ => groups.push((arc.as_ref(), vec![(aid, held)])),
+            }
+        }
+        let mut m = s.serialize_map(Some(groups.len()))?;
+        for (addr, tokens) in &groups {
+            m.serialize_entry(addr, tokens)?;
         }
         m.end()
     }
 }
 
-/// Deserializes the holdings map produced by [`HoldingsSer`], **interning each key as it
-/// streams**: one owned `AddrKey` is read per entry and immediately collapsed onto the shared
-/// `Arc` for that address, so the un-shared full-size map is never materialized (the warm-
-/// resume RSS spike the naive `Arc`-per-entry decode would cause). Seeds `interner`.
+/// Deserializes the grouped holdings map produced by [`HoldingsSer`], **interning each
+/// address once** and inserting its tokens straight into the map as they stream — the
+/// un-shared full-size map is never materialized (the warm-resume RSS spike a naive
+/// `Arc`-per-entry decode would cause), and no per-address `Vec` is built either. Seeds
+/// `interner`.
 struct HoldingsSeed<'a>(&'a mut AddrInterner);
 
+/// One address's token list, inserted into `out` as it streams under the shared `addr`.
+struct TokensSeed<'a> {
+    out: &'a mut AssetHoldings,
+    addr: Arc<AddrKey>,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for TokensSeed<'_> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+        struct V<'a>(TokensSeed<'a>);
+        impl<'de> serde::de::Visitor<'de> for V<'_> {
+            type Value = ();
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an address's [(policy++name, Held)] list")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+                while let Some((aid, held)) = seq.next_element::<(AssetId, Held)>()? {
+                    self.0.out.insert((self.0.addr.clone(), aid), held);
+                }
+                Ok(())
+            }
+        }
+        d.deserialize_seq(V(self))
+    }
+}
+
 impl<'de> serde::de::DeserializeSeed<'de> for HoldingsSeed<'_> {
+    type Value = AssetHoldings;
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<AssetHoldings, D::Error> {
+        struct V<'a>(&'a mut AddrInterner);
+        impl<'de> serde::de::Visitor<'de> for V<'_> {
+            type Value = AssetHoldings;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map of (cred, addr) → [(policy++name, Held)]")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<AssetHoldings, A::Error> {
+                let mut out: AssetHoldings = OrdMap::new();
+                while let Some(addr_key) = map.next_key::<AddrKey>()? {
+                    let addr = intern_owned(self.0, addr_key);
+                    map.next_value_seed(TokensSeed {
+                        out: &mut out,
+                        addr,
+                    })?;
+                }
+                Ok(out)
+            }
+        }
+        d.deserialize_map(V(self.0))
+    }
+}
+
+/// Reader for the pre-grouped (`SNAPSHOT_FORMAT` 13) holdings shape: one `((cred, addr),
+/// asset)` entry per token. Kept so a running deployment resumes from its existing snapshot
+/// instead of paying a multi-minute cold reset; the next periodic write puts the new shape on
+/// disk, after which this path is dead. Remove once every deployment has rolled over.
+struct LegacyHoldingsSeed<'a>(&'a mut AddrInterner);
+
+impl<'de> serde::de::DeserializeSeed<'de> for LegacyHoldingsSeed<'_> {
     type Value = AssetHoldings;
     fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<AssetHoldings, D::Error> {
         struct V<'a>(&'a mut AddrInterner);
@@ -2518,7 +2603,10 @@ impl State {
             .map(|m| m.len() / (1024 * 1024))
             .unwrap_or(0);
         tracing::info!(file_mb, "loading snapshot from {}...", path.display());
-        let rd = std::io::BufReader::new(file);
+        // A big read buffer: the default 8 KB would mean ~450k syscalls over a multi-GB
+        // snapshot. Disk space is cheap here, start-up latency isn't.
+        const READ_BUF: usize = 8 * 1024 * 1024;
+        let rd = std::io::BufReader::with_capacity(READ_BUF, file);
         let mut de = rmp_serde::Deserializer::new(rd);
 
         // Read the guards first — cheap to reject before touching the big map.
@@ -2529,14 +2617,26 @@ impl State {
                 return None;
             }
         };
-        if format != SNAPSHOT_FORMAT {
-            tracing::warn!(
-                "snapshot format mismatch: snapshot={}, expected={} — rebuilding from db-sync",
-                format,
-                SNAPSHOT_FORMAT
-            );
-            return None;
-        }
+        let grouped = match format {
+            SNAPSHOT_FORMAT => true,
+            SNAPSHOT_FORMAT_LEGACY_UNGROUPED => {
+                tracing::info!(
+                    "snapshot is the pre-grouped format {} — reading it once; the next \
+                     periodic write stores format {}",
+                    SNAPSHOT_FORMAT_LEGACY_UNGROUPED,
+                    SNAPSHOT_FORMAT
+                );
+                false
+            }
+            _ => {
+                tracing::warn!(
+                    "snapshot format mismatch: snapshot={}, expected={} — rebuilding from db-sync",
+                    format,
+                    SNAPSHOT_FORMAT
+                );
+                return None;
+            }
+        };
         match u64::deserialize(&mut de) {
             Ok(magic) if magic == network_magic => {}
             Ok(magic) => {
@@ -2554,10 +2654,26 @@ impl State {
         }
 
         let mut interner = AddrInterner::new();
+        // Per-section timings: the three parts have very different shapes (the fields are
+        // several million small map inserts, the holdings ~15M inserts plus interning), so a
+        // single total can't tell you which one to attack.
+        let (mut fields_ms, mut holdings_ms, mut index_ms) = (0u64, 0u64, 0u64);
         let result = (|| -> Result<(BlockSnapshot, FeedIndex), rmp_serde::decode::Error> {
+            let t = std::time::Instant::now();
             let mut snap = BlockSnapshot::deserialize(&mut de)?; // asset_holdings skipped → empty
-            snap.asset_holdings = HoldingsSeed(&mut interner).deserialize(&mut de)?;
+            fields_ms = t.elapsed().as_millis() as u64;
+
+            let t = std::time::Instant::now();
+            snap.asset_holdings = if grouped {
+                HoldingsSeed(&mut interner).deserialize(&mut de)?
+            } else {
+                LegacyHoldingsSeed(&mut interner).deserialize(&mut de)?
+            };
+            holdings_ms = t.elapsed().as_millis() as u64;
+
+            let t = std::time::Instant::now();
             let fi = FeedIndex::deserialize(&mut de)?;
+            index_ms = t.elapsed().as_millis() as u64;
             Ok((snap, fi))
         })();
         match result {
@@ -2565,6 +2681,9 @@ impl State {
                 tracing::info!(
                     file_mb,
                     elapsed_ms = started.elapsed().as_millis() as u64,
+                    fields_ms,
+                    holdings_ms,
+                    index_ms,
                     holdings = snap.asset_holdings.len(),
                     slot = snap.slot,
                     "snapshot loaded"
@@ -3621,5 +3740,140 @@ mod tests {
         assert_eq!(State::epoch_for_slot(86_400, &preprod), 4);
         assert_eq!(State::epoch_for_slot(86_400 + 432_000, &preprod), 5);
         assert_eq!(State::epoch_for_slot(86_400 + 432_000 * 200, &preprod), 204);
+    }
+}
+
+#[cfg(test)]
+mod snapshot_bench {
+    /// Ad-hoc loader benchmark against a real snapshot — `SNAPSHOT_BENCH=/path cargo test
+    /// --release snapshot_load_timing -- --nocapture --ignored`. Ignored by default: it
+    /// needs a multi-GB file and roughly its size again in RAM.
+    /// Parse the holdings stream exactly as the real loader does, but throw every entry
+    /// away — no interning, no `OrdMap`. The gap to `holdings_ms` is what rebuilding the
+    /// structure costs, i.e. the part a different *file format* could not fix.
+    struct CountingSeed(usize);
+    impl<'de> serde::de::DeserializeSeed<'de> for &mut CountingSeed {
+        type Value = ();
+        fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+            struct V<'a>(&'a mut CountingSeed);
+            impl<'de> serde::de::Visitor<'de> for V<'_> {
+                type Value = ();
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("the holdings map")
+                }
+                fn visit_map<A: serde::de::MapAccess<'de>>(
+                    self,
+                    mut map: A,
+                ) -> Result<(), A::Error> {
+                    while let Some((_k, _v)) =
+                        map.next_entry::<(super::AddrKey, super::AssetId), super::Held>()?
+                    {
+                        self.0 .0 += 1;
+                    }
+                    Ok(())
+                }
+            }
+            d.deserialize_map(V(self))
+        }
+    }
+
+    /// A/B the wire shape end to end: read whatever snapshot is on disk, write it back in
+    /// the current format, and time loading *that*. With a pre-grouped (format 13) file as
+    /// input this measures exactly what grouping bought.
+    /// `SNAPSHOT_BENCH=/path cargo test --release snapshot_regroup -- --nocapture --ignored`
+    #[test]
+    #[ignore]
+    fn snapshot_regroup_and_compare() {
+        let Ok(path) = std::env::var("SNAPSHOT_BENCH") else {
+            return;
+        };
+        let _ = tracing::subscriber::set_global_default(
+            tracing_subscriber::FmtSubscriber::builder()
+                .with_max_level(tracing::Level::INFO)
+                .finish(),
+        );
+        let magic: u64 = 764824073;
+        let src = std::path::Path::new(&path);
+        let t = std::time::Instant::now();
+        let (snap, fi, _) = super::State::load_snapshot(src, magic).expect("load source");
+        let before = t.elapsed();
+        let before_mb = std::fs::metadata(src).map(|m| m.len() >> 20).unwrap_or(0);
+
+        let out = std::path::Path::new("/tmp/snapshot-regrouped.bin");
+        let t = std::time::Instant::now();
+        super::write_snapshot(out, &snap, &fi, magic).expect("write");
+        let write = t.elapsed();
+        drop(snap);
+
+        let t = std::time::Instant::now();
+        let (snap2, _, interner2) = super::State::load_snapshot(out, magic).expect("load written");
+        let after = t.elapsed();
+        let after_mb = std::fs::metadata(out).map(|m| m.len() >> 20).unwrap_or(0);
+        println!(
+            "source: {before_mb} MB in {before:?} | rewritten: {after_mb} MB in {after:?} \
+             (write {write:?}) | holdings {} | addrs {}",
+            snap2.asset_holdings.len(),
+            interner2.len()
+        );
+        // Left on disk on purpose: `snapshot_load_timing` can then time it under the same
+        // conditions as the source file, which is the only fair A/B.
+    }
+
+    /// Decode-only timing: how much of the load is parsing bytes vs building the maps.
+    #[test]
+    #[ignore]
+    fn snapshot_decode_only_timing() {
+        use serde::de::DeserializeSeed;
+        use serde::Deserialize;
+        let Ok(path) = std::env::var("SNAPSHOT_BENCH") else {
+            return;
+        };
+        let file = std::fs::File::open(&path).expect("open");
+        let mut de =
+            rmp_serde::Deserializer::new(std::io::BufReader::with_capacity(8 * 1024 * 1024, file));
+        let t = std::time::Instant::now();
+        let _format = u32::deserialize(&mut de).unwrap();
+        let _magic = u64::deserialize(&mut de).unwrap();
+        let snap = super::BlockSnapshot::deserialize(&mut de).unwrap();
+        let fields = t.elapsed();
+        let t = std::time::Instant::now();
+        let mut counter = CountingSeed(0);
+        (&mut counter).deserialize(&mut de).unwrap();
+        println!(
+            "decode-only: fields (with maps) {:?} | holdings parse, no map {:?} | entries {} | balances {}",
+            fields,
+            t.elapsed(),
+            counter.0,
+            snap.address_balances.len()
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn snapshot_load_timing() {
+        let Ok(path) = std::env::var("SNAPSHOT_BENCH") else {
+            return;
+        };
+        let magic: u64 = std::env::var("SNAPSHOT_MAGIC")
+            .ok()
+            .and_then(|m| m.parse().ok())
+            .unwrap_or(764824073);
+        // The section timings are logged by `load_snapshot`; give them somewhere to go.
+        let _ = tracing::subscriber::set_global_default(
+            tracing_subscriber::FmtSubscriber::builder()
+                .with_max_level(tracing::Level::INFO)
+                .finish(),
+        );
+        let t = std::time::Instant::now();
+        let loaded = super::State::load_snapshot(std::path::Path::new(&path), magic);
+        let (snap, _, interner) = loaded.expect("snapshot should load");
+        println!(
+            "total {:?} | holdings {} | addrs {} | balances {} | stakes {}",
+            t.elapsed(),
+            snap.asset_holdings.len(),
+            interner.len(),
+            snap.address_balances.len(),
+            snap.stakes.len()
+        );
     }
 }
