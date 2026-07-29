@@ -865,31 +865,11 @@ impl DbSync {
         .collect())
     }
 
-    /// Lifetime blocks minted per pool as of `slot`, `hash_raw -> count`. Used by
-    /// `populate_block_counts` to backfill `Pool::blocks` when resuming from a pre-field
-    /// snapshot (`reset` gets the count inline via the `pools` query). Bounded by `slot`
-    /// so it matches the snapshot point and blocks applied afterwards aren't double-counted.
-    pub async fn pool_block_counts(&self, slot: i64) -> Result<HashMap<Vec<u8>, i64>, sqlx::Error> {
-        let rows = sqlx::query!(
-            r#"SELECT ph.hash_raw AS "hash_raw!", COUNT(*) AS "count!"
-               FROM block b
-               JOIN slot_leader sl ON sl.id = b.slot_leader_id
-               JOIN pool_hash ph ON ph.id = sl.pool_hash_id
-               WHERE b.slot_no <= $1
-               GROUP BY ph.hash_raw"#,
-            slot
-        )
-        .fetch_all(&self.db)
-        .await?;
-        Ok(rows.into_iter().map(|r| (r.hash_raw, r.count)).collect())
-    }
-
     /// Governance actions voted on per DRep as of `last_tx_id`: `tagged drep bytes ->
     /// ("tx_hash#index" -> epoch of the latest vote)`, the seed for `DRepVotes::actions`.
     /// The key is the same `[0x00 key | 0x01 script] ++ raw` tagging used for every DRep map
-    /// in state. Seeds `BlockSnapshot::drep_vote_counts` (at `reset`, and via
-    /// `populate_drep_vote_counts` on resume); `apply_block` maintains it per block afterwards,
-    /// so the tx-id bound is what keeps the two from double-counting.
+    /// in state. Seeds `BlockSnapshot::drep_vote_counts` at `reset`; `apply_block` maintains it
+    /// per block afterwards, so the tx-id bound is what keeps the two from double-counting.
     ///
     /// **Distinct actions, not vote rows**: a DRep may re-vote on an action it already voted
     /// on, and `voting_procedure` keeps every such row (1,424 of mainnet's ~30k DRep votes),
@@ -1036,36 +1016,6 @@ impl DbSync {
                 let tag = if r.has_script { 0x01u8 } else { 0x00 };
                 ([&[tag][..], &r.raw[..]].concat(), r.eligible.max(0) as u32)
             })
-            .collect())
-    }
-
-    /// Pools with a pending (un-cancelled) retirement as of `last_tx_id`, as
-    /// `(hash_raw, retiring_epoch)` — the latest retirement announced *after* the pool's
-    /// latest registration (a re-registration cancels it). Used to backfill
-    /// `Pool::retiring_epoch` when resuming from a snapshot saved before the field
-    /// existed; thereafter `apply_block` maintains it.
-    pub async fn pending_pool_retirements(
-        &self,
-        last_tx_id: i64,
-    ) -> Result<Vec<(Vec<u8>, i64)>, sqlx::Error> {
-        let rows = sqlx::query!(
-            r#"SELECT DISTINCT ON (ph.hash_raw)
-                      ph.hash_raw AS "hash_raw!", pr.retiring_epoch::bigint AS "retiring_epoch!"
-               FROM pool_retire pr
-               JOIN pool_hash ph ON ph.id = pr.hash_id
-               WHERE pr.announced_tx_id <= $1
-                 AND pr.announced_tx_id > (
-                     SELECT COALESCE(MAX(pu.registered_tx_id), 0) FROM pool_update pu
-                     WHERE pu.hash_id = pr.hash_id AND pu.registered_tx_id <= $1
-                 )
-               ORDER BY ph.hash_raw, pr.announced_tx_id DESC"#,
-            last_tx_id
-        )
-        .fetch_all(&self.db)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| (r.hash_raw, r.retiring_epoch))
             .collect())
     }
 
@@ -1239,11 +1189,10 @@ impl DbSync {
         Ok((delegations, delegators))
     }
 
-    /// Per-address balance at `last_tx_id`, from one grouped scan of unconsumed
-    /// UTXOs — expensive on mainnet (paid once on cold reset / first run after
-    /// upgrade); see `populate_address_balances`. Returns `(bech32 address,
-    /// lovelace)`; addresses are returned bech32-encoded (the caller parses to
-    /// bytes and skips Byron / non-bech32 ones — they don't appear in feeds).
+    /// Per-address balance at `last_tx_id`, from one grouped scan of unconsumed UTXOs —
+    /// expensive on mainnet, paid once per cold reset. Returns `(bech32 address, lovelace)`;
+    /// addresses are returned bech32-encoded (the caller parses to bytes and skips Byron /
+    /// non-bech32 ones — they don't appear in feeds).
     pub async fn address_balances(
         &self,
         last_tx_id: i64,

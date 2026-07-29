@@ -73,16 +73,11 @@ pub struct BlockSnapshot {
     /// to be a one-shot db-sync query at connect).
     #[serde(with = "wire::byte_key_map")]
     pub address_balances: HashMap<Vec<u8>, i64>,
-    /// True iff `address_balances` was fully populated from db-sync (either by `reset()` or
-    /// `populate_address_balances`). False after a failed populate — in which case the sink
-    /// will have added a *partial* set of entries during catch-up that would otherwise fool
-    /// an `is_empty()` check and skip the re-populate.
-    pub address_balances_populated: bool,
     /// Total live stake delegated to pools = Σ over `pool_delegations` of
     /// `stakes[cred] + rewards[cred]`. Maintained incrementally: exact at `reset()`,
     /// then adjusted in `apply_block` only when a pool delegation is added/removed (a
     /// stable delegator's balance drift between resets isn't re-summed — fine for the
-    /// homepage % figure, re-synced on restart via `populate_total_staked`).
+    /// homepage % figure).
     pub total_staked: i64,
     /// Global per-address multi-asset holdings: a single **flat** map from a composite
     /// [`HeldKey`] = `((stake credential | None, payment address), policy ++ name)` to the
@@ -92,19 +87,14 @@ pub struct BlockSnapshot {
     /// stake's payment addresses are a contiguous prefix and one address's tokens are a
     /// sub-prefix — counts/grids/diffs are prefix range scans (see [`cred_range`] /
     /// [`addr_range`]). A key exists iff that token is currently held (`> 0`). Fully
-    /// populated at `reset()` from db-sync, serialized into the snapshot (warm resume skips
-    /// the populate), maintained per block by the sink, and — being a snapshot field —
-    /// reverted automatically on rollback.
+    /// populated at `reset()` from db-sync, serialized into the snapshot, maintained per block
+    /// by the sink, and — being a snapshot field — reverted automatically on rollback.
     ///
     /// Skipped by the derive: (de)serialized manually in [`write_snapshot`] / [`load_snapshot`]
     /// so load can **intern each key as it streams** (never materializing 14.8M un-shared
     /// `Arc<AddrKey>`), and so keys go on the wire deref'd (no `Arc`, no serde `rc` feature).
     #[serde(skip)]
     pub asset_holdings: AssetHoldings,
-    /// True iff `asset_holdings` was fully populated from db-sync (by `reset()` or
-    /// `populate_asset_holdings`). False after a failed populate, so a warm resume runs it
-    /// again. Mirrors `address_balances_populated`.
-    pub asset_holdings_populated: bool,
 }
 
 /// A **query** descriptor for one payment address: `(stake credential | None for an
@@ -634,7 +624,7 @@ impl BlockSnapshot {
 /// shape or semantics that rmp can't catch (it tolerates int-width changes, and encodes
 /// structs positionally, so an added or removed field silently shifts every field after it)
 /// — a mismatch is rejected on load and the state rebuilds from db-sync.
-const SNAPSHOT_FORMAT: u32 = 15;
+const SNAPSHOT_FORMAT: u32 = 16;
 
 /// Serializes [`BlockSnapshot::asset_holdings`] **grouped by address**: a msgpack map of
 /// `AddrKey → [(AssetId, Held)]`, with the key `deref'd off its `Arc`` (the wire form carries
@@ -1481,111 +1471,6 @@ impl State {
         );
     }
 
-    /// Populate `address_balances` from db-sync if the loaded snapshot wasn't
-    /// built with it. Runs once after warm-resume from a pre-balances snapshot
-    /// (or one whose previous populate failed); subsequent blocks maintain the
-    /// map incrementally in `apply_block`. Gated on the explicit
-    /// `address_balances_populated` flag, not `is_empty()`: if a previous
-    /// populate failed, the sink will have inserted *partial* entries during
-    /// catch-up that would otherwise fool an emptiness check and skip the
-    /// re-populate.
-    pub async fn populate_address_balances(&mut self) {
-        let already_populated = self
-            .history
-            .last()
-            .map(|s| s.address_balances_populated)
-            .unwrap_or(false);
-        if already_populated {
-            return;
-        }
-        let Some(snap_slot) = self.history.last().map(|s| s.slot) else {
-            return;
-        };
-        let Some(db) = self.db().await else { return };
-        let (last_tx_id, _) = match db.slot_info(snap_slot).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("failed to fetch slot_info for balances: {e}");
-                return;
-            }
-        };
-        let rows = match db.address_balances(last_tx_id).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("failed to fetch address balances: {e}");
-                return;
-            }
-        };
-        use pallas::ledger::addresses::Address;
-        let mut balances: HashMap<Vec<u8>, i64> = HashMap::new();
-        for (bech32, balance) in rows {
-            if let Ok(addr) = Address::from_bech32(&bech32) {
-                balances.insert(addr.to_vec(), balance);
-            }
-        }
-        let snap = self.history.last_mut().unwrap();
-        snap.address_balances = balances;
-        snap.address_balances_populated = true;
-        tracing::info!(
-            addresses = snap.address_balances.len(),
-            "address balances populated from db-sync"
-        );
-    }
-
-    /// Populate `asset_holdings` from db-sync when the loaded snapshot carries no complete map
-    /// (`asset_holdings_populated == false`, left by an earlier failed populate). Runs once on
-    /// warm resume; thereafter `apply_block` maintains the map per block. Gated on the explicit
-    /// flag (not `is_empty()`) so a genuinely asset-free chain state isn't re-scanned every
-    /// restart. Builds as-of the snapshot's slot — same point-in-time semantics as `reset()`.
-    pub async fn populate_asset_holdings(&mut self) {
-        let already = self
-            .history
-            .last()
-            .map(|s| s.asset_holdings_populated)
-            .unwrap_or(false);
-        if already {
-            return;
-        }
-        let Some(snap_slot) = self.history.last().map(|s| s.slot) else {
-            return;
-        };
-        let last_tx_id = {
-            let Some(db) = self.db().await else { return };
-            match db.slot_info(snap_slot).await {
-                Ok((id, _)) => id,
-                Err(e) => {
-                    tracing::warn!("slot_info for asset holdings: {e}");
-                    return;
-                }
-            }
-        };
-        let (holdings, interner) = {
-            let Some(db) = self.db().await else { return };
-            let mint_times = match Self::fetch_asset_mint_times(&db).await {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::warn!("failed to fetch asset mint times: {e}");
-                    return;
-                }
-            };
-            match Self::fetch_asset_holdings(&db, last_tx_id, &mint_times).await {
-                Ok(h) => h,
-                Err(e) => {
-                    tracing::warn!("failed to fetch asset holdings: {e}");
-                    return;
-                }
-            }
-        };
-        self.addr_interner = interner;
-        let snap = self.history.last_mut().unwrap();
-        snap.asset_holdings = holdings;
-        snap.asset_holdings_populated = true;
-        tracing::info!(
-            addresses = snap.asset_holdings.len(),
-            "asset holdings populated from db-sync"
-        );
-    }
-
     /// Σ over `pool_delegations` of `stakes[cred] + rewards[cred]` — the total live
     /// stake delegated to pools. The one-time full scan behind `total_staked`.
     fn sum_delegated_stake(
@@ -1599,364 +1484,6 @@ impl State {
                 stakes.get(cred).copied().unwrap_or(0) + rewards.get(cred).copied().unwrap_or(0)
             })
             .sum()
-    }
-
-    /// Recompute `total_staked` for the current snapshot when it's missing (0 from a
-    /// snapshot saved before the field existed). Pure in-memory; call at startup before
-    /// blocks are applied. A genuinely-populated snapshot (post-feature) keeps its value.
-    pub fn populate_total_staked(&mut self) {
-        let Some(snap) = self.history.last() else {
-            return;
-        };
-        if snap.total_staked != 0 || snap.pool_delegations.is_empty() {
-            return;
-        }
-        let total = Self::sum_delegated_stake(&snap.pool_delegations, &snap.stakes, &snap.rewards);
-        self.history.last_mut().unwrap().total_staked = total;
-        tracing::info!(
-            total_staked = total,
-            "total_staked recomputed from snapshot"
-        );
-    }
-
-    /// Backfill `Pool::retiring_epoch` for the current snapshot from db-sync. Needed
-    /// when resuming from a snapshot saved before the field existed (where it defaults
-    /// to `None`, so long-retired pools would wrongly count as active until the next
-    /// reset). Idempotent — a correctly-populated snapshot is left unchanged. Thereafter
-    /// `apply_block` maintains the field per block.
-    pub async fn populate_pool_retirements(&mut self) {
-        let Some(snap_slot) = self.history.last().map(|s| s.slot) else {
-            return;
-        };
-        let Some(db) = self.db().await else { return };
-        let last_tx_id = match db.slot_info(snap_slot).await {
-            Ok((id, _)) => id,
-            Err(e) => {
-                tracing::warn!("slot_info for pool retirements: {e}");
-                return;
-            }
-        };
-        let pending = match db.pending_pool_retirements(last_tx_id).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("failed to fetch pool retirements: {e}");
-                return;
-            }
-        };
-        let retiring: HashMap<String, i64> = pending
-            .into_iter()
-            .map(|(h, e)| (hex::encode(h), e))
-            .collect();
-        let Some(snap) = self.history.last_mut() else {
-            return;
-        };
-        let keys: Vec<String> = snap.pools.keys().cloned().collect();
-        for key in keys {
-            let want = retiring.get(&key).copied();
-            if let Some(pool) = snap.pools.get_mut(&key) {
-                if pool.retiring_epoch != want {
-                    pool.retiring_epoch = want;
-                }
-            }
-        }
-        tracing::info!(
-            retiring = retiring.len(),
-            "pool retirements populated from db-sync"
-        );
-    }
-
-    /// Backfill `Pool::blocks` for the current snapshot from db-sync. Needed when
-    /// resuming from a snapshot saved before the field existed (where it defaults to 0).
-    /// Gated on all-zero — a populated snapshot (from `reset` or a prior run) is left
-    /// untouched. Thereafter `apply_block` maintains it per block.
-    pub async fn populate_block_counts(&mut self) {
-        let needs = self
-            .history
-            .last()
-            .map(|s| !s.pools.is_empty() && s.pools.values().all(|p| p.blocks == 0))
-            .unwrap_or(false);
-        if !needs {
-            return;
-        }
-        let Some(snap_slot) = self.history.last().map(|s| s.slot) else {
-            return;
-        };
-        let Some(db) = self.db().await else { return };
-        let counts = match db.pool_block_counts(snap_slot as i64).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("failed to fetch pool block counts: {e}");
-                return;
-            }
-        };
-        let counts: HashMap<String, i64> = counts
-            .into_iter()
-            .map(|(h, c)| (hex::encode(h), c))
-            .collect();
-        let Some(snap) = self.history.last_mut() else {
-            return;
-        };
-        let keys: Vec<String> = snap.pools.keys().cloned().collect();
-        for key in keys {
-            if let Some(&c) = counts.get(&key) {
-                if let Some(pool) = snap.pools.get_mut(&key) {
-                    pool.blocks = c;
-                }
-            }
-        }
-        tracing::info!(
-            pools = counts.len(),
-            "pool block counts backfilled from db-sync"
-        );
-    }
-
-    /// Backfill `DRep::active_until` from db-sync when missing (resume from a pre-field
-    /// snapshot — all `None`). Thereafter `apply_block` refreshes it each epoch boundary.
-    pub async fn populate_drep_active(&mut self) {
-        let needs = self
-            .history
-            .last()
-            .map(|s| !s.dreps.is_empty() && s.dreps.values().all(|d| d.active_until.is_none()))
-            .unwrap_or(false);
-        if !needs {
-            return;
-        }
-        let Some(active) = self.drep_active_until().await else {
-            return;
-        };
-        let Some(snap) = self.history.last_mut() else {
-            return;
-        };
-        let keys: Vec<Vec<u8>> = snap.dreps.keys().cloned().collect();
-        for key in keys {
-            let au = active.get(&key).copied();
-            if let Some(drep) = snap.dreps.get_mut(&key) {
-                drep.active_until = au;
-            }
-        }
-        tracing::info!(
-            active = active.len(),
-            "drep active_until backfilled from db-sync"
-        );
-    }
-
-    /// Backfill `Delegation::since_slot` from db-sync when resuming from a snapshot saved
-    /// before the field existed (every slot 0). `reset` gets it inline from the delegation
-    /// queries; thereafter `apply_delegation_changes` maintains it. Gated on all-zero, so a
-    /// populated snapshot is left untouched — and it re-runs the two full delegation queries,
-    /// so it only ever fires on that one transitional resume.
-    pub async fn populate_delegation_slots(&mut self) {
-        let needs = self
-            .history
-            .last()
-            .map(|s| {
-                !s.pool_delegations.is_empty()
-                    && s.pool_delegations.values().all(|d| d.since_slot == 0)
-            })
-            .unwrap_or(false);
-        if !needs {
-            return;
-        }
-        let Some(snap_slot) = self.history.last().map(|s| s.slot) else {
-            return;
-        };
-        let Some(db) = self.db().await else { return };
-        let last_tx_id = match db.slot_info(snap_slot).await {
-            Ok((id, _)) => id,
-            Err(e) => {
-                tracing::warn!("failed to resolve slot {snap_slot} for delegation slots: {e}");
-                return;
-            }
-        };
-        let pool = match db.pool_delegations(last_tx_id).await {
-            Ok((d, _)) => d,
-            Err(e) => {
-                tracing::warn!("failed to fetch pool delegation slots: {e}");
-                return;
-            }
-        };
-        let drep = match db.drep_delegations(last_tx_id).await {
-            Ok((d, _)) => d,
-            Err(e) => {
-                tracing::warn!("failed to fetch drep delegation slots: {e}");
-                return;
-            }
-        };
-        let Some(snap) = self.history.last_mut() else {
-            return;
-        };
-        // Only the slot is taken from db-sync: the target and the delegator sets stay as the
-        // snapshot has them (it is at the chain tip, db-sync may lag a few seconds).
-        let apply = |current: &mut HashMap<Vec<u8>, Delegation>,
-                     fresh: &HashMap<Vec<u8>, Delegation>| {
-            let keys: Vec<Vec<u8>> = current.keys().cloned().collect();
-            for key in keys {
-                let Some(slot) = fresh.get(&key).map(|d| d.since_slot) else {
-                    continue;
-                };
-                if let Some(d) = current.get_mut(&key) {
-                    d.since_slot = slot;
-                }
-            }
-        };
-        apply(&mut snap.pool_delegations, &pool);
-        apply(&mut snap.drep_delegations, &drep);
-        tracing::info!(
-            pool_delegations = pool.len(),
-            drep_delegations = drep.len(),
-            "delegation start slots backfilled from db-sync"
-        );
-    }
-
-    /// Backfill `BlockSnapshot::drep_vote_counts` from db-sync when resuming from a snapshot
-    /// that predates the field, or one written before votes were counted per distinct action
-    /// (its entries have an empty `DRepVotes::actions`, so re-votes at the tip couldn't be
-    /// deduped and the totals would be the old inflated row counts). `reset` fetches it inline;
-    /// thereafter `apply_block` maintains it. Bounded by the snapshot's slot so votes in blocks
-    /// the sink is about to replay aren't counted twice.
-    pub async fn populate_drep_vote_counts(&mut self, epoch: u64) {
-        // A DRep with votes but no `actions` came from a snapshot written before votes were
-        // counted per action: its `total` is the old inflated row count *and* re-votes at the
-        // tip couldn't be deduped, so re-seed. Testing `total > 0` (not just an empty
-        // `actions`) is what keeps this from firing on every start: the epoch-boundary
-        // denominator refresh legitimately inserts vote-less entries, which have no actions.
-        let needs = self
-            .history
-            .last()
-            .map(|s| {
-                s.drep_vote_counts.is_empty()
-                    || s.drep_vote_counts
-                        .values()
-                        .any(|v| v.total > 0 && v.actions.is_empty())
-            })
-            .unwrap_or(false);
-        if !needs {
-            return;
-        }
-        let Some(snap_slot) = self.history.last().map(|s| s.slot) else {
-            return;
-        };
-        let Some(db) = self.db().await else { return };
-        let last_tx_id = match db.slot_info(snap_slot).await {
-            Ok((id, _)) => id,
-            Err(e) => {
-                tracing::warn!("failed to resolve slot {snap_slot} for drep vote counts: {e}");
-                return;
-            }
-        };
-        let voted = match db.drep_voted_actions(last_tx_id, epoch).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("failed to fetch drep voted actions: {e}");
-                return;
-            }
-        };
-        let eligible = db
-            .drep_eligible_actions(last_tx_id)
-            .await
-            .unwrap_or_default();
-        let Some(snap) = self.history.last_mut() else {
-            return;
-        };
-        for (drep, actions) in voted {
-            let n = eligible.get(&drep).copied().unwrap_or(0);
-            snap.drep_vote_counts
-                .insert(drep, DRepVotes::from_actions(actions, epoch, n));
-        }
-        tracing::info!(
-            dreps = snap.drep_vote_counts.len(),
-            "drep vote counts backfilled from db-sync"
-        );
-    }
-
-    /// Populate ADA Handle cache from db-sync if empty.
-    pub async fn populate_handles(&mut self) {
-        let is_empty = self
-            .history
-            .last()
-            .map(|s| s.address_by_handle.is_empty())
-            .unwrap_or(true);
-        // Fetch + resolve from db-sync only when the loaded snapshot has no handles yet; a warm
-        // snapshot with handles keeps them (they're maintained live per block since).
-        if is_empty {
-            let policies: Vec<&[u8]> = HANDLE_POLICIES.iter().map(|p| p.as_slice()).collect();
-            if let Some(db) = self.db().await {
-                match db.handles(&policies).await {
-                    Ok(rows) => {
-                        let total = rows.len();
-                        let snap = self.history.last_mut().unwrap();
-                        let mut virtual_ok = 0usize;
-                        let mut virtual_fail = 0usize;
-                        for (handle, addr, datum) in rows {
-                            let resolved_addr = if datum.is_some() {
-                                match datum.and_then(|d| parse_virtual_handle_address(&d)) {
-                                    Some(a) => {
-                                        virtual_ok += 1;
-                                        a
-                                    }
-                                    None => {
-                                        virtual_fail += 1;
-                                        continue;
-                                    }
-                                }
-                            } else {
-                                addr
-                            };
-                            snap.handle_by_address
-                                .entry(resolved_addr.clone())
-                                .or_default()
-                                .push(handle.clone());
-                            snap.address_by_handle.insert(handle, resolved_addr);
-                        }
-                        let resolved = snap.address_by_handle.len();
-                        tracing::info!(
-                            total,
-                            resolved,
-                            virtual_ok,
-                            virtual_fail,
-                            "ADA Handles populated from db-sync"
-                        );
-                    }
-                    Err(e) => tracing::warn!("failed to fetch handles: {e}"),
-                }
-            }
-        }
-        // (Re)build the derived stake-credential index from handle_by_address — it's
-        // `#[serde(skip)]`, so it's empty right after a snapshot load; also covers the
-        // freshly-populated case above. One cheap pass over the resolved handles.
-        if let Some(snap) = self.history.last_mut() {
-            snap.handle_by_stake = build_handle_by_stake(&snap.handle_by_address);
-        }
-    }
-
-    /// Populate governance action titles from db-sync if empty.
-    pub async fn populate_gov_titles(&mut self) {
-        let is_empty = self
-            .history
-            .last()
-            .map(|s| s.gov_action_titles.is_empty())
-            .unwrap_or(true);
-        if !is_empty {
-            return;
-        }
-        let titles = match self.db().await {
-            Some(db) => match db.gov_action_titles().await {
-                Ok(t) => t,
-                Err(e) => {
-                    tracing::warn!("failed to fetch gov action titles: {e}");
-                    return;
-                }
-            },
-            None => return,
-        };
-        tracing::info!(
-            "{} governance action titles populated from db-sync",
-            titles.len()
-        );
-        let snap = self.history.last_mut().unwrap();
-        for (key, title) in titles {
-            snap.gov_action_titles.insert(key, title);
-        }
     }
 
     /// The pool for the *current* runtime, created on first use. `DbSync` is a cheap handle
@@ -2280,7 +1807,6 @@ impl State {
             drep_delegations,
             drep_delegators,
             address_balances,
-            address_balances_populated: true,
             dreps,
             drep_vote_counts,
             stakes,
@@ -2291,7 +1817,6 @@ impl State {
             address_by_handle,
             gov_action_titles,
             asset_holdings,
-            asset_holdings_populated: true,
         });
         self.feed_index = FeedIndex::new();
         self.pool_meta_cursor = pool_meta_cursor;
@@ -2356,7 +1881,6 @@ impl State {
         // address. Live tile deltas are derived per open assets page by diffing this
         // against the previous snapshot — nothing is emitted from here.
         let mut asset_holdings = prev.asset_holdings.clone();
-        let asset_holdings_populated = prev.asset_holdings_populated;
 
         // Apply produced (credits) *before* consumed (debits). A UTXO can be created and
         // spent within the same block; if we debited first, its entry wouldn't exist yet,
@@ -2548,7 +2072,6 @@ impl State {
         // moves/burns to all three handle maps on the new snapshot.
         let handle_by_stake = prev.handle_by_stake.clone();
         let gov_action_titles = prev.gov_action_titles.clone();
-        let address_balances_populated = prev.address_balances_populated;
         self.history.push(BlockSnapshot {
             slot,
             block_hash: Some(block_hash),
@@ -2565,9 +2088,7 @@ impl State {
             rewards,
             decimals,
             address_balances,
-            address_balances_populated,
             asset_holdings,
-            asset_holdings_populated,
             handle_by_address,
             address_by_handle,
             handle_by_stake,
@@ -2746,7 +2267,11 @@ impl State {
     /// Restore state from a previously saved snapshot.
     /// Install a loaded snapshot + its interner (built by [`load_snapshot`], which already
     /// interned each holdings key as it streamed — nothing to rebuild here).
-    pub fn restore_from_snapshot(&mut self, snapshot: BlockSnapshot, interner: AddrInterner) {
+    pub fn restore_from_snapshot(&mut self, mut snapshot: BlockSnapshot, interner: AddrInterner) {
+        // `handle_by_stake` is derived and `#[serde(skip)]`, so it arrives empty: rebuild it from
+        // the loaded handle map before the snapshot goes live, or every stake-credential handle
+        // lookup (feeds, delegator tiles) would come back empty until the next reset.
+        snapshot.handle_by_stake = build_handle_by_stake(&snapshot.handle_by_address);
         self.addr_interner = interner;
         self.history.clear();
         self.history.push(snapshot);
@@ -3081,6 +2606,27 @@ mod tests {
         assert_eq!(snap.handle_for_stake(&scred(5)), Some(s("carol")));
     }
 
+    /// The index is `#[serde(skip)]`, so a loaded snapshot carries an empty one: resuming has to
+    /// rebuild it, or the feeds and delegator tiles resolve no handles at all.
+    #[test]
+    fn resuming_rebuilds_the_stake_handle_index() {
+        let mut hba: HashMap<String, Vec<String>> = HashMap::new();
+        hba.insert(base_addr(1, 9), vec![s("alice")]);
+        // As it comes off the wire: handle_by_address present, the derived index empty.
+        let loaded = BlockSnapshot {
+            handle_by_address: hba,
+            ..BlockSnapshot::default()
+        };
+        assert_eq!(loaded.handle_for_stake(&scred(9)), None);
+
+        let mut state = State::new(Url::parse("postgres://localhost/none").unwrap());
+        state.restore_from_snapshot(loaded, AddrInterner::default());
+        assert_eq!(
+            state.current().unwrap().handle_for_stake(&scred(9)),
+            Some(s("alice"))
+        );
+    }
+
     #[test]
     fn bump_one_maintains_and_prunes() {
         let mut holdings: AssetHoldings = OrdMap::new();
@@ -3362,8 +2908,6 @@ mod tests {
             block_hash: Some("hash100".into()),
             last_epoch: Some(10),
             total_staked: 105, // cred_a delegated to pool_p: stakes 100 + rewards 5
-            address_balances_populated: true,
-            asset_holdings_populated: true,
             ..BlockSnapshot::default()
         };
         initial
@@ -3617,7 +3161,6 @@ mod tests {
         assert_eq!(cur.handle_by_address, initial.handle_by_address);
         assert_eq!(cur.address_by_handle, initial.address_by_handle);
         assert_eq!(cur.gov_action_titles, initial.gov_action_titles);
-        assert!(cur.address_balances_populated && cur.asset_holdings_populated);
 
         // ---- Rollback: the entire snapshot returns to the initial values. ----
         assert!(state.rollback(100));
@@ -3656,8 +3199,6 @@ mod tests {
             slot: 100,
             block_hash: Some("h100".into()),
             last_epoch: Some(10),
-            address_balances_populated: true,
-            asset_holdings_populated: true,
             ..BlockSnapshot::default()
         };
         let mut state = State::new(Url::parse("postgresql:///test").unwrap());
@@ -3735,8 +3276,6 @@ mod tests {
             slot: 100,
             block_hash: Some("h".into()),
             last_epoch: Some(1),
-            address_balances_populated: true,
-            asset_holdings_populated: true,
             ..BlockSnapshot::default()
         };
         initial
@@ -3803,8 +3342,6 @@ mod tests {
             block_hash: Some("deadbeef".into()),
             last_epoch: Some(7),
             total_staked: 9_999,
-            address_balances_populated: true,
-            asset_holdings_populated: true,
             ..BlockSnapshot::default()
         };
         snap.stakes.insert(vec![0xaa; 28], 123);

@@ -157,10 +157,8 @@ pub fn run(args: Args) -> Result<(), Error> {
                 .enable_all()
                 .build()
                 .unwrap();
-            // Each populate is a no-op when the resumed snapshot already carries its field,
-            // so on a warm start these are ~free — but a cold one (or a newly added field)
-            // runs real queries. Time them and log the ones that actually cost something,
-            // so a slow startup can be attributed instead of guessed at.
+            // Time the step and log it when it costs something, so a slow startup can be
+            // attributed instead of guessed at.
             let timed = |label: &str, f: &mut dyn FnMut()| {
                 let started = std::time::Instant::now();
                 f();
@@ -169,25 +167,8 @@ pub fn run(args: Args) -> Result<(), Error> {
                     info!(step = label, elapsed_ms, "startup step");
                 }
             };
-            timed("handles", &mut || rt.block_on(state.populate_handles()));
-            timed("gov_titles", &mut || {
-                rt.block_on(state.populate_gov_titles())
-            });
-            timed("address_balances", &mut || {
-                rt.block_on(state.populate_address_balances())
-            });
-            timed("asset_holdings", &mut || {
-                rt.block_on(state.populate_asset_holdings())
-            });
-            timed("pool_retirements", &mut || {
-                rt.block_on(state.populate_pool_retirements())
-            });
-            timed("block_counts", &mut || {
-                rt.block_on(state.populate_block_counts())
-            });
-            timed("drep_active", &mut || {
-                rt.block_on(state.populate_drep_active())
-            });
+            // Active stake lives in `State`, not the snapshot, so it is fetched on every
+            // start; everything else the feeds need came out of the snapshot.
             let epoch = State::epoch_for_slot(
                 snap_slot,
                 &GenesisValues::from(args.network.config().clone()),
@@ -195,13 +176,6 @@ pub fn run(args: Args) -> Result<(), Error> {
             timed("active_stakes", &mut || {
                 rt.block_on(state.populate_active_stakes(epoch))
             });
-            timed("drep_vote_counts", &mut || {
-                rt.block_on(state.populate_drep_vote_counts(epoch))
-            });
-            timed("delegation_slots", &mut || {
-                rt.block_on(state.populate_delegation_slots())
-            });
-            timed("total_staked", &mut || state.populate_total_staked());
         }
 
         if let Some(snap) = state.current() {
@@ -225,7 +199,6 @@ pub fn run(args: Args) -> Result<(), Error> {
                 handles = snap.address_by_handle.len(),
                 gov_actions = snap.gov_action_titles.len(),
                 address_balances = snap.address_balances.len(),
-                balances_populated = snap.address_balances_populated,
                 "loaded snapshot, resuming"
             );
         }
