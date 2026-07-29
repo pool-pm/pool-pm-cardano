@@ -110,8 +110,11 @@ impl Worker {
             // Feed index: pools (SPO) / DReps that cast a governance vote in this block.
             let mut vote_pools: std::collections::HashSet<Vec<u8>> =
                 std::collections::HashSet::new();
-            let mut vote_dreps: std::collections::HashSet<Vec<u8>> =
-                std::collections::HashSet::new();
+            // DReps that voted, with how many votes each cast in this block (a tx voting on
+            // several actions counts once per action) — the index only needs the key set, the
+            // header's vote counters need the count.
+            let mut vote_dreps: std::collections::HashMap<Vec<u8>, u32> =
+                std::collections::HashMap::new();
 
             // CIP-68: collect decimals from reference token datums in this block
             let mut new_decimals: Vec<(String, u8)> = Vec::new();
@@ -151,7 +154,9 @@ impl Worker {
                 if valid {
                     let (vps, vds) = crate::mempool::extract_vote_subjects(&tx);
                     vote_pools.extend(vps);
-                    vote_dreps.extend(vds);
+                    for drep in vds {
+                        *vote_dreps.entry(drep).or_insert(0) += 1;
+                    }
                 }
 
                 // Track consumed UTXOs: subtract lovelaces from stake credentials.
@@ -560,7 +565,7 @@ impl Worker {
             if !vote_dreps.is_empty() {
                 state
                     .feed_index
-                    .add_drep_votes(vote_dreps, block_ref.clone());
+                    .add_drep_votes(vote_dreps.keys().cloned().collect(), block_ref.clone());
             }
 
             for entry in drep_feed_delegations {
@@ -587,6 +592,7 @@ impl Worker {
                 withdrawal_changes: &withdrawal_changes,
                 reward_deltas: reward_deltas.as_ref(),
                 drep_active_until: drep_active_until.as_ref(),
+                drep_votes: &vote_dreps,
             });
 
             // ADA Handle: keep the resolution live. `handle_changes` are the handles produced

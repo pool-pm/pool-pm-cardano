@@ -95,9 +95,6 @@ fn slot_for_epoch(epoch: u64, genesis: &GenesisConfig) -> u64 {
 /// `MAX_BLOCKS` in `web/src/lib/components/Feed.svelte`.
 const MAX_REPLAY_BLOCKS: usize = 30;
 
-/// Minimum stake change (as fraction of live stake) to include a block in feed
-/// replay. Must match `STAKE_CHANGE_PRUNE_DIVISOR` in Feed.svelte.
-
 /// Recent blocks to replay on a stake-address feed connection (fetched from
 /// db-sync, since stake addresses are not pre-indexed in memory).
 const STAKE_REPLAY_BLOCKS: i64 = 30;
@@ -349,13 +346,16 @@ fn asset_delta_event(
 /// Build the live stream that detects pool parameter/stake changes and filters events.
 /// Per-feed mutable state the live stream compares against between blocks to
 /// decide whether to re-emit the info header. Different filter kinds use
-/// different subsets: Pool tracks `(pool, balance)`; DRep tracks `balance`;
+/// different subsets: Pool tracks `(pool, balance)`; DRep tracks `(balance, votes)`;
 /// Stake / Address track `(balance, assets_count)`.
 #[derive(Default, Clone)]
 struct LiveState {
     pool: Option<Pool>,
     balance: Option<i64>,
     assets_count: Option<u32>,
+    /// DRep feeds: `(lifetime votes, current-epoch votes)` — a change re-emits the header
+    /// the moment the DRep's vote lands (the pool equivalent rides along in `Pool::blocks`).
+    votes: Option<(u64, u32)>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -451,16 +451,21 @@ fn build_live_stream(
                             }
                         }
                         filter::FeedFilter::DRep(ref bytes) => {
-                            let current_balance = {
+                            let (current_balance, current_votes) = {
                                 let guard = chain_state.read().await;
-                                guard
-                                    .current()
-                                    .and_then(|s| State::drep_live_stake(s, bytes))
+                                let snap = guard.current();
+                                (
+                                    snap.and_then(|s| State::drep_live_stake(s, bytes)),
+                                    Some(drep_vote_counts(snap, bytes)),
+                                )
                             };
-                            if current_balance != live.balance {
+                            // Re-emit on a new vote too, so the header's vote counters move
+                            // with the feed (the epoch tally also flips to 0 at a boundary).
+                            if current_balance != live.balance || current_votes != live.votes {
                                 let guard = chain_state.read().await;
                                 buf.push_back(drep_sse_event(bytes, guard.current()));
                                 live.balance = current_balance;
+                                live.votes = current_votes;
                             }
                         }
                         filter::FeedFilter::Stake(ref payload) => {
@@ -1447,11 +1452,13 @@ async fn filtered_events(
                 pool: snap.and_then(|s| s.pools.get(&hex::encode(hash)).cloned()),
                 balance: snap.and_then(|s| State::pool_live_stake(s, hash)),
                 assets_count: None,
+                votes: None,
             },
             filter::FeedFilter::DRep(ref bytes) => LiveState {
                 pool: None,
                 balance: snap.and_then(|s| State::drep_live_stake(s, bytes)),
                 assets_count: None,
+                votes: Some(drep_vote_counts(snap, bytes)),
             },
             filter::FeedFilter::Stake(ref payload) => LiveState {
                 pool: None,
@@ -1460,6 +1467,7 @@ async fn filtered_events(
                 // shouldn't drift across reads; the live-stream just passes it
                 // through unchanged on each re-emit).
                 assets_count: None,
+                votes: None,
             },
             filter::FeedFilter::Address(ref addr) => {
                 let addr_b = address_bytes(addr).unwrap_or_default();
@@ -1467,6 +1475,7 @@ async fn filtered_events(
                     pool: None,
                     balance: snap.and_then(|s| s.address_balances.get(&addr_b).copied()),
                     assets_count: None,
+                    votes: None,
                 }
             }
         }
@@ -1572,6 +1581,7 @@ async fn asset_feed_events(
             pool: None,
             balance,
             assets_count: Some(assets_count),
+            votes: None,
         }
     };
 

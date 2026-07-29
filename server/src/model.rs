@@ -60,6 +60,44 @@ pub struct DRep {
     pub active_until: Option<i64>,
 }
 
+/// Governance votes cast by a DRep — the DRep-feed counterpart of `Pool::blocks` +
+/// the pool's current-epoch block count.
+///
+/// `epoch_votes` is stamped with the `epoch` it was counted in, so the per-epoch tally
+/// resets itself on the first vote of a new epoch: no epoch-boundary sweep over every
+/// DRep, and a reader compares the stamp with the current epoch (a stale stamp reads as
+/// 0, exactly like a pool's `epoch_blocks`). Lives in `BlockSnapshot`, so rollbacks
+/// revert it with the rest of the snapshot.
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DRepVotes {
+    /// Lifetime votes (one per `voting_procedure` row — a tx voting on 3 actions counts 3).
+    pub total: u64,
+    /// Epoch `epoch_votes` was counted in.
+    pub epoch: u64,
+    pub epoch_votes: u32,
+}
+
+impl DRepVotes {
+    /// Votes cast in `epoch` — 0 unless the stamp matches (the DRep hasn't voted yet in it).
+    pub fn votes_in(&self, epoch: u64) -> u32 {
+        if self.epoch == epoch {
+            self.epoch_votes
+        } else {
+            0
+        }
+    }
+
+    /// Record `n` votes cast in `epoch`, restarting the per-epoch tally on a new epoch.
+    pub fn add(&mut self, n: u32, epoch: u64) {
+        if self.epoch != epoch {
+            self.epoch = epoch;
+            self.epoch_votes = 0;
+        }
+        self.total += n as u64;
+        self.epoch_votes += n;
+    }
+}
+
 /// Convert DRep bytes (tag + hash) to a human-readable identifier.
 pub fn drep_bech32_id(bytes: &[u8]) -> String {
     match bytes.first() {

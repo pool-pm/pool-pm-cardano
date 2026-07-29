@@ -8,7 +8,8 @@ use url::Url;
 
 use crate::cip26;
 use crate::model::{
-    asset_fingerprint, parse_virtual_handle_address, DRep, Pool, TxOutput, HANDLE_POLICIES,
+    asset_fingerprint, parse_virtual_handle_address, DRep, DRepVotes, Pool, TxOutput,
+    HANDLE_POLICIES,
 };
 use crate::pallas::{
     stake_credential_from_address_bytes, stake_credential_from_bech32, PoolUpdate,
@@ -31,6 +32,12 @@ pub struct BlockSnapshot {
     pub rewards: HashMap<Vec<u8>, i64>,
     /// DRep bytes → DRep metadata (given_name from off-chain vote data)
     pub dreps: HashMap<Vec<u8>, DRep>,
+    /// DRep bytes → governance votes cast (lifetime + current-epoch tally). Keyed
+    /// independently of `dreps`, which only holds DReps that published off-chain metadata —
+    /// a nameless DRep votes too. Seeded from db-sync at reset / resume, then maintained
+    /// per block by `apply_block`.
+    #[serde(default)]
+    pub drep_vote_counts: HashMap<Vec<u8>, DRepVotes>,
     /// Asset fingerprint → decimals (non-zero only, from CIP-26 + CIP-68)
     pub decimals: HashMap<String, u8>,
     /// ADA Handle: address → list of handle names owned
@@ -622,7 +629,7 @@ impl BlockSnapshot {
 /// became `mint_slot` — different semantics, so old leaves must rebuild. v9: `FeedIndex`
 /// gained `pool_votes`/`drep_votes` (governance vote-block index); rmp-serde encodes structs
 /// positionally, so the extra fields shift the layout and old snapshots must rebuild.
-const SNAPSHOT_FORMAT: u32 = 11;
+const SNAPSHOT_FORMAT: u32 = 12;
 
 /// Serializes [`BlockSnapshot::asset_holdings`] as a plain msgpack map with the key `(cred,
 /// addr)` **deref'd off its `Arc`** — so the wire form carries no `Arc` (no serde `rc`
@@ -1050,6 +1057,9 @@ pub struct BlockUpdate<'a> {
     /// At an epoch boundary: each DRep's refreshed `active_until` (tagged key → epoch);
     /// `None` between boundaries. DReps absent from the map become expired.
     pub drep_active_until: Option<&'a HashMap<Vec<u8>, i64>>,
+    /// Governance votes cast in this block per DRep (tagged key → count; a tx voting on
+    /// several actions counts once per action). Bumps `drep_vote_counts`.
+    pub drep_votes: &'a std::collections::HashMap<Vec<u8>, u32>,
 }
 
 pub struct State {
@@ -1462,6 +1472,56 @@ impl State {
         );
     }
 
+    /// Backfill `BlockSnapshot::drep_vote_counts` from db-sync when resuming from a snapshot
+    /// saved before the field existed (empty map). `reset` fetches it inline; thereafter
+    /// `apply_block` maintains it. Bounded by the snapshot's slot so votes in blocks the sink
+    /// is about to replay aren't counted twice.
+    pub async fn populate_drep_vote_counts(&mut self, epoch: u64) {
+        let needs = self
+            .history
+            .last()
+            .map(|s| s.drep_vote_counts.is_empty())
+            .unwrap_or(false);
+        if !needs {
+            return;
+        }
+        let Some(snap_slot) = self.history.last().map(|s| s.slot) else {
+            return;
+        };
+        let Some(db) = self.db().await else { return };
+        let last_tx_id = match db.slot_info(snap_slot).await {
+            Ok((id, _)) => id,
+            Err(e) => {
+                tracing::warn!("failed to resolve slot {snap_slot} for drep vote counts: {e}");
+                return;
+            }
+        };
+        let counts = match db.drep_vote_counts(last_tx_id, epoch).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to fetch drep vote counts: {e}");
+                return;
+            }
+        };
+        let Some(snap) = self.history.last_mut() else {
+            return;
+        };
+        for (drep, (total, epoch_votes)) in counts {
+            snap.drep_vote_counts.insert(
+                drep,
+                DRepVotes {
+                    total,
+                    epoch,
+                    epoch_votes,
+                },
+            );
+        }
+        tracing::info!(
+            dreps = snap.drep_vote_counts.len(),
+            "drep vote counts backfilled from db-sync"
+        );
+    }
+
     /// Populate ADA Handle cache from db-sync if empty.
     pub async fn populate_handles(&mut self) {
         let is_empty = self
@@ -1753,6 +1813,24 @@ impl State {
         let dreps = db.drep_metadata(last_tx_id, 0).await?;
         tracing::info!("{} DReps with metadata", dreps.len());
 
+        tracing::info!("Fetching DRep vote counts...");
+        let drep_vote_counts: HashMap<Vec<u8>, DRepVotes> = db
+            .drep_vote_counts(last_tx_id, current_epoch)
+            .await?
+            .into_iter()
+            .map(|(k, (total, epoch_votes))| {
+                (
+                    k,
+                    DRepVotes {
+                        total,
+                        epoch: current_epoch,
+                        epoch_votes,
+                    },
+                )
+            })
+            .collect();
+        tracing::info!("{} DReps with governance votes", drep_vote_counts.len());
+
         // Seed the live-refresh cursors to the current max: this reset just loaded the
         // current tickers/names, so the per-block refresh only needs newer rows.
         let pool_meta_cursor = db.max_pool_meta_id().await?;
@@ -1853,6 +1931,7 @@ impl State {
             address_balances,
             address_balances_populated: true,
             dreps,
+            drep_vote_counts,
             stakes,
             rewards,
             decimals,
@@ -1911,6 +1990,7 @@ impl State {
             withdrawal_changes,
             reward_deltas,
             drep_active_until,
+            drep_votes,
         } = update;
 
         let prev = self.history.last().expect("state not initialized");
@@ -2085,6 +2165,17 @@ impl State {
         } else {
             prev.dreps.clone()
         };
+        // Governance votes cast in this block: bump each voter's lifetime total and its
+        // current-epoch tally (self-resetting via the epoch stamp — see `DRepVotes`).
+        let drep_vote_counts = if drep_votes.is_empty() {
+            prev.drep_vote_counts.clone()
+        } else {
+            let mut counts = prev.drep_vote_counts.clone();
+            for (drep, n) in drep_votes {
+                counts.entry(drep.clone()).or_default().add(*n, epoch);
+            }
+            counts
+        };
         let decimals = prev.decimals.clone();
         let handle_by_address = prev.handle_by_address.clone();
         let address_by_handle = prev.address_by_handle.clone();
@@ -2104,6 +2195,7 @@ impl State {
             drep_delegations,
             drep_delegators,
             dreps,
+            drep_vote_counts,
             stakes,
             rewards,
             decimals,
@@ -2895,6 +2987,9 @@ mod tests {
         reward_deltas.insert(cred_c.clone(), 10i64);
         let mut drep_active = HashMap::new();
         drep_active.insert(drep_x.clone(), 25i64); // drep_y absent -> expires
+                                                   // drep_x votes twice in this block (one tx, two governance actions).
+        let mut drep_votes = std::collections::HashMap::new();
+        drep_votes.insert(drep_x.clone(), 2u32);
 
         state.apply_block(BlockUpdate {
             slot: 200,
@@ -2911,6 +3006,7 @@ mod tests {
             withdrawal_changes: &withdrawals,
             reward_deltas: Some(&reward_deltas),
             drep_active_until: Some(&drep_active),
+            drep_votes: &drep_votes,
         });
 
         // ---- Forward: every tracked value updated exactly. ----
@@ -2988,6 +3084,15 @@ mod tests {
         assert_eq!(cur.dreps.get(&drep_x).unwrap().active_until, Some(25));
         assert_eq!(cur.dreps.get(&drep_y).unwrap().active_until, None);
 
+        // Governance votes: both counted, and the epoch tally is stamped with this block's
+        // epoch — so it reads 2 for epoch 11 and 0 for any other (a DRep that hasn't voted
+        // yet in the current epoch), while the lifetime total keeps growing.
+        let votes = cur.drep_vote_counts.get(&drep_x).unwrap();
+        assert_eq!(votes.total, 2);
+        assert_eq!(votes.votes_in(11), 2);
+        assert_eq!(votes.votes_in(12), 0);
+        assert!(cur.drep_vote_counts.get(&drep_y).is_none());
+
         // total_staked: only cred_c newly enters the pool-delegated set (+210).
         assert_eq!(cur.total_staked, 315);
 
@@ -3063,6 +3168,7 @@ mod tests {
             withdrawal_changes: &[],
             reward_deltas: None,
             drep_active_until: None,
+            drep_votes: &std::collections::HashMap::new(),
         });
 
         let cur = state.current().unwrap();
@@ -3147,6 +3253,7 @@ mod tests {
             withdrawal_changes: &[],
             reward_deltas: None,
             drep_active_until: None,
+            drep_votes: &std::collections::HashMap::new(),
         });
 
         let cur = state.current().unwrap();

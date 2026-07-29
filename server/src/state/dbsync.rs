@@ -880,6 +880,61 @@ impl DbSync {
         Ok(rows.into_iter().map(|r| (r.hash_raw, r.count)).collect())
     }
 
+    /// Governance votes cast per DRep as of `last_tx_id`: `tagged drep bytes -> (lifetime
+    /// total, votes cast in `epoch`)`. The key is the same `[0x00 key | 0x01 script] ++ raw`
+    /// tagging used for every DRep map in state. Seeds `BlockSnapshot::drep_vote_counts`
+    /// (at `reset`, and via `populate_drep_vote_counts` on resume); `apply_block` maintains
+    /// it per block afterwards, so the tx-id bound is what keeps the two from double-counting.
+    ///
+    /// Two queries rather than one `COUNT(*) FILTER (WHERE b.epoch_no = …)`: the lifetime
+    /// total needs no block join at all (a ~35k-row scan of `voting_procedure`, ~10 ms),
+    /// while joining tx+block for every vote just to reach `epoch_no` costs seconds.
+    pub async fn drep_vote_counts(
+        &self,
+        last_tx_id: i64,
+        epoch: u64,
+    ) -> Result<HashMap<Vec<u8>, (u64, u32)>, sqlx::Error> {
+        let totals = sqlx::query!(
+            r#"SELECT dh.raw AS "raw!", dh.has_script AS "has_script!", COUNT(*) AS "count!"
+               FROM voting_procedure vp
+               JOIN drep_hash dh ON dh.id = vp.drep_voter
+               WHERE vp.tx_id <= $1 AND dh.raw IS NOT NULL
+               GROUP BY dh.raw, dh.has_script"#,
+            last_tx_id
+        )
+        .fetch_all(&self.db)
+        .await?;
+        let this_epoch = sqlx::query!(
+            r#"SELECT dh.raw AS "raw!", dh.has_script AS "has_script!", COUNT(*) AS "count!"
+               FROM voting_procedure vp
+               JOIN tx t ON t.id = vp.tx_id
+               JOIN block b ON b.id = t.block_id
+               JOIN drep_hash dh ON dh.id = vp.drep_voter
+               WHERE vp.tx_id <= $1 AND b.epoch_no = $2 AND dh.raw IS NOT NULL
+               GROUP BY dh.raw, dh.has_script"#,
+            last_tx_id,
+            epoch as i32
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        let tagged = |raw: &[u8], has_script: bool| -> Vec<u8> {
+            let tag = if has_script { 0x01u8 } else { 0x00 };
+            [&[tag][..], raw].concat()
+        };
+        let mut counts: HashMap<Vec<u8>, (u64, u32)> = totals
+            .into_iter()
+            .map(|r| (tagged(&r.raw, r.has_script), (r.count.max(0) as u64, 0)))
+            .collect();
+        for r in this_epoch {
+            counts
+                .entry(tagged(&r.raw, r.has_script))
+                .or_insert((0, 0))
+                .1 = r.count.max(0) as u32;
+        }
+        Ok(counts)
+    }
+
     /// Pools with a pending (un-cancelled) retirement as of `last_tx_id`, as
     /// `(hash_raw, retiring_epoch)` — the latest retirement announced *after* the pool's
     /// latest registration (a re-registration cancels it). Used to backfill
