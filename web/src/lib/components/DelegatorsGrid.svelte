@@ -255,16 +255,13 @@
             {$drep.given_name ?? $drep.drep_id.slice(5, 13)}
           {/if}
         </div>
+        <!-- No delegator count here: this page *is* the delegators, and the grid shows how
+             many. Only the subject's other headline number stays. -->
         <div class="subject-counts">
-          <span class="lbl">delegators</span><span class="val">{subject.delegators.toLocaleString()}</span>
           {#if $pool}
-            <span class="slash">·</span><span class="lbl">blocks</span><span class="val"
-              >{$pool.blocks.toLocaleString()}</span
-            >
+            <span class="lbl">blocks</span><span class="val">{$pool.blocks.toLocaleString()}</span>
           {:else if $drep}
-            <span class="slash">·</span><span class="lbl">votes</span><span class="val"
-              >{($drep.votes ?? 0).toLocaleString()}</span
-            >
+            <span class="lbl">votes</span><span class="val">{($drep.votes ?? 0).toLocaleString()}</span>
           {/if}
         </div>
       </div>
@@ -386,10 +383,6 @@
   .val {
     font-variant-numeric: tabular-nums;
   }
-  .slash {
-    color: rgb(255 255 255 / 0.3);
-  }
-
   .scroll {
     flex: 1;
     min-height: 0;

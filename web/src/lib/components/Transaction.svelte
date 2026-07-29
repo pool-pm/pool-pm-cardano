@@ -115,7 +115,9 @@
     const frac = padded.slice(-6);
     const wholeNum = Number(whole);
     const s = sign ?? '';
-    const sym = '<span class="ada-sym">\u2009₳</span>';
+    // U+202F (narrow no-break space): keeps the symbol tight against the amount and
+    // stops a wrap from stranding the ₳ on its own line.
+    const sym = '<span class="ada-sym">\u202f₳</span>';
     const dec = (d: string) => `<span class="ada-dec">.${d}</span>`;
     if (wholeNum >= 1000) return s + wholeNum.toLocaleString() + sym;
     if (wholeNum >= 1) {

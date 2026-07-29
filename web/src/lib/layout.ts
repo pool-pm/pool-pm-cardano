@@ -21,24 +21,25 @@ export function formatCount(n: number): string {
 
 /** Compact ADA from a lovelace string for tight rows: "12345678000000" → "12.3M ₳". */
 export function formatAdaCompact(lovelace: string): string {
-  return formatCount(Number(BigInt(lovelace) / 1_000_000n)) + ' ₳';
+  return formatCount(Number(BigInt(lovelace) / 1_000_000n)) + ' ₳';
 }
 
 /** Full ADA from a lovelace string (string slicing, no float arithmetic): inserts the
- * decimal point and groups the whole part for large values. Uses a thin space before
- * the ₳ symbol. */
+ * decimal point and groups the whole part for large values. The symbol is preceded by a
+ * NARROW NO-BREAK SPACE (U+202F): narrow like a thin space, but a line can never wrap
+ * between the amount and its ₳ — which it did, on a phone-width header. */
 export function formatAda(lovelace: string): string {
   const padded = lovelace.padStart(7, '0');
   const whole = padded.slice(0, -6) || '0';
   const frac = padded.slice(-6);
   const wholeNum = Number(whole);
-  if (wholeNum >= 1000) return wholeNum.toLocaleString() + ' ₳';
+  if (wholeNum >= 1000) return wholeNum.toLocaleString() + ' ₳';
   if (wholeNum >= 1) {
     const trimmed = frac.slice(0, 2).replace(/0+$/, '');
-    return trimmed ? whole + '.' + trimmed + ' ₳' : whole + ' ₳';
+    return trimmed ? whole + '.' + trimmed + ' ₳' : whole + ' ₳';
   }
   const trimmed = frac.replace(/0+$/, '');
-  return trimmed ? '0.' + trimmed + ' ₳' : '0' + ' ₳';
+  return trimmed ? '0.' + trimmed + ' ₳' : '0' + ' ₳';
 }
 
 /** Group the integer part of a decimals-formatted quantity string with locale thousands
