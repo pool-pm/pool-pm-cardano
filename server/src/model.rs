@@ -12,12 +12,10 @@ pub struct Pool {
     /// Epoch at which the pool retires, if a retirement is pending and not cancelled by
     /// a later (re-)registration. The pool is active while this is `None` or still in
     /// the future. Maintained per block in `apply_block`.
-    #[serde(default)]
     pub retiring_epoch: Option<i64>,
     /// Lifetime blocks minted by the pool. Seeded from db-sync, incremented per block in
     /// `apply_block`; carried across param updates (unlike `retiring_epoch`, which a
     /// re-registration resets). Rollbacks revert via snapshot history truncation.
-    #[serde(default)]
     pub blocks: i64,
 }
 
@@ -56,7 +54,6 @@ pub struct DRep {
     /// `Some(e)` with `e >= current_epoch`; `None` = expired/deregistered. Seeded at
     /// reset, refreshed each epoch boundary in `apply_block` (a per-epoch ledger value,
     /// not cert-driven). Analogous to `Pool::retiring_epoch`.
-    #[serde(default)]
     pub active_until: Option<i64>,
 }
 
@@ -120,15 +117,10 @@ pub struct DRepVotes {
     /// DRep registered after an action was decided isn't marked down for it. Refreshed from
     /// db-sync at startup and at each epoch boundary (actions are proposed every few days, so
     /// a mid-epoch proposal moves it by well under a point until then).
-    #[serde(default)]
     pub eligible: u32,
     /// `"tx_hash#index"` of every action voted on → the epoch of the DRep's **latest** vote on
     /// it (0 for votes seeded from db-sync that predate the seeded epoch). Dedupes re-votes at
     /// the tip, where a db query is not an option. ~36 entries per voting DRep on mainnet.
-    ///
-    /// A trailing `#[serde(default)]` field, so snapshots written before it still load (they
-    /// arrive with it empty, which is what triggers the db-sync repopulate that fills it).
-    #[serde(default)]
     pub actions: imbl::HashMap<String, u64>,
 }
 
@@ -190,7 +182,6 @@ pub type PolicyAssets = Vec<(Vec<u8>, Vec<(Vec<u8>, u64)>)>;
 pub struct TxOutput {
     pub lovelaces: Decimal,
     pub address: Vec<u8>,
-    #[serde(default)]
     pub assets: PolicyAssets,
 }
 
@@ -543,19 +534,6 @@ mod codec_tests {
 
         v.add("c#0", 11);
         assert_eq!((v.total, v.votes_in(11)), (3, 2));
-    }
-
-    /// `eligible` and `actions` are **trailing** `#[serde(default)]` fields, so a snapshot
-    /// written before them (rmp-serde encodes a struct as an array, so it holds only the first
-    /// three) still loads — which is what keeps this change from forcing a cold reset. The empty
-    /// `actions` is the signal `populate_drep_vote_counts` looks for to re-seed from db-sync.
-    #[test]
-    fn loads_a_snapshot_written_before_the_new_fields() {
-        let old = rmp_serde::to_vec(&(7u64, 646u64, 2u32)).unwrap();
-        let v: DRepVotes = rmp_serde::from_slice(&old).unwrap();
-        assert_eq!((v.total, v.epoch, v.epoch_votes), (7, 646, 2));
-        assert_eq!(v.eligible, 0);
-        assert!(v.actions.is_empty());
     }
 
     /// A db-sync seed carries the actions voted before the seeded epoch with epoch 0, so only

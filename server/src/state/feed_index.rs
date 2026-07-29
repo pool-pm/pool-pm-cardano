@@ -34,9 +34,7 @@ pub struct FeedIndex {
     /// Blocks in which a pool (SPO) / DRep cast a governance vote, keyed by the same
     /// bytes as the other subject maps (pool hash / drep tag+hash). Populated per block
     /// from `extract_vote_subjects`; feeds surface votes without a db query.
-    #[serde(default)]
     pool_votes: HashMap<Vec<u8>, Vec<BlockRef>>,
-    #[serde(default)]
     drep_votes: HashMap<Vec<u8>, Vec<BlockRef>>,
 }
 

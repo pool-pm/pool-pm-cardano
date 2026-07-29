@@ -51,15 +51,12 @@ pub struct BlockSnapshot {
     /// independently of `dreps`, which only holds DReps that published off-chain metadata —
     /// a nameless DRep votes too. Seeded from db-sync at reset / resume, then maintained
     /// per block by `apply_block`.
-    #[serde(default)]
     pub drep_vote_counts: HashMap<Vec<u8>, DRepVotes>,
     /// Asset fingerprint → decimals (non-zero only, from CIP-26 + CIP-68)
     pub decimals: HashMap<String, u8>,
     /// ADA Handle: address → list of handle names owned
-    #[serde(default)]
     pub handle_by_address: HashMap<String, Vec<String>>,
     /// ADA Handle: handle name → owner address
-    #[serde(default)]
     pub address_by_handle: HashMap<String, String>,
     /// ADA Handle: 28-byte stake credential → handle names owned across all of its payment
     /// addresses (a re-keying of `handle_by_address` by stake credential; the shortest wins at
@@ -69,27 +66,23 @@ pub struct BlockSnapshot {
     #[serde(skip)]
     pub handle_by_stake: HashMap<Vec<u8>, Vec<String>>,
     /// Governance action titles: "tx_hash#index" → title
-    #[serde(default)]
     pub gov_action_titles: HashMap<String, String>,
     /// Live ADA balance per payment address (raw address bytes → lovelace).
     /// Entries with zero balance are removed; mirrors `stakes` at address level.
     /// Drives the live balance in the address feed header (replacing what used
     /// to be a one-shot db-sync query at connect).
-    #[serde(default, with = "wire::byte_key_map")]
+    #[serde(with = "wire::byte_key_map")]
     pub address_balances: HashMap<Vec<u8>, i64>,
-    /// True iff `address_balances` was fully populated from db-sync (either by
-    /// `reset()` or `populate_address_balances`). False on old snapshots and
-    /// after a failed populate — in which case the sink will have added a
-    /// *partial* set of entries during catch-up that would otherwise fool an
-    /// `is_empty()` check and skip the re-populate.
-    #[serde(default)]
+    /// True iff `address_balances` was fully populated from db-sync (either by `reset()` or
+    /// `populate_address_balances`). False after a failed populate — in which case the sink
+    /// will have added a *partial* set of entries during catch-up that would otherwise fool
+    /// an `is_empty()` check and skip the re-populate.
     pub address_balances_populated: bool,
     /// Total live stake delegated to pools = Σ over `pool_delegations` of
     /// `stakes[cred] + rewards[cred]`. Maintained incrementally: exact at `reset()`,
     /// then adjusted in `apply_block` only when a pool delegation is added/removed (a
     /// stable delegator's balance drift between resets isn't re-summed — fine for the
     /// homepage % figure, re-synced on restart via `populate_total_staked`).
-    #[serde(default)]
     pub total_staked: i64,
     /// Global per-address multi-asset holdings: a single **flat** map from a composite
     /// [`HeldKey`] = `((stake credential | None, payment address), policy ++ name)` to the
@@ -109,9 +102,8 @@ pub struct BlockSnapshot {
     #[serde(skip)]
     pub asset_holdings: AssetHoldings,
     /// True iff `asset_holdings` was fully populated from db-sync (by `reset()` or
-    /// `populate_asset_holdings`). False on snapshots saved before the field existed,
-    /// so warm resume runs the one-time populate. Mirrors `address_balances_populated`.
-    #[serde(default)]
+    /// `populate_asset_holdings`). False after a failed populate, so a warm resume runs it
+    /// again. Mirrors `address_balances_populated`.
     pub asset_holdings_populated: bool,
 }
 
@@ -184,8 +176,8 @@ fn intern_addr(interner: &mut AddrInterner, cred: Option<&[u8]>, addr: &[u8]) ->
 /// A held token quantity. `u128`, because a per-address sum across UTXOs can exceed `u64`
 /// (the ledger bounds a single output to `i64`, but several add up). MessagePack/rmp has
 /// no 128-bit int, so it serializes as a *variable-length* value: a plain int when it fits
-/// `u64` (the near-universal case — 1 byte for small amounts, fully back-compatible with
-/// the old `u64` leaf), else a `(low, high)` pair. Arithmetic uses the inner `.0`.
+/// `u64` — the near-universal case, 1 byte for small amounts — else a `(low, high)` pair.
+/// Arithmetic uses the inner `.0`.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct Qty(pub u128);
 
@@ -639,18 +631,9 @@ impl BlockSnapshot {
 }
 
 /// On-disk snapshot format version. Bump on any breaking change to a persisted field's
-/// shape/semantics that rmp can't catch (it tolerates int-width changes) — a mismatch is
-/// rejected on load so the state rebuilds from db-sync. v2: `asset_holdings` leaf went
-/// from UTXO count to summed held quantity. v3: that leaf became a `u128` `Qty`. v4:
-/// `asset_holdings` flattened to one `OrdMap<HeldKey, Qty>`. v5: force a rebuild to heal
-/// `address_balances`/`asset_holdings` drift accumulated by the intra-block debit-drop bug
-/// (produced now applied before consumed in `apply_block`). v6: the holdings leaf gained the
-/// asset's `mint_time` (`Qty` → `Held`). v7: holdings key `(cred, addr)` became an interned
-/// `Arc<AddrKey>` (wire shape unchanged per entry, but re-interned on load). v8: the `Held`
-/// leaf became a packed 128-bit `(mint_slot:30 | qty:98)` and `mint_time` (unix seconds)
-/// became `mint_slot` — different semantics, so old leaves must rebuild. v9: `FeedIndex`
-/// gained `pool_votes`/`drep_votes` (governance vote-block index); rmp-serde encodes structs
-/// positionally, so the extra fields shift the layout and old snapshots must rebuild.
+/// shape or semantics that rmp can't catch (it tolerates int-width changes, and encodes
+/// structs positionally, so an added or removed field silently shifts every field after it)
+/// — a mismatch is rejected on load and the state rebuilds from db-sync.
 const SNAPSHOT_FORMAT: u32 = 15;
 
 /// Serializes [`BlockSnapshot::asset_holdings`] **grouped by address**: a msgpack map of
@@ -1549,12 +1532,11 @@ impl State {
         );
     }
 
-    /// Populate `asset_holdings` from db-sync if the loaded snapshot predates the field
-    /// (the `#[serde(default)]` empty map, `asset_holdings_populated == false`). Runs
-    /// once after a warm resume from such a snapshot; thereafter `apply_block` maintains
-    /// the map per block. Gated on the explicit flag (not `is_empty()`) so a genuinely
-    /// asset-free chain state isn't re-scanned every restart. Builds as-of the
-    /// snapshot's slot — same point-in-time semantics as `reset()`.
+    /// Populate `asset_holdings` from db-sync when the loaded snapshot carries no complete map
+    /// (`asset_holdings_populated == false`, left by an earlier failed populate). Runs once on
+    /// warm resume; thereafter `apply_block` maintains the map per block. Gated on the explicit
+    /// flag (not `is_empty()`) so a genuinely asset-free chain state isn't re-scanned every
+    /// restart. Builds as-of the snapshot's slot — same point-in-time semantics as `reset()`.
     pub async fn populate_asset_holdings(&mut self) {
         let already = self
             .history
@@ -3141,10 +3123,10 @@ mod tests {
             let back: Qty = rmp_serde::from_slice(&bytes).unwrap();
             assert_eq!(back.0, v, "round-trip {v}");
         }
-        // Back-compat: a leaf serialized as a plain u64 (old format) reads as Qty.
-        let old = rmp_serde::to_vec(&123u64).unwrap();
-        assert_eq!(rmp_serde::from_slice::<Qty>(&old).unwrap().0, 123);
-        // Small values stay 1 byte (same as the old u64 leaf), not the 2-int fallback.
+        // A bare msgpack int is a valid encoding: that's what a quantity fitting u64 writes.
+        let plain = rmp_serde::to_vec(&123u64).unwrap();
+        assert_eq!(rmp_serde::from_slice::<Qty>(&plain).unwrap().0, 123);
+        // And a small one costs a single byte, not the two-int pair.
         assert_eq!(rmp_serde::to_vec(&Qty(1)).unwrap().len(), 1);
     }
 
