@@ -255,14 +255,12 @@
             {$drep.given_name ?? $drep.drep_id.slice(5, 13)}
           {/if}
         </div>
-        <!-- No delegator count here: this page *is* the delegators, and the grid shows how
-             many. Only the subject's other headline number stays. -->
+        <!-- Just the delegator count, read as a phrase rather than a label/value pair —
+             it's what this page is about. The subject's other headline number (a pool's
+             blocks, a DRep's votes) belongs on its feed, not here. -->
         <div class="subject-counts">
-          {#if $pool}
-            <span class="lbl">blocks</span><span class="val">{$pool.blocks.toLocaleString()}</span>
-          {:else if $drep}
-            <span class="lbl">votes</span><span class="val">{($drep.votes ?? 0).toLocaleString()}</span>
-          {/if}
+          <span class="val">{subject.delegators.toLocaleString()}</span>
+          <span class="lbl">delegators</span>
         </div>
       </div>
     {/if}
@@ -374,14 +372,14 @@
     font-size: 12px;
     color: rgb(255 255 255 / 0.75);
   }
-  .lbl {
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    font-size: 9px;
-    color: rgb(255 255 255 / 0.4);
-  }
+  /* "2,371 delegators": the count carries the emphasis, the word trails it in the muted
+     tone — a phrase, not the uppercase LABEL VALUE pair the assets header uses. */
   .val {
     font-variant-numeric: tabular-nums;
+    color: rgb(255 255 255 / 0.85);
+  }
+  .lbl {
+    color: rgb(255 255 255 / 0.45);
   }
   .scroll {
     flex: 1;
