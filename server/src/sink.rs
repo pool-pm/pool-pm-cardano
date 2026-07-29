@@ -741,7 +741,12 @@ impl Worker {
             // before SSE opens. `node_tip` is 0 only until the first message arrives; treat that
             // as not-yet-known and keep catching up.
             let tip = stage.node_tip.load(Ordering::Relaxed);
-            if tip > 0 && slot >= tip {
+            // Two ways to be done, whichever comes first: the applied block reached the tip the
+            // node reported, or the node has run out of blocks (`at_tip`) and we've applied the
+            // last one it sent. The second is what stops us idling for the next minted block.
+            let drained = stage.at_tip.load(Ordering::Relaxed)
+                && slot >= stage.sent_slot.load(Ordering::Relaxed);
+            if (tip > 0 && slot >= tip) || drained {
                 stage.catchup_target.store(0, Ordering::Relaxed);
                 stage.catching_up.store(false, Ordering::Relaxed);
                 catchup_complete = true;
@@ -756,6 +761,7 @@ impl Worker {
                     slot,
                     height,
                     tip,
+                    drained,
                     blocks,
                     apply_ms,
                     wall_ms,
@@ -905,6 +911,11 @@ pub struct Stage {
     /// The node's tip slot, published by the source stage. Catch-up ends when an applied block
     /// reaches this, so SSE opens the instant we drain to the real tip (see the completion logic).
     node_tip: Arc<AtomicU64>,
+    /// Set by the source when the node answers `Await` (nothing left to hand over), with the
+    /// last slot it forwarded. Applying that slot while the flag holds means we are *at* the
+    /// node's tip — the correct end of catch-up.
+    at_tip: Arc<std::sync::atomic::AtomicBool>,
+    sent_slot: Arc<AtomicU64>,
     /// Catch-up accounting, to tell *work* from *waiting*: blocks applied, the time spent
     /// applying them, and when the first one landed. Without this the only visible figure is
     /// the wall clock, which can't say whether the drain is slow or the chain simply hasn't
@@ -937,6 +948,8 @@ pub struct SinkConfig {
     pub snapshot_depth: usize,
     pub catchup_target: Option<u64>,
     pub node_tip: Arc<AtomicU64>,
+    pub at_tip: Arc<std::sync::atomic::AtomicBool>,
+    pub sent_slot: Arc<AtomicU64>,
     pub catching_up: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -949,6 +962,8 @@ pub fn bootstrapper(context: &Context, config: SinkConfig) -> Result<Stage, Erro
         snapshot_depth,
         catchup_target,
         node_tip,
+        at_tip,
+        sent_slot,
         catching_up,
     } = config;
     let genesis = GenesisValues::from(context.chain.clone());
@@ -963,6 +978,8 @@ pub fn bootstrapper(context: &Context, config: SinkConfig) -> Result<Stage, Erro
         snapshot_depth,
         catchup_target: AtomicU64::new(catchup_target.unwrap_or(0)),
         node_tip,
+        at_tip,
+        sent_slot,
         catching_up,
         catchup_blocks: AtomicU64::new(0),
         catchup_apply_us: AtomicU64::new(0),

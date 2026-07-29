@@ -278,8 +278,17 @@ pub fn run(args: Args) -> Result<(), Error> {
     let catching_up = Arc::new(std::sync::atomic::AtomicBool::new(catchup_target.is_some()));
     // Node tip, published by the source and read by the sink to end catch-up at the real tip.
     let node_tip = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // Source → sink: "the node handed over everything it has", and the last slot it sent.
+    let at_tip = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sent_slot = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-    let source = crate::source::bootstrapper(&ctx, args.socket.clone(), node_tip.clone());
+    let source = crate::source::bootstrapper(
+        &ctx,
+        args.socket.clone(),
+        node_tip.clone(),
+        at_tip.clone(),
+        sent_slot.clone(),
+    );
     let sink = sink::bootstrapper(
         &ctx,
         sink::SinkConfig {
@@ -290,6 +299,8 @@ pub fn run(args: Args) -> Result<(), Error> {
             snapshot_depth,
             catchup_target,
             node_tip,
+            at_tip,
+            sent_slot,
             catching_up: catching_up.clone(),
         },
     )?;

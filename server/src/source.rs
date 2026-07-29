@@ -75,6 +75,14 @@ pub struct Stage {
     /// chain-sync reports the current tip in every message, so this is exact from the first block.
     node_tip: Arc<AtomicU64>,
 
+    /// Published for the sink so catch-up can end on the right event: `at_tip` is set when the
+    /// node answers `Await` — it has handed over every block it has — and `sent_slot` is the
+    /// last slot we forwarded. Draining is complete when the sink has applied `sent_slot` while
+    /// `at_tip` holds; waiting for a block to *cross* the tip instead would idle until the chain
+    /// mints the next one (~20s on mainnet), with the site down the whole time.
+    at_tip: Arc<std::sync::atomic::AtomicBool>,
+    sent_slot: Arc<AtomicU64>,
+
     pub output: SourceOutputPort,
 
     #[metric]
@@ -166,6 +174,8 @@ impl Worker {
                 stage.last_slot = slot;
                 stage.last_tip_slot = tip.0.slot_or_default();
                 stage.node_tip.store(stage.last_tip_slot, Ordering::Relaxed);
+                stage.sent_slot.store(slot, Ordering::Relaxed);
+                stage.at_tip.store(false, Ordering::Relaxed);
                 stage.chain_tip.set(stage.last_tip_slot as i64);
                 stage.current_slot.set(slot as i64);
                 stage.ops_count.inc(1);
@@ -195,8 +205,23 @@ impl Worker {
             }
             // At the tip: `recv_while_must_reply` blocks for the next block, so we normally never
             // see `Await` here; if we do, it's a no-op and the next schedule reads again.
+            //
+            // Logged at INFO the first time: it's the moment the node has nothing left to give,
+            // which is what separates "the sink is still draining" from "the sink drained and
+            // we're both waiting for the chain to produce". Catch-up ends on an applied block
+            // reaching the tip, so if that stamp lands early and catch-up completes much later,
+            // the gap is the chain, not our work.
             NextResponse::Await => {
-                debug!("reached tip, awaiting next block");
+                // The node has nothing left to send: everything it has is now with the sink.
+                if !stage.at_tip.swap(true, Ordering::Relaxed) {
+                    info!(
+                        last_slot = stage.last_slot,
+                        tip = stage.last_tip_slot,
+                        "reached node tip — all available blocks handed over"
+                    );
+                } else {
+                    debug!("reached tip, awaiting next block");
+                }
                 Ok(())
             }
         }
@@ -260,12 +285,20 @@ impl gasket::framework::Worker<Stage> for Worker {
 
 /// Build the source stage. `ctx.intersect` sets the first-connect intersection (snapshot point,
 /// db-sync boundary, or tip — chosen in `daemon::run`); breadcrumbs then track our live position.
-pub fn bootstrapper(ctx: &Context, socket_path: PathBuf, node_tip: Arc<AtomicU64>) -> Stage {
+pub fn bootstrapper(
+    ctx: &Context,
+    socket_path: PathBuf,
+    node_tip: Arc<AtomicU64>,
+    at_tip: Arc<std::sync::atomic::AtomicBool>,
+    sent_slot: Arc<AtomicU64>,
+) -> Stage {
     Stage {
         socket_path,
         chain: ctx.chain.clone().into(),
         intersect: ctx.intersect.clone(),
         node_tip,
+        at_tip,
+        sent_slot,
         // NOTE: NOT `ctx.breadcrumbs` — the daemon builds that with capacity 0, which retains
         // nothing, so a reconnect would re-intersect at the boot point and replay. We keep a real
         // window so reconnects resume at the current tip.
