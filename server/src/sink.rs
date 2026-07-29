@@ -65,6 +65,7 @@ impl Worker {
     }
 
     async fn handle_apply(&self, cbor: &[u8], stage: &Stage) -> Result<(), WorkerError> {
+        let apply_started = std::time::Instant::now();
         let block = MultiEraBlock::decode(cbor).or_panic()?;
         let slot = block.slot();
         let height = block.number();
@@ -715,6 +716,25 @@ impl Worker {
         let catchup = stage.catchup_target.load(Ordering::Relaxed);
         let mut catchup_complete = false;
         if catchup > 0 {
+            // Account for this block before deciding whether we're done.
+            let now_us = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_micros() as u64)
+                .unwrap_or(0);
+            stage
+                .catchup_first_us
+                .compare_exchange(
+                    0,
+                    now_us.saturating_sub(apply_started.elapsed().as_micros() as u64),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
+                .ok();
+            stage.catchup_blocks.fetch_add(1, Ordering::Relaxed);
+            stage.catchup_apply_us.fetch_add(
+                apply_started.elapsed().as_micros() as u64,
+                Ordering::Relaxed,
+            );
             // Complete the moment we drain to the node's real tip (published by the source), not
             // when we cross the wall-clock estimate `catchup` — that estimate is normally a bit
             // ahead of the tip, so crossing it would force an extra wait for the next minted block
@@ -725,7 +745,23 @@ impl Worker {
                 stage.catchup_target.store(0, Ordering::Relaxed);
                 stage.catching_up.store(false, Ordering::Relaxed);
                 catchup_complete = true;
-                info!(slot, height, tip, "catch-up complete");
+                // `apply_ms` is time spent applying, `wall_ms` the span from the first block
+                // to this one: the difference is time the sink spent waiting for the node to
+                // hand it the next block, which on mainnet means waiting for one to be minted.
+                let blocks = stage.catchup_blocks.load(Ordering::Relaxed);
+                let apply_ms = stage.catchup_apply_us.load(Ordering::Relaxed) / 1000;
+                let first_us = stage.catchup_first_us.load(Ordering::Relaxed);
+                let wall_ms = now_us.saturating_sub(first_us) / 1000;
+                info!(
+                    slot,
+                    height,
+                    tip,
+                    blocks,
+                    apply_ms,
+                    wall_ms,
+                    idle_ms = wall_ms.saturating_sub(apply_ms),
+                    "catch-up complete"
+                );
             } else if height % 1000 == 0 {
                 let target = if tip > 0 { tip } else { catchup };
                 let remaining = target.saturating_sub(slot) / 20;
@@ -869,6 +905,13 @@ pub struct Stage {
     /// The node's tip slot, published by the source stage. Catch-up ends when an applied block
     /// reaches this, so SSE opens the instant we drain to the real tip (see the completion logic).
     node_tip: Arc<AtomicU64>,
+    /// Catch-up accounting, to tell *work* from *waiting*: blocks applied, the time spent
+    /// applying them, and when the first one landed. Without this the only visible figure is
+    /// the wall clock, which can't say whether the drain is slow or the chain simply hasn't
+    /// produced the next block yet.
+    catchup_blocks: AtomicU64,
+    catchup_apply_us: AtomicU64,
+    catchup_first_us: AtomicU64,
     /// Shared flag: set to false once catch-up is complete. SSE server waits on this.
     pub catching_up: Arc<std::sync::atomic::AtomicBool>,
     /// True while an offloaded periodic snapshot save is in flight, so a slow save can't
@@ -921,6 +964,9 @@ pub fn bootstrapper(context: &Context, config: SinkConfig) -> Result<Stage, Erro
         catchup_target: AtomicU64::new(catchup_target.unwrap_or(0)),
         node_tip,
         catching_up,
+        catchup_blocks: AtomicU64::new(0),
+        catchup_apply_us: AtomicU64::new(0),
+        catchup_first_us: AtomicU64::new(0),
         snapshot_saving: Arc::new(AtomicBool::new(false)),
         ops_count: Default::default(),
         latest_block: Default::default(),
