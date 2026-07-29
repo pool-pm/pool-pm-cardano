@@ -150,10 +150,16 @@ tuned hard (mainnet cold-reset RSS ~8.5 GB); any change here must preserve these
   `#[serde(skip)]` and (de)serialized manually in `write_snapshot` / `load_snapshot`, **grouped
   by address**: `AddrKey → [(AssetId, Held)]`, keys deref'd off their `Arc` (`HoldingsSer`).
   Because the map is sorted by `(cred, addr, …)` an address's tokens are contiguous, so its
-  `(cred, addr)` is written once per address (1.3M) instead of once per token (14.8M) — that
-  alone halved both the file (3.6 GB → 2.0 GB) and the holdings load (30.0 s → 16.5 s,
-  measured back-to-back). Load interns each address **once** and inserts its tokens as they
-  stream (`HoldingsSeed` + `TokensSeed`), so the un-shared full map is never materialized.
+  `(cred, addr)` goes down once per address (1.3M, not 14.8M) and the 28-byte policy once per
+  (address, policy) run (6.3M, not 14.8M) — the wire is `address → [(policy, [(name, Held)])]`.
+  Byte strings use `serde_bytes`: plain `Vec<u8>`/`Box<[u8]>` serialize as msgpack *arrays of
+  integers* in rmp-serde (~1.5× the bytes, one visitor call per byte), worth remembering before
+  adding a byte field. Together those took the file 3.6 GB → 1.57 GB and the holdings load
+  30.0 s → 9.5 s, each step measured back-to-back. Load interns each address **once** and
+  inserts its tokens as they stream, so the un-shared full map is never materialized and each
+  entry costs exactly one allocation (`AssetIdSeed` writes `policy ++ name` straight into it).
+  The same array-of-ints encoding still applies to `AddrKey` and to the other maps' `Vec<u8>`
+  keys — ~400 MB and a chunk of the `fields` load still on the table.
   Bump `SNAPSHOT_FORMAT` on any persisted-shape change so old snapshots rebuild from db-sync;
   when the change is cheap to read both ways, a one-release read-only compat path lets a deploy
   resume rather than cold-reset (the grouping change shipped one, then removed it).
