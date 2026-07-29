@@ -49,6 +49,9 @@ impl FeedIndex {
     /// matching [`crate::state::BlockSnapshot::log_memory`]; excludes `std::HashMap` node
     /// overhead. O(entries) — one-time, run alongside the snapshot memory log.
     pub fn log_memory(&self, label: &str) {
+        if !tracing::enabled!(tracing::Level::DEBUG) {
+            return; // see `BlockSnapshot::log_memory`
+        }
         use std::mem::size_of;
         let mb = |b: usize| b / (1024 * 1024);
 
@@ -104,7 +107,7 @@ impl FeedIndex {
             + pool_index_b
             + drep_index_b;
 
-        tracing::info!(
+        tracing::debug!(
             label,
             total_content_mb = mb(total),
             pool_minted_mb = mb(pool_minted_b),

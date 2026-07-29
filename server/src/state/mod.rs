@@ -450,6 +450,12 @@ impl BlockSnapshot {
     /// O(total entries) — a one-time diagnostic after the snapshot is loaded or rebuilt,
     /// never on the hot path (unlike [`log_sizes`], which skips the big leaf walks).
     pub fn log_memory(&self, label: &str) {
+        // Diagnostics only, and not cheap: summing content bytes walks all ~15M holdings
+        // entries plus every other map — ~1s of a ~22s start. Skip the *computation* (not
+        // just the output) unless DEBUG is on, i.e. the server was started with `-v`.
+        if !tracing::enabled!(tracing::Level::DEBUG) {
+            return;
+        }
         use std::mem::size_of;
         let mb = |b: usize| b / (1024 * 1024);
 
@@ -558,7 +564,7 @@ impl BlockSnapshot {
             + gov_titles_b
             + ah_b;
 
-        tracing::info!(
+        tracing::debug!(
             label,
             rss_mb = rss_mb(),
             total_content_mb = mb(total),
@@ -587,7 +593,7 @@ impl BlockSnapshot {
         // + the `AssetId` (policy++name); the shared address bytes are accounted separately in
         // `memory: addr_interner`. `held_inline` is the value's share (`entries *
         // size_of::<Held>()`).
-        tracing::info!(
+        tracing::debug!(
             label,
             entries = ah_entries,
             total_mb = mb(ah_b),
@@ -1239,6 +1245,9 @@ impl State {
     /// structure (imbl O(1) clone) and add only their per-block diffs, so they are reported
     /// as a depth, not summed. Call once after the snapshot is loaded or rebuilt.
     pub fn log_memory(&self, label: &str) {
+        if !tracing::enabled!(tracing::Level::DEBUG) {
+            return; // see `BlockSnapshot::log_memory`: the walk itself is the cost
+        }
         if let Some(snap) = self.history.last() {
             snap.log_memory(label);
         }
@@ -1254,7 +1263,7 @@ impl State {
             // Per distinct: the AddrKey struct + its ArcInner control block, both interned once.
             let inline = self.addr_interner.len()
                 * (std::mem::size_of::<AddrKey>() + 2 * std::mem::size_of::<usize>());
-            tracing::info!(
+            tracing::debug!(
                 label,
                 distinct_addrs = self.addr_interner.len(),
                 shared_addr_bytes_mb = mb(addr_bytes),
@@ -1262,7 +1271,7 @@ impl State {
                 "memory: addr_interner (shared (cred, addr) — counted once, not per token)",
             );
         }
-        tracing::info!(
+        tracing::debug!(
             label,
             history_snapshots = self.history.len(),
             "memory: state (per-field bytes are the tip snapshot; history entries share \
@@ -1820,7 +1829,7 @@ impl State {
             }
         })
         .await?;
-        tracing::info!(
+        tracing::debug!(
             rss_mb = rss_mb(),
             assets = map.len(),
             "asset mint times loaded from db-sync"
@@ -1877,7 +1886,7 @@ impl State {
             }
         })
         .await?;
-        tracing::info!(
+        tracing::debug!(
             rss_mb = rss_mb(),
             rows,
             entries = holdings.len(),
@@ -1903,7 +1912,7 @@ impl State {
         };
 
         let (last_tx_id, block_hash) = db.slot_info(slot).await?;
-        tracing::info!(
+        tracing::debug!(
             rss_mb = rss_mb(),
             "reset: start (rebuilding state from db-sync)"
         );
@@ -1914,7 +1923,7 @@ impl State {
 
         tracing::info!("Fetching pool delegations...");
         let (pool_delegations, pool_delegators) = db.pool_delegations(last_tx_id).await?;
-        tracing::info!(
+        tracing::debug!(
             rss_mb = rss_mb(),
             "{} pool delegations in {} pools retrieved",
             pool_delegations.len(),
@@ -1923,7 +1932,7 @@ impl State {
 
         tracing::info!("Fetching DRep delegations...");
         let (drep_delegations, drep_delegators) = db.drep_delegations(last_tx_id).await?;
-        tracing::info!(
+        tracing::debug!(
             rss_mb = rss_mb(),
             "{} DRep delegations in {} DReps retrieved",
             drep_delegations.len(),
@@ -1937,7 +1946,7 @@ impl State {
         let current_epoch = Self::epoch_for_slot(slot, genesis);
         tracing::info!("Fetching rewards (epoch {})...", current_epoch);
         let rewards = db.rewards(current_epoch, last_tx_id).await?;
-        tracing::info!(
+        tracing::debug!(
             rss_mb = rss_mb(),
             "{} stake addresses with rewards",
             rewards.len()
@@ -2027,13 +2036,13 @@ impl State {
 
         tracing::info!("Fetching per-address balances...");
         let balance_rows = db.address_balances(last_tx_id).await?;
-        tracing::info!(
+        tracing::debug!(
             rss_mb = rss_mb(),
             "{} address-balance rows fetched (transient Vec)",
             balance_rows.len()
         );
         let (address_balances, stakes) = Self::balances_and_stakes(balance_rows);
-        tracing::info!(
+        tracing::debug!(
             rss_mb = rss_mb(),
             "{} addresses with UTXOs, {} stake credentials",
             address_balances.len(),
@@ -3712,7 +3721,7 @@ mod snapshot_bench {
     /// Parse the holdings stream exactly as the real loader does, but throw every entry
     /// away — no interning, no `OrdMap`. The gap to `holdings_ms` is what rebuilding the
     /// structure costs, i.e. the part a different *file format* could not fix.
-    struct CountingSeed(usize);
+    struct CountingSeed(usize, usize, usize);
     impl<'de> serde::de::DeserializeSeed<'de> for &mut CountingSeed {
         type Value = ();
         fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
@@ -3726,10 +3735,22 @@ mod snapshot_bench {
                     self,
                     mut map: A,
                 ) -> Result<(), A::Error> {
-                    while let Some((_k, _v)) =
-                        map.next_entry::<(super::AddrKey, super::AssetId), super::Held>()?
+                    // The real loader's shape (address → token list) minus interning and the
+                    // `OrdMap`. Also counts addresses and (address, policy) runs — the latter
+                    // is what a further "group by policy" step would collapse.
+                    while let Some((_addr, tokens)) =
+                        map.next_entry::<super::AddrKey, Vec<(super::AssetId, super::Held)>>()?
                     {
-                        self.0 .0 += 1;
+                        self.0 .0 += tokens.len();
+                        self.0 .1 += 1;
+                        let mut last: Option<Vec<u8>> = None;
+                        for (aid, _) in &tokens {
+                            let policy = &aid[..28.min(aid.len())];
+                            if last.as_deref() != Some(policy) {
+                                self.0 .2 += 1;
+                                last = Some(policy.to_vec());
+                            }
+                        }
                     }
                     Ok(())
                 }
@@ -3798,13 +3819,16 @@ mod snapshot_bench {
         let snap = super::BlockSnapshot::deserialize(&mut de).unwrap();
         let fields = t.elapsed();
         let t = std::time::Instant::now();
-        let mut counter = CountingSeed(0);
+        let mut counter = CountingSeed(0, 0, 0);
         (&mut counter).deserialize(&mut de).unwrap();
         println!(
-            "decode-only: fields (with maps) {:?} | holdings parse, no map {:?} | entries {} | balances {}",
+            "decode-only: fields (with maps) {:?} | holdings parse, no map {:?} | entries {} \
+             | addresses {} | (addr,policy) groups {} | balances {}",
             fields,
             t.elapsed(),
             counter.0,
+            counter.1,
+            counter.2,
             snap.address_balances.len()
         );
     }
