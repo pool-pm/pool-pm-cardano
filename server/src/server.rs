@@ -1872,13 +1872,31 @@ pub async fn serve(config: ServeConfig) {
         mainnet,
         catching_up,
     } = config;
-    // Wait for catch-up to complete before accepting SSE connections
+    // Hold SSE back while the sink drains the gap between the snapshot and the tip, so the
+    // first clients don't get a feed that's minutes stale — but only for so long. Catch-up
+    // costs ~1s per block and has to outrun a chain that keeps producing, so on a stale
+    // snapshot it can run for a minute or more, and until it finishes the site is simply
+    // down. Past the cap we open anyway: a feed that fills in as it catches up beats no feed.
+    const CATCHUP_SSE_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
     if catching_up.load(std::sync::atomic::Ordering::Relaxed) {
         info!("waiting for catch-up before starting SSE server");
+        let started = std::time::Instant::now();
         while catching_up.load(std::sync::atomic::Ordering::Relaxed) {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if started.elapsed() >= CATCHUP_SSE_MAX_WAIT {
+                info!(
+                    waited_ms = started.elapsed().as_millis() as u64,
+                    "still catching up — starting SSE anyway; the feed fills in as blocks apply"
+                );
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        info!("catch-up complete, starting SSE server");
+        if !catching_up.load(std::sync::atomic::Ordering::Relaxed) {
+            info!(
+                waited_ms = started.elapsed().as_millis() as u64,
+                "catch-up complete, starting SSE server"
+            );
+        }
     }
 
     let state = AppState {
