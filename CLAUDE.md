@@ -52,6 +52,11 @@ Cardano Node ──N2C chain-sync──> source.rs ──> sink.rs ──> Event
 - **Never block the feeds**: db work runs *off* the `chain_state` lock (`db_handle()` + short
   await-free guard scopes). Holding the guard across a slow await starves the sink's per-block
   write lock — the root cause of the 2026-07-28 freeze.
+- **One db pool per tokio runtime**: this process runs several — gasket builds one per stage,
+  the startup populates use a temporary one, axum has its own. sqlx binds a connection to the
+  runtime that created it, so a pool shared across runtimes hands out connections nobody polls
+  and the acquire stalls for the full `acquire_timeout` (30s by default). `State::db()` keys its
+  pools by `Handle::current().id()`; never hoist one into a `static`/`OnceCell`.
 
 ### Backward reconstruction of historical per-block state (feed replay)
 

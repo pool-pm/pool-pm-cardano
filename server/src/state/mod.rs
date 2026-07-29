@@ -1116,7 +1116,14 @@ pub struct BlockUpdate<'a> {
 pub struct State {
     history: Vec<BlockSnapshot>,
     db_url: Url,
-    db: tokio::sync::OnceCell<DbSync>,
+    /// One connection pool **per tokio runtime**. sqlx binds a connection to the runtime that
+    /// created it, and this process has several: gasket gives every stage its own
+    /// current-thread runtime (`fullfil_stage`), the startup populates use a temporary one,
+    /// and axum has another. A single shared pool therefore hands a connection to a runtime
+    /// whose reactor never polls it — the acquire then blocks for the whole `acquire_timeout`
+    /// (sqlx's default is 30s) before giving up and opening a fresh one. That was exactly the
+    /// 30s stall the first block of every catch-up paid, with one key to resolve.
+    db: std::sync::Mutex<std::collections::HashMap<tokio::runtime::Id, DbSync>>,
     pub feed_index: FeedIndex,
     // In-memory cursors for the live off-chain metadata refresh (pool tickers / DRep
     // names). Not in BlockSnapshot, so the persisted snapshot stays independent of
@@ -1147,7 +1154,7 @@ impl State {
         Self {
             history: Vec::new(),
             db_url,
-            db: tokio::sync::OnceCell::new(),
+            db: std::sync::Mutex::new(std::collections::HashMap::new()),
             feed_index: FeedIndex::new(),
             pool_meta_cursor: 0,
             drep_meta_cursor: 0,
@@ -1344,14 +1351,14 @@ impl State {
         };
         let (holdings, interner) = {
             let Some(db) = self.db().await else { return };
-            let mint_times = match Self::fetch_asset_mint_times(db).await {
+            let mint_times = match Self::fetch_asset_mint_times(&db).await {
                 Ok(m) => m,
                 Err(e) => {
                     tracing::warn!("failed to fetch asset mint times: {e}");
                     return;
                 }
             };
-            match Self::fetch_asset_holdings(db, last_tx_id, &mint_times).await {
+            match Self::fetch_asset_holdings(&db, last_tx_id, &mint_times).await {
                 Ok(h) => h,
                 Err(e) => {
                     tracing::warn!("failed to fetch asset holdings: {e}");
@@ -1731,11 +1738,17 @@ impl State {
         }
     }
 
-    pub(crate) async fn db(&self) -> Option<&DbSync> {
-        self.db
-            .get_or_try_init(|| async { DbSync::new(&self.db_url).await })
-            .await
-            .ok()
+    /// The pool for the *current* runtime, opening one on first use. `DbSync` is a cheap
+    /// handle (an `Arc`ed `PgPool`), so callers get an owned clone rather than a borrow.
+    pub(crate) async fn db(&self) -> Option<DbSync> {
+        let id = tokio::runtime::Handle::try_current().ok()?.id();
+        if let Some(db) = self.db.lock().ok()?.get(&id).cloned() {
+            return Some(db);
+        }
+        let db = DbSync::new(&self.db_url).await.ok()?;
+        // Two callers on the same runtime can race here; whoever inserted first wins and the
+        // loser's pool is dropped, which costs nothing but a closed connection.
+        Some(self.db.lock().ok()?.entry(id).or_insert(db).clone())
     }
 
     /// Synchronous, lock-friendly clone of the db handle for callers that
@@ -1748,7 +1761,8 @@ impl State {
     /// daemon's startup `populate_*` calls do this before SSE accepts
     /// connections, so handlers can rely on `Some`.
     pub fn db_handle(&self) -> Option<DbSync> {
-        self.db.get().cloned()
+        let id = tokio::runtime::Handle::try_current().ok()?.id();
+        self.db.lock().ok()?.get(&id).cloned()
     }
 
     pub fn current(&self) -> Option<&BlockSnapshot> {
@@ -1882,10 +1896,11 @@ impl State {
         genesis: &oura::framework::GenesisValues,
         mainnet: bool,
     ) -> Result<(), sqlx::Error> {
-        let db = self
-            .db
-            .get_or_try_init(|| async { DbSync::new(&self.db_url).await })
-            .await?;
+        // `reset` runs on whatever runtime called it; `db()` gives that runtime its own pool.
+        let db = match self.db().await {
+            Some(db) => db,
+            None => DbSync::new(&self.db_url).await?,
+        };
 
         let (last_tx_id, block_hash) = db.slot_info(slot).await?;
         tracing::info!(
@@ -2028,10 +2043,10 @@ impl State {
         let total_staked = Self::sum_delegated_stake(&pool_delegations, &stakes, &rewards);
 
         tracing::info!("Fetching asset first-mint times...");
-        let mint_times = Self::fetch_asset_mint_times(db).await?;
+        let mint_times = Self::fetch_asset_mint_times(&db).await?;
         tracing::info!("Fetching per-address asset holdings...");
         let (asset_holdings, addr_interner) =
-            Self::fetch_asset_holdings(db, last_tx_id, &mint_times).await?;
+            Self::fetch_asset_holdings(&db, last_tx_id, &mint_times).await?;
         drop(mint_times);
         self.addr_interner = addr_interner;
 
