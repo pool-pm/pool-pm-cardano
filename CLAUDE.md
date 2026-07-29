@@ -25,7 +25,8 @@ module does, which constants exist — read from the code.
 - Prefer Svelte's own `svelte/animate` / `svelte/transition` over hand-rolled CSS. Don't
   reintroduce cross-container transaction animation — the mempool-as-`sections[0]` design exists
   so txs never change DOM container and `animate:flip` suffices.
-- Prefer specific types over `any`; `unknown` + narrowing when genuinely dynamic.
+- Prefer specific types over `any`; `unknown` + narrowing when genuinely dynamic. `any` is fine
+  for untyped libraries or where correct typing would need disproportionate generics.
 - LTS/stable package versions.
 
 ## Testing
