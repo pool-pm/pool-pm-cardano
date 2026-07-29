@@ -24,6 +24,11 @@ pub(super) struct SearchResult {
     live_stake: Option<String>,
 }
 
+/// The two ledger-level DRep options: `(tag byte, display label)`. `drep_bech32_id` turns
+/// the tag into the id their feed lives at (`drep_always_abstain`, …).
+const PREDEFINED_DREPS: [(u8, &str); 2] =
+    [(0x02, "Always Abstain"), (0x03, "Always No Confidence")];
+
 /// Score a candidate (ticker / name) against the query, case-insensitively. Higher is
 /// better; `None` drops it. Tiers don't overlap: exact (4) > prefix (3–4) > substring
 /// (2–3) > fuzzy Jaro-Winkler (≥ threshold). Within prefix/substring, a closer length
@@ -135,6 +140,8 @@ pub(super) async fn search(
     enum Hit<'a> {
         Pool(&'a Pool),
         DRep(&'a DRep),
+        /// One of the two ledger-level DRep options, by `(tag byte, label)`.
+        Predefined(u8, &'static str),
     }
     let mut scored: Vec<(f32, Hit)> = Vec::new();
     for pool in snap.pools.values() {
@@ -157,6 +164,14 @@ pub(super) async fn search(
             scored.push((score, Hit::DRep(drep)));
         }
     }
+    // The two ledger-level options are not registered DReps — no metadata row, so they're
+    // absent from `snap.dreps` — but stake delegates to them like to any DRep (Always
+    // Abstain is the chain's largest bucket) and their feeds resolve, so they're findable.
+    for (tag, label) in PREDEFINED_DREPS {
+        if let Some(score) = search_score(&q, label) {
+            scored.push((score, Hit::Predefined(tag, label)));
+        }
+    }
     // Rank: score, then delegator count, then live stake — all descending. Duplicate
     // tickers / DRep names (not unique on-chain) tie on score, so the bigger one leads.
     // Delegator count is an O(1) set length → cheap for every match. Live stake is
@@ -169,12 +184,14 @@ pub(super) async fn search(
                 .drep_delegators
                 .get(&d.hash_bytes)
                 .map_or(0, |d| d.len()),
+            Hit::Predefined(tag, _) => snap.drep_delegators.get(&[*tag][..]).map_or(0, |d| d.len()),
         }
     };
     let live_stake = |hit: &Hit| -> i64 {
         match hit {
             Hit::Pool(p) => State::pool_live_stake(&snap, &p.hash_raw).unwrap_or(0),
             Hit::DRep(d) => State::drep_live_stake(&snap, &d.hash_bytes).unwrap_or(0),
+            Hit::Predefined(tag, _) => State::drep_live_stake(&snap, &[*tag]).unwrap_or(0),
         }
     };
     scored.sort_by(|a, b| {
@@ -232,6 +249,17 @@ pub(super) async fn search(
                         .to_string(),
                 ),
             },
+            Hit::Predefined(tag, label) => SearchResult {
+                id: drep_bech32_id(&[tag]),
+                label: label.to_string(),
+                kind: "drep",
+                delegators: Some(snap.drep_delegators.get(&[tag][..]).map_or(0, |d| d.len())),
+                live_stake: Some(
+                    State::drep_live_stake(&snap, &[tag])
+                        .unwrap_or(0)
+                        .to_string(),
+                ),
+            },
         })
         .collect();
     axum::Json(results)
@@ -272,6 +300,35 @@ pub(super) async fn resolve_handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two ledger-level DRep options are the one case where a search result's `id`
+    /// isn't bech32. Guard the whole round trip: the label is scoreable, the id is what
+    /// `drep_bech32_id` emits, and `FeedFilter::from_path` resolves that id back to the
+    /// same tag — i.e. the row search returns actually opens a feed.
+    #[test]
+    fn predefined_dreps_are_searchable_and_their_ids_route() {
+        for (tag, label) in PREDEFINED_DREPS {
+            assert!(search_score(label, label).is_some(), "{label} exact");
+            assert!(search_score("always", label).is_some(), "{label} prefix");
+            assert!(search_score("abstain", "Always Abstain").is_some());
+
+            let id = drep_bech32_id(&[tag]);
+            assert!(
+                !id.is_empty() && !id.starts_with("drep1"),
+                "{id} isn't bech32"
+            );
+            assert!(
+                matches!(crate::filter::FeedFilter::from_path(&id),
+                    Some(crate::filter::FeedFilter::DRep(ref b)) if b == &vec![tag]),
+                "search returns {id}, which must open a feed"
+            );
+        }
+        // The labels are distinct enough that a query for one doesn't outrank the other.
+        assert!(
+            search_score("abstain", "Always Abstain").unwrap()
+                > search_score("abstain", "Always No Confidence").unwrap_or(0.0)
+        );
+    }
 
     #[test]
     fn search_score_tiers_and_case() {

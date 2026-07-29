@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { sanitizeQuery, searchTarget, isHash, resolveHexTarget, isFeedPath } from './search';
+import { sanitizeQuery, searchTarget, isHash, resolveHexTarget, isFeedPath, delegatorsSubject } from './search';
 
 // Real mainnet addresses + valid testnet/script addresses constructed from them
 // (same credential, flipped network nibble / script HRP, recomputed checksum).
@@ -123,5 +123,48 @@ describe('resolveHexTarget', () => {
       }),
     );
     expect(await resolveHexTarget(POLICY)).toBe(`/policy/${POLICY}`);
+  });
+});
+
+// The two ledger-level DRep options aren't bech32, so every routing rule that validates a
+// checksum has to name them explicitly. Forgetting that once already sent
+// `/drep_always_abstain` — the chain's largest delegation bucket — to Not Found.
+describe('predefined DReps (drep_always_abstain / drep_always_no_confidence)', () => {
+  const IDS = ['drep_always_abstain', 'drep_always_no_confidence'];
+
+  it('are feed paths', () => {
+    for (const id of IDS) expect(isFeedPath(id)).toBe(true);
+  });
+
+  it('are search targets, so typing one navigates to its feed', () => {
+    for (const id of IDS) expect(searchTarget(id)).toBe(`/${id}`);
+  });
+
+  it('have a delegators grid', () => {
+    for (const id of IDS) expect(delegatorsSubject(`${id}/delegators`)).toBe(id);
+  });
+
+  it("don't swallow near-misses", () => {
+    expect(isFeedPath('drep_always')).toBe(false);
+    expect(isFeedPath('drep_always_abstain_x')).toBe(false);
+    expect(searchTarget('always_abstain')).toBe(null);
+    expect(delegatorsSubject('drep_always_abstain/assets')).toBe(null);
+  });
+});
+
+describe('delegatorsSubject', () => {
+  it('accepts pool and DRep subjects', () => {
+    expect(delegatorsSubject(`${POOL}/delegators`)).toBe(POOL);
+    expect(delegatorsSubject(`${DREP}/delegators`)).toBe(DREP);
+    expect(delegatorsSubject(`${DREP_SCRIPT}/delegators`)).toBe(DREP_SCRIPT);
+  });
+
+  it('rejects subjects that have no delegators, and non-delegator paths', () => {
+    expect(delegatorsSubject(`${STAKE}/delegators`)).toBe(null);
+    expect(delegatorsSubject(`${ADDR}/delegators`)).toBe(null);
+    expect(delegatorsSubject(POOL)).toBe(null);
+    expect(delegatorsSubject(`${POOL}/assets`)).toBe(null);
+    expect(delegatorsSubject('/delegators')).toBe(null);
+    expect(delegatorsSubject('garbage/delegators')).toBe(null);
   });
 });

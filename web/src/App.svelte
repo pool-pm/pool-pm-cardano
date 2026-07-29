@@ -1,6 +1,6 @@
 <script lang="ts">
   import { connectSSE, disconnectSSE } from './lib/sse';
-  import { isFeedPath } from './lib/search';
+  import { isFeedPath, delegatorsSubject as subjectOfDelegatorsPath } from './lib/search';
   import Feed from './lib/components/Feed.svelte';
   import AssetPage from './lib/components/AssetPage.svelte';
   import AssetsGrid from './lib/components/AssetsGrid.svelte';
@@ -32,7 +32,7 @@
   const ownedPolicy = ownedPolicyMatch?.[4] ?? null;
 
   // `/<pool|drep bech32>/delegators` renders that subject's delegators grid.
-  const delegatorsSubject = /^((pool|drep|drep_script)1[a-z0-9]+)\/delegators$/.exec(path)?.[1] ?? null;
+  const delegatorsSubject = subjectOfDelegatorsPath(path);
 
   // `/$handle` resolves an ADA Handle to its holder's address and redirects there. Only a
   // `$`-prefixed path is a handle — `pool.pm/handle` (no `$`) is not, and falls to Not Found.
