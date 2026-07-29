@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { PoolInfo, DRepInfo, StakeInfo, AddressInfo, CardanoInfo } from '../types';
-  import { poolColor, formatTicker, formatAda } from '../layout';
+  import { poolColor, formatTicker, formatAda, formatVotes } from '../layout';
   import { config } from '../stores';
 
   // Network magic numbers (Pallas GenesisValues) → homepage card name. Mainnet keeps
@@ -77,8 +77,7 @@
       {:else}
         {drep.delegators.toLocaleString()} delegators
       {/if}
-      · {(drep.votes ?? 0).toLocaleString()}
-      vote{drep.votes === 1 ? '' : 's'}
+      · {formatVotes(drep.votes ?? 0, drep.eligible)}
     </span>
   </div>
 {:else if stake}

@@ -380,9 +380,10 @@ struct LiveState {
     pool: Option<Pool>,
     balance: Option<i64>,
     assets_count: Option<u32>,
-    /// DRep feeds: `(lifetime votes, current-epoch votes)` — a change re-emits the header
-    /// the moment the DRep's vote lands (the pool equivalent rides along in `Pool::blocks`).
-    votes: Option<(u64, u32)>,
+    /// DRep feeds: `(distinct actions voted, current-epoch votes, eligible actions)` — a change
+    /// re-emits the header the moment the DRep's vote lands (the pool equivalent rides along in
+    /// `Pool::blocks`). `eligible` is in here too, so the % refreshes at an epoch boundary.
+    votes: Option<(u64, u32, u32)>,
 }
 
 #[allow(clippy::too_many_arguments)]

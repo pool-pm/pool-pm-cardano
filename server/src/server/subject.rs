@@ -54,16 +54,17 @@ pub(super) fn pool_sse_event(
     )))
 }
 
-/// Governance votes cast by a DRep: `(lifetime total, votes in the snapshot's epoch)`.
-/// The DRep-feed counterpart of `Pool::blocks` + [`pool_epoch_blocks`] — read straight off
-/// the snapshot (`drep_vote_counts`), so it's rollback-safe and needs no db query.
-pub(super) fn drep_vote_counts(snap: Option<&BlockSnapshot>, drep_bytes: &[u8]) -> (u64, u32) {
-    let Some(snap) = snap else { return (0, 0) };
+/// Governance votes cast by a DRep: `(distinct actions voted, actions voted in the snapshot's
+/// epoch, actions it could have voted on)`. The DRep-feed counterpart of `Pool::blocks` +
+/// [`pool_epoch_blocks`] — read straight off the snapshot (`drep_vote_counts`), so it's
+/// rollback-safe and needs no db query.
+pub(super) fn drep_vote_counts(snap: Option<&BlockSnapshot>, drep_bytes: &[u8]) -> (u64, u32, u32) {
+    let Some(snap) = snap else { return (0, 0, 0) };
     let epoch = snap.last_epoch.unwrap_or(0);
     snap.drep_vote_counts
         .get(drep_bytes)
-        .map(|v| (v.total, v.votes_in(epoch)))
-        .unwrap_or((0, 0))
+        .map(|v| (v.total, v.votes_in(epoch), v.eligible))
+        .unwrap_or((0, 0, 0))
 }
 
 pub(super) fn drep_sse_event(
@@ -86,13 +87,14 @@ pub(super) fn drep_sse_event(
         .and_then(|s| s.drep_delegators.get(drep_bytes))
         .map(|d| d.len())
         .unwrap_or(0);
-    // `votes` is the lifetime total; `epoch_votes` is exact for `epoch` (the snapshot's), and
-    // the frontend shows it only while that epoch is still current — same contract as a pool's
-    // `blocks` / `epoch_blocks`.
-    let (votes, epoch_votes) = drep_vote_counts(snap, drep_bytes);
+    // `votes` is the lifetime count of distinct actions voted on; `epoch_votes` is exact for
+    // `epoch` (the snapshot's), and the frontend shows it only while that epoch is still current
+    // — same contract as a pool's `blocks` / `epoch_blocks`. `eligible` is the denominator of
+    // the participation % (0 = unknown, e.g. a predefined DRep: the frontend then shows none).
+    let (votes, epoch_votes, eligible) = drep_vote_counts(snap, drep_bytes);
     let epoch = snap.and_then(|s| s.last_epoch).unwrap_or(0);
     Ok(SseEvent::default().data(format!(
-        r#"{{"type":"DRep","drep_id":"{}","given_name":{},"live_stake":"{}","delegators":{},"votes":{},"epoch":{},"epoch_votes":{}}}"#,
+        r#"{{"type":"DRep","drep_id":"{}","given_name":{},"live_stake":"{}","delegators":{},"votes":{},"epoch":{},"epoch_votes":{},"eligible":{}}}"#,
         drep_id,
         serde_json::to_string(&given_name).unwrap(),
         live_stake,
@@ -100,6 +102,7 @@ pub(super) fn drep_sse_event(
         votes,
         epoch,
         epoch_votes,
+        eligible,
     )))
 }
 

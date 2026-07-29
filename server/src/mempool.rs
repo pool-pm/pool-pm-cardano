@@ -253,20 +253,33 @@ pub fn extract_votes(tx: &MultiEraTx<'_>, state: &State) -> Vec<VoteInfo> {
         .collect()
 }
 
+/// One DRep vote: the voter's `tag+hash` bytes and the `"tx_hash#index"` of the action.
+pub type DRepVote = (Vec<u8>, String);
+
 /// Raw governance-voter identities in a tx's votes, keyed exactly as the feed index
 /// keys its subjects: pool hashes (28 bytes) for SPO votes, `tag+hash` bytes for DRep
 /// votes (0x00 key / 0x01 script). Constitutional-committee votes are dropped (no feed).
 /// A voter may vote on several actions in one tx, so the caller dedups. This is the
 /// feed-index side of [`extract_votes`] (which builds the display `VoteInfo`).
-pub fn extract_vote_subjects(tx: &MultiEraTx<'_>) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+pub fn extract_vote_subjects(tx: &MultiEraTx<'_>) -> (Vec<Vec<u8>>, Vec<DRepVote>) {
     use pallas::ledger::primitives::conway::Voter;
     let mut pools = Vec::new();
     let mut dreps = Vec::new();
-    for (voter, _action_id, _vote) in tx.voting_procedures() {
+    for (voter, action_id, _vote) in tx.voting_procedures() {
+        // The action voted on, keyed as everywhere else ("tx_hash#index" — `gov_action_titles`).
+        // DRep vote totals count distinct actions, so the caller needs it; pool vote blocks are
+        // only indexed by subject, so they don't.
+        let action = || {
+            format!(
+                "{}#{}",
+                hex::encode(action_id.transaction_id.as_ref()),
+                action_id.action_index
+            )
+        };
         match voter {
             Voter::StakePoolKey(h) => pools.push(h.as_ref().to_vec()),
-            Voter::DRepKey(h) => dreps.push([&[0x00u8][..], h.as_ref()].concat()),
-            Voter::DRepScript(h) => dreps.push([&[0x01u8][..], h.as_ref()].concat()),
+            Voter::DRepKey(h) => dreps.push(([&[0x00u8][..], h.as_ref()].concat(), action())),
+            Voter::DRepScript(h) => dreps.push(([&[0x01u8][..], h.as_ref()].concat(), action())),
             Voter::ConstitutionalCommitteeKey(_) | Voter::ConstitutionalCommitteeScript(_) => {}
         }
     }

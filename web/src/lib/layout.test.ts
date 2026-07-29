@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatQuantity } from './layout';
+import { formatQuantity, formatVotes } from './layout';
 
 // Compare against the same Intl call so the assertions don't hardcode a locale separator.
 const group = (n: string) => new Intl.NumberFormat().format(BigInt(n));
@@ -31,5 +31,24 @@ describe('formatQuantity', () => {
   it('leaves non-numeric input untouched', () => {
     expect(formatQuantity('abc')).toBe('abc');
     expect(formatQuantity('')).toBe('');
+  });
+});
+
+describe('formatVotes', () => {
+  it('appends the participation percentage', () => {
+    expect(formatVotes(148, 151)).toBe('148 votes (98%)');
+    expect(formatVotes(4, 27)).toBe('4 votes (15%)');
+    expect(formatVotes(1, 1)).toBe('1 vote (100%)');
+  });
+
+  it('omits the percentage when the denominator is unknown or nothing was voted', () => {
+    expect(formatVotes(12)).toBe('12 votes');
+    expect(formatVotes(12, 0)).toBe('12 votes');
+    // 0 votes reads better bare than as "0 votes (0%)".
+    expect(formatVotes(0, 151)).toBe('0 votes');
+  });
+
+  it('clamps at 100%, since the denominator only refreshes at epoch boundaries', () => {
+    expect(formatVotes(152, 151)).toBe('152 votes (100%)');
   });
 });

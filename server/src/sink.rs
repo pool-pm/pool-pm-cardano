@@ -116,10 +116,9 @@ impl Worker {
             // Feed index: pools (SPO) / DReps that cast a governance vote in this block.
             let mut vote_pools: std::collections::HashSet<Vec<u8>> =
                 std::collections::HashSet::new();
-            // DReps that voted, with how many votes each cast in this block (a tx voting on
-            // several actions counts once per action) — the index only needs the key set, the
-            // header's vote counters need the count.
-            let mut vote_dreps: std::collections::HashMap<Vec<u8>, u32> =
+            // DReps that voted, with the governance actions each voted on in this block — the
+            // index only needs the key set, the header's vote counters count distinct actions.
+            let mut vote_dreps: std::collections::HashMap<Vec<u8>, Vec<String>> =
                 std::collections::HashMap::new();
 
             // CIP-68: collect decimals from reference token datums in this block
@@ -229,8 +228,8 @@ impl Worker {
                 if valid {
                     let (vps, vds) = crate::mempool::extract_vote_subjects(&tx);
                     vote_pools.extend(vps);
-                    for drep in vds {
-                        *vote_dreps.entry(drep).or_insert(0) += 1;
+                    for (drep, action) in vds {
+                        vote_dreps.entry(drep).or_default().push(action);
                     }
                 }
 
@@ -535,13 +534,14 @@ impl Worker {
 
         // Check for epoch boundary and fetch reward deltas + DRep activity from db-sync
         #[allow(clippy::type_complexity)]
-        let (reward_deltas, drep_active_until, new_active_stakes): (
+        let (reward_deltas, drep_active_until, new_active_stakes, drep_eligible): (
             _,
             _,
             Option<(
                 std::collections::HashMap<Vec<u8>, u64>,
                 std::collections::HashMap<Vec<u8>, u64>,
             )>,
+            Option<std::collections::HashMap<Vec<u8>, u32>>,
         ) = {
             let state = stage.state.read().await;
             let last_epoch = state.current().and_then(|s| s.last_epoch);
@@ -593,13 +593,29 @@ impl Worker {
                     warn!(epoch, "epoch boundary: no db for active-stake refresh");
                     None
                 };
+                // Refresh the DRep participation denominators (actions each DRep could have
+                // voted on). Unbounded (`i64::MAX`): unlike the vote counts, this is not a
+                // running total the sink adds to, so there's nothing to double-count — the
+                // latest value is simply the right one. An empty result leaves the map alone.
+                let eligible = match state.db().await {
+                    Some(db) => match db.drep_eligible_actions(i64::MAX).await {
+                        Ok(e) if !e.is_empty() => Some(e),
+                        Ok(_) => None,
+                        Err(e) => {
+                            warn!(epoch, error = %e, "epoch boundary: drep eligible-action query failed");
+                            None
+                        }
+                    },
+                    None => None,
+                };
                 (
                     state.epoch_reward_delta(epoch).await,
                     state.drep_active_until().await,
                     new_active,
+                    eligible,
                 )
             } else {
-                (None, None, None)
+                (None, None, None, None)
             }
         };
 
@@ -675,6 +691,7 @@ impl Worker {
                 reward_deltas: reward_deltas.as_ref(),
                 drep_active_until: drep_active_until.as_ref(),
                 drep_votes: &vote_dreps,
+                drep_eligible: drep_eligible.as_ref(),
             });
 
             // ADA Handle: keep the resolution live. `handle_changes` are the handles produced

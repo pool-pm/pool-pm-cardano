@@ -316,11 +316,16 @@ export interface DRepInfo {
   given_name: string | null;
   live_stake: string;
   delegators: number;
-  /** Lifetime governance votes cast (one per voted action). */
+  /** Distinct governance actions voted on (a re-vote on the same action counts once). */
   votes: number;
   /** Epoch `epoch_votes` was counted in — show it only while this is the current epoch. */
   epoch: number;
   epoch_votes: number;
+  /**
+   * Governance actions this DRep could have voted on — the denominator of the participation
+   * %. 0 when unknown (an older server, or a predefined DRep): show no % then.
+   */
+  eligible?: number;
 }
 
 export interface PoolInfo {

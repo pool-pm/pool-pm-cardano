@@ -19,6 +19,22 @@ export function formatCount(n: number): string {
   return (n / 1_000_000_000).toFixed(1).replace(/\.0$/, '') + 'B';
 }
 
+/**
+ * A DRep's governance participation: `148 votes (98%)`.
+ *
+ * `votes` counts the distinct actions the DRep voted on (a re-vote on the same action counts
+ * once) and `eligible` the actions it could have voted on — those whose voting window overlapped
+ * its registration. The `%` is dropped when that denominator is unknown (0: an older server, or a
+ * predefined DRep) and when the DRep hasn't voted at all, where a bare `0 votes` reads better
+ * than `0 votes (0%)`. Clamped to 100 because `eligible` only refreshes at epoch boundaries, so a
+ * vote on an action proposed mid-epoch can briefly outrun it.
+ */
+export function formatVotes(votes: number, eligible?: number): string {
+  const n = `${votes.toLocaleString()} vote${votes === 1 ? '' : 's'}`;
+  if (!eligible || votes === 0) return n;
+  return `${n} (${Math.min(100, Math.round((100 * votes) / eligible))}%)`;
+}
+
 /** Compact ADA from a lovelace string for tight rows: "12345678000000" → "12.3M ₳". */
 export function formatAdaCompact(lovelace: string): string {
   return formatCount(Number(BigInt(lovelace) / 1_000_000n)) + ' ₳';

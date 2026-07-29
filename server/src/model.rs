@@ -95,6 +95,12 @@ impl Delegation {
 /// Governance votes cast by a DRep — the DRep-feed counterpart of `Pool::blocks` +
 /// the pool's current-epoch block count.
 ///
+/// Counted per **governance action, not per vote cast**: a DRep may vote on the same action
+/// several times (the ledger keeps the latest), and 1,424 of mainnet's ~30k DRep votes are
+/// such re-votes, so raw `voting_procedure` rows overstate participation. `actions` is
+/// therefore the source of truth — one entry per action ever voted on — and the three
+/// counters below are derived from it in [`DRepVotes::add`].
+///
 /// `epoch_votes` is stamped with the `epoch` it was counted in, so the per-epoch tally
 /// resets itself on the first vote of a new epoch: no epoch-boundary sweep over every
 /// DRep, and a reader compares the stamp with the current epoch (a stale stamp reads as
@@ -102,11 +108,28 @@ impl Delegation {
 /// revert it with the rest of the snapshot.
 #[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DRepVotes {
-    /// Lifetime votes (one per `voting_procedure` row — a tx voting on 3 actions counts 3).
+    /// Distinct governance actions this DRep has voted on (`actions.len()`).
     pub total: u64,
     /// Epoch `epoch_votes` was counted in.
     pub epoch: u64,
+    /// Distinct actions voted on **during** `epoch` (a re-vote on an action already voted in
+    /// an earlier epoch counts here — this is per-epoch activity, not new-action discovery).
     pub epoch_votes: u32,
+    /// Governance actions this DRep could have voted on: those whose voting window overlapped
+    /// its registered period. The denominator of the participation `%` on the DRep card, so a
+    /// DRep registered after an action was decided isn't marked down for it. Refreshed from
+    /// db-sync at startup and at each epoch boundary (actions are proposed every few days, so
+    /// a mid-epoch proposal moves it by well under a point until then).
+    #[serde(default)]
+    pub eligible: u32,
+    /// `"tx_hash#index"` of every action voted on → the epoch of the DRep's **latest** vote on
+    /// it (0 for votes seeded from db-sync that predate the seeded epoch). Dedupes re-votes at
+    /// the tip, where a db query is not an option. ~36 entries per voting DRep on mainnet.
+    ///
+    /// A trailing `#[serde(default)]` field, so snapshots written before it still load (they
+    /// arrive with it empty, which is what triggers the db-sync repopulate that fills it).
+    #[serde(default)]
+    pub actions: imbl::HashMap<String, u64>,
 }
 
 impl DRepVotes {
@@ -119,14 +142,27 @@ impl DRepVotes {
         }
     }
 
-    /// Record `n` votes cast in `epoch`, restarting the per-epoch tally on a new epoch.
-    pub fn add(&mut self, n: u32, epoch: u64) {
-        if self.epoch != epoch {
-            self.epoch = epoch;
-            self.epoch_votes = 0;
+    /// Record a vote on `action` cast in `epoch`, then re-derive the counters from `actions`.
+    /// Re-voting an action the DRep already voted on leaves `total` unchanged; the counters
+    /// can't drift from `actions` because they're recomputed, not incremented.
+    pub fn add(&mut self, action: &str, epoch: u64) {
+        self.actions.insert(action.to_string(), epoch);
+        self.total = self.actions.len() as u64;
+        self.epoch = epoch;
+        self.epoch_votes = self.actions.values().filter(|e| **e == epoch).count() as u32;
+    }
+
+    /// Build from a db-sync seed: `actions` (action → epoch of the latest vote, 0 if earlier
+    /// than `epoch`) as of the snapshot's tx bound.
+    pub fn from_actions(actions: imbl::HashMap<String, u64>, epoch: u64, eligible: u32) -> Self {
+        let epoch_votes = actions.values().filter(|e| **e == epoch).count() as u32;
+        Self {
+            total: actions.len() as u64,
+            epoch,
+            epoch_votes,
+            eligible,
+            actions,
         }
-        self.total += n as u64;
-        self.epoch_votes += n;
     }
 }
 
@@ -472,5 +508,70 @@ mod codec_tests {
         assert!(drep_bech32_id(&script_drep).starts_with("drep_script1"));
         assert_eq!(drep_bech32_id(&[0x02]), "drep_always_abstain");
         assert_eq!(drep_bech32_id(&[0x03]), "drep_always_no_confidence");
+    }
+
+    /// Votes are counted per governance action: re-voting an action the DRep already voted on
+    /// (allowed on-chain, the ledger keeps the latest) must not raise the total.
+    #[test]
+    fn revoting_the_same_action_does_not_raise_the_total() {
+        let mut v = DRepVotes::default();
+        v.add("a#0", 10);
+        v.add("b#0", 10);
+        assert_eq!((v.total, v.votes_in(10)), (2, 2));
+
+        v.add("a#0", 10); // same action, same epoch
+        assert_eq!((v.total, v.votes_in(10)), (2, 2));
+    }
+
+    /// `epoch_votes` is per-epoch *activity*: an action first voted in an earlier epoch and
+    /// re-voted now counts for the new epoch, while the distinct lifetime total doesn't move.
+    /// The stamp makes the tally self-reset, so a past epoch reads 0 without a sweep.
+    #[test]
+    fn epoch_tally_counts_distinct_actions_voted_in_that_epoch() {
+        let mut v = DRepVotes::default();
+        v.add("a#0", 10);
+        v.add("b#0", 10);
+
+        v.add("a#0", 11); // re-vote in the next epoch
+        assert_eq!(v.total, 2);
+        assert_eq!(v.votes_in(11), 1);
+        assert_eq!(
+            v.votes_in(10),
+            0,
+            "the tally follows the current epoch only"
+        );
+
+        v.add("c#0", 11);
+        assert_eq!((v.total, v.votes_in(11)), (3, 2));
+    }
+
+    /// `eligible` and `actions` are **trailing** `#[serde(default)]` fields, so a snapshot
+    /// written before them (rmp-serde encodes a struct as an array, so it holds only the first
+    /// three) still loads — which is what keeps this change from forcing a cold reset. The empty
+    /// `actions` is the signal `populate_drep_vote_counts` looks for to re-seed from db-sync.
+    #[test]
+    fn loads_a_snapshot_written_before_the_new_fields() {
+        let old = rmp_serde::to_vec(&(7u64, 646u64, 2u32)).unwrap();
+        let v: DRepVotes = rmp_serde::from_slice(&old).unwrap();
+        assert_eq!((v.total, v.epoch, v.epoch_votes), (7, 646, 2));
+        assert_eq!(v.eligible, 0);
+        assert!(v.actions.is_empty());
+    }
+
+    /// A db-sync seed carries the actions voted before the seeded epoch with epoch 0, so only
+    /// the current epoch's votes land in `epoch_votes`.
+    #[test]
+    fn from_actions_derives_the_counters() {
+        let actions: imbl::HashMap<String, u64> = [
+            ("a#0".to_string(), 0u64),
+            ("b#0".to_string(), 0),
+            ("c#0".to_string(), 646),
+        ]
+        .into_iter()
+        .collect();
+        let v = DRepVotes::from_actions(actions, 646, 151);
+        assert_eq!(v.total, 3);
+        assert_eq!(v.votes_in(646), 1);
+        assert_eq!(v.eligible, 151);
     }
 }

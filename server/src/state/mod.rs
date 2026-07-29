@@ -1329,9 +1329,13 @@ pub struct BlockUpdate<'a> {
     /// At an epoch boundary: each DRep's refreshed `active_until` (tagged key → epoch);
     /// `None` between boundaries. DReps absent from the map become expired.
     pub drep_active_until: Option<&'a HashMap<Vec<u8>, i64>>,
-    /// Governance votes cast in this block per DRep (tagged key → count; a tx voting on
-    /// several actions counts once per action). Bumps `drep_vote_counts`.
-    pub drep_votes: &'a std::collections::HashMap<Vec<u8>, u32>,
+    /// Governance actions voted on in this block per DRep (tagged key → `"tx_hash#index"` of
+    /// each action). Recorded in `drep_vote_counts`, which counts **distinct actions**, so a
+    /// re-vote on an action the DRep already voted on doesn't raise its total.
+    pub drep_votes: &'a std::collections::HashMap<Vec<u8>, Vec<String>>,
+    /// At an epoch boundary: each DRep's refreshed count of governance actions it could have
+    /// voted on (tagged key → count), the `%` denominator; `None` between boundaries.
+    pub drep_eligible: Option<&'a std::collections::HashMap<Vec<u8>, u32>>,
 }
 
 pub struct State {
@@ -1823,14 +1827,26 @@ impl State {
     }
 
     /// Backfill `BlockSnapshot::drep_vote_counts` from db-sync when resuming from a snapshot
-    /// saved before the field existed (empty map). `reset` fetches it inline; thereafter
-    /// `apply_block` maintains it. Bounded by the snapshot's slot so votes in blocks the sink
-    /// is about to replay aren't counted twice.
+    /// that predates the field, or one written before votes were counted per distinct action
+    /// (its entries have an empty `DRepVotes::actions`, so re-votes at the tip couldn't be
+    /// deduped and the totals would be the old inflated row counts). `reset` fetches it inline;
+    /// thereafter `apply_block` maintains it. Bounded by the snapshot's slot so votes in blocks
+    /// the sink is about to replay aren't counted twice.
     pub async fn populate_drep_vote_counts(&mut self, epoch: u64) {
+        // A DRep with votes but no `actions` came from a snapshot written before votes were
+        // counted per action: its `total` is the old inflated row count *and* re-votes at the
+        // tip couldn't be deduped, so re-seed. Testing `total > 0` (not just an empty
+        // `actions`) is what keeps this from firing on every start: the epoch-boundary
+        // denominator refresh legitimately inserts vote-less entries, which have no actions.
         let needs = self
             .history
             .last()
-            .map(|s| s.drep_vote_counts.is_empty())
+            .map(|s| {
+                s.drep_vote_counts.is_empty()
+                    || s.drep_vote_counts
+                        .values()
+                        .any(|v| v.total > 0 && v.actions.is_empty())
+            })
             .unwrap_or(false);
         if !needs {
             return;
@@ -1846,25 +1862,24 @@ impl State {
                 return;
             }
         };
-        let counts = match db.drep_vote_counts(last_tx_id, epoch).await {
+        let voted = match db.drep_voted_actions(last_tx_id, epoch).await {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("failed to fetch drep vote counts: {e}");
+                tracing::warn!("failed to fetch drep voted actions: {e}");
                 return;
             }
         };
+        let eligible = db
+            .drep_eligible_actions(last_tx_id)
+            .await
+            .unwrap_or_default();
         let Some(snap) = self.history.last_mut() else {
             return;
         };
-        for (drep, (total, epoch_votes)) in counts {
-            snap.drep_vote_counts.insert(
-                drep,
-                DRepVotes {
-                    total,
-                    epoch,
-                    epoch_votes,
-                },
-            );
+        for (drep, actions) in voted {
+            let n = eligible.get(&drep).copied().unwrap_or(0);
+            snap.drep_vote_counts
+                .insert(drep, DRepVotes::from_actions(actions, epoch, n));
         }
         tracing::info!(
             dreps = snap.drep_vote_counts.len(),
@@ -2173,19 +2188,14 @@ impl State {
         tracing::info!("{} DReps with metadata", dreps.len());
 
         tracing::info!("Fetching DRep vote counts...");
+        let eligible = db.drep_eligible_actions(last_tx_id).await?;
         let drep_vote_counts: HashMap<Vec<u8>, DRepVotes> = db
-            .drep_vote_counts(last_tx_id, current_epoch)
+            .drep_voted_actions(last_tx_id, current_epoch)
             .await?
             .into_iter()
-            .map(|(k, (total, epoch_votes))| {
-                (
-                    k,
-                    DRepVotes {
-                        total,
-                        epoch: current_epoch,
-                        epoch_votes,
-                    },
-                )
+            .map(|(k, actions)| {
+                let n = eligible.get(&k).copied().unwrap_or(0);
+                (k, DRepVotes::from_actions(actions, current_epoch, n))
             })
             .collect();
         tracing::info!("{} DReps with governance votes", drep_vote_counts.len());
@@ -2350,6 +2360,7 @@ impl State {
             reward_deltas,
             drep_active_until,
             drep_votes,
+            drep_eligible,
         } = update;
 
         let prev = self.history.last().expect("state not initialized");
@@ -2526,14 +2537,25 @@ impl State {
         } else {
             prev.dreps.clone()
         };
-        // Governance votes cast in this block: bump each voter's lifetime total and its
-        // current-epoch tally (self-resetting via the epoch stamp — see `DRepVotes`).
-        let drep_vote_counts = if drep_votes.is_empty() {
+        // Governance votes cast in this block: record each voted action against its DRep, which
+        // re-derives the distinct total and the current-epoch tally (self-resetting via the
+        // epoch stamp — see `DRepVotes`). At an epoch boundary, also refresh the eligible-action
+        // denominators, inserting an entry for a DRep that hasn't voted yet so its card can
+        // still show `0 votes` against a real denominator.
+        let drep_vote_counts = if drep_votes.is_empty() && drep_eligible.is_none() {
             prev.drep_vote_counts.clone()
         } else {
             let mut counts = prev.drep_vote_counts.clone();
-            for (drep, n) in drep_votes {
-                counts.entry(drep.clone()).or_default().add(*n, epoch);
+            if let Some(eligible) = drep_eligible {
+                for (drep, n) in eligible {
+                    counts.entry(drep.clone()).or_default().eligible = *n;
+                }
+            }
+            for (drep, actions) in drep_votes {
+                let votes = counts.entry(drep.clone()).or_default();
+                for action in actions {
+                    votes.add(action, epoch);
+                }
             }
             counts
         };
@@ -3472,9 +3494,20 @@ mod tests {
         reward_deltas.insert(cred_c.clone(), 10i64);
         let mut drep_active = HashMap::new();
         drep_active.insert(drep_x.clone(), 25i64); // drep_y absent -> expires
-                                                   // drep_x votes twice in this block (one tx, two governance actions).
+                                                   // drep_x votes on two governance actions in this block, and re-votes on one of them
+                                                   // (a later tx in the same block) — the re-vote must not raise its total.
         let mut drep_votes = std::collections::HashMap::new();
-        drep_votes.insert(drep_x.clone(), 2u32);
+        drep_votes.insert(
+            drep_x.clone(),
+            vec![
+                "act#0".to_string(),
+                "act#1".to_string(),
+                "act#0".to_string(),
+            ],
+        );
+        // Epoch boundary: this block also refreshes the eligible-action denominators.
+        let mut drep_eligible = std::collections::HashMap::new();
+        drep_eligible.insert(drep_x.clone(), 3u32);
 
         state.apply_block(BlockUpdate {
             slot: 200,
@@ -3492,6 +3525,7 @@ mod tests {
             reward_deltas: Some(&reward_deltas),
             drep_active_until: Some(&drep_active),
             drep_votes: &drep_votes,
+            drep_eligible: Some(&drep_eligible),
         });
 
         // ---- Forward: every tracked value updated exactly. ----
@@ -3580,13 +3614,17 @@ mod tests {
         assert_eq!(cur.dreps.get(&drep_x).unwrap().active_until, Some(25));
         assert_eq!(cur.dreps.get(&drep_y).unwrap().active_until, None);
 
-        // Governance votes: both counted, and the epoch tally is stamped with this block's
-        // epoch — so it reads 2 for epoch 11 and 0 for any other (a DRep that hasn't voted
-        // yet in the current epoch), while the lifetime total keeps growing.
+        // Governance votes: the two distinct actions are counted once each (the re-vote on
+        // "act#0" doesn't count twice), and the epoch tally is stamped with this block's epoch —
+        // so it reads 2 for epoch 11 and 0 for any other (a DRep that hasn't voted yet in the
+        // current epoch). The boundary refresh set the participation denominator.
         let votes = cur.drep_vote_counts.get(&drep_x).unwrap();
         assert_eq!(votes.total, 2);
         assert_eq!(votes.votes_in(11), 2);
         assert_eq!(votes.votes_in(12), 0);
+        assert_eq!(votes.eligible, 3);
+        // A DRep that never voted still gets an entry from the denominator refresh, but no
+        // entry at all when it isn't in that map either.
         assert!(cur.drep_vote_counts.get(&drep_y).is_none());
 
         // total_staked: only cred_c newly enters the pool-delegated set (+210).
@@ -3665,6 +3703,7 @@ mod tests {
             reward_deltas: None,
             drep_active_until: None,
             drep_votes: &std::collections::HashMap::new(),
+            drep_eligible: None,
         });
 
         let cur = state.current().unwrap();
@@ -3750,6 +3789,7 @@ mod tests {
             reward_deltas: None,
             drep_active_until: None,
             drep_votes: &std::collections::HashMap::new(),
+            drep_eligible: None,
         });
 
         let cur = state.current().unwrap();

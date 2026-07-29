@@ -884,38 +884,52 @@ impl DbSync {
         Ok(rows.into_iter().map(|r| (r.hash_raw, r.count)).collect())
     }
 
-    /// Governance votes cast per DRep as of `last_tx_id`: `tagged drep bytes -> (lifetime
-    /// total, votes cast in `epoch`)`. The key is the same `[0x00 key | 0x01 script] ++ raw`
-    /// tagging used for every DRep map in state. Seeds `BlockSnapshot::drep_vote_counts`
-    /// (at `reset`, and via `populate_drep_vote_counts` on resume); `apply_block` maintains
-    /// it per block afterwards, so the tx-id bound is what keeps the two from double-counting.
+    /// Governance actions voted on per DRep as of `last_tx_id`: `tagged drep bytes ->
+    /// ("tx_hash#index" -> epoch of the latest vote)`, the seed for `DRepVotes::actions`.
+    /// The key is the same `[0x00 key | 0x01 script] ++ raw` tagging used for every DRep map
+    /// in state. Seeds `BlockSnapshot::drep_vote_counts` (at `reset`, and via
+    /// `populate_drep_vote_counts` on resume); `apply_block` maintains it per block afterwards,
+    /// so the tx-id bound is what keeps the two from double-counting.
     ///
-    /// Two queries rather than one `COUNT(*) FILTER (WHERE b.epoch_no = …)`: the lifetime
-    /// total needs no block join at all (a ~35k-row scan of `voting_procedure`, ~10 ms),
-    /// while joining tx+block for every vote just to reach `epoch_no` costs seconds.
-    pub async fn drep_vote_counts(
+    /// **Distinct actions, not vote rows**: a DRep may re-vote on an action it already voted
+    /// on, and `voting_procedure` keeps every such row (1,424 of mainnet's ~30k DRep votes),
+    /// so counting rows overstates participation.
+    ///
+    /// Two queries rather than one `MAX(b.epoch_no)`: the distinct set needs no block join at
+    /// all (~30 ms), while joining tx+block for all ~30k votes just to reach `epoch_no` costs
+    /// ~270 ms, so the epoch is resolved only for the current epoch's handful of votes. The
+    /// epoch is left 0 for everything older — `DRepVotes` only ever compares it for equality
+    /// with the current epoch. Bounding by `b.epoch_no` is deliberate: bounding by a tx-id
+    /// range instead makes the planner walk `block_pkey` for the epoch's first tx (38 s).
+    pub async fn drep_voted_actions(
         &self,
         last_tx_id: i64,
         epoch: u64,
-    ) -> Result<HashMap<Vec<u8>, (u64, u32)>, sqlx::Error> {
-        let totals = sqlx::query!(
-            r#"SELECT dh.raw AS "raw!", dh.has_script AS "has_script!", COUNT(*) AS "count!"
-               FROM voting_procedure vp
-               JOIN drep_hash dh ON dh.id = vp.drep_voter
-               WHERE vp.tx_id <= $1 AND dh.raw IS NOT NULL
-               GROUP BY dh.raw, dh.has_script"#,
+    ) -> Result<HashMap<Vec<u8>, imbl::HashMap<String, u64>>, sqlx::Error> {
+        let all = sqlx::query!(
+            r#"SELECT dh.raw AS "raw!", dh.has_script AS "has_script!",
+                      encode(t.hash, 'hex') AS "action_tx!", gap.index AS "action_index!"
+               FROM (SELECT DISTINCT drep_voter, gov_action_proposal_id
+                     FROM voting_procedure
+                     WHERE tx_id <= $1 AND drep_voter IS NOT NULL) v
+               JOIN drep_hash dh ON dh.id = v.drep_voter
+               JOIN gov_action_proposal gap ON gap.id = v.gov_action_proposal_id
+               JOIN tx t ON t.id = gap.tx_id
+               WHERE dh.raw IS NOT NULL"#,
             last_tx_id
         )
         .fetch_all(&self.db)
         .await?;
         let this_epoch = sqlx::query!(
-            r#"SELECT dh.raw AS "raw!", dh.has_script AS "has_script!", COUNT(*) AS "count!"
+            r#"SELECT dh.raw AS "raw!", dh.has_script AS "has_script!",
+                      encode(t.hash, 'hex') AS "action_tx!", gap.index AS "action_index!"
                FROM voting_procedure vp
-               JOIN tx t ON t.id = vp.tx_id
-               JOIN block b ON b.id = t.block_id
+               JOIN tx vt ON vt.id = vp.tx_id
+               JOIN block b ON b.id = vt.block_id
                JOIN drep_hash dh ON dh.id = vp.drep_voter
-               WHERE vp.tx_id <= $1 AND b.epoch_no = $2 AND dh.raw IS NOT NULL
-               GROUP BY dh.raw, dh.has_script"#,
+               JOIN gov_action_proposal gap ON gap.id = vp.gov_action_proposal_id
+               JOIN tx t ON t.id = gap.tx_id
+               WHERE vp.tx_id <= $1 AND b.epoch_no = $2 AND dh.raw IS NOT NULL"#,
             last_tx_id,
             epoch as i32
         )
@@ -926,17 +940,79 @@ impl DbSync {
             let tag = if has_script { 0x01u8 } else { 0x00 };
             [&[tag][..], raw].concat()
         };
-        let mut counts: HashMap<Vec<u8>, (u64, u32)> = totals
-            .into_iter()
-            .map(|r| (tagged(&r.raw, r.has_script), (r.count.max(0) as u64, 0)))
-            .collect();
-        for r in this_epoch {
-            counts
+        let mut voted: HashMap<Vec<u8>, imbl::HashMap<String, u64>> = HashMap::new();
+        for r in all {
+            voted
                 .entry(tagged(&r.raw, r.has_script))
-                .or_insert((0, 0))
-                .1 = r.count.max(0) as u32;
+                .or_default()
+                .insert(format!("{}#{}", r.action_tx, r.action_index), 0);
         }
-        Ok(counts)
+        for r in this_epoch {
+            voted
+                .entry(tagged(&r.raw, r.has_script))
+                .or_default()
+                .insert(format!("{}#{}", r.action_tx, r.action_index), epoch);
+        }
+        Ok(voted)
+    }
+
+    /// Governance actions each DRep **could** have voted on as of `last_tx_id`: the `%`
+    /// denominator on the DRep card (`DRepVotes::eligible`).
+    ///
+    /// An action is eligible for a DRep when its voting window overlaps the DRep's registered
+    /// period: it must still have been open at or after the DRep's first registration
+    /// (`closed >= first_reg`), and — for a DRep that has since deregistered and not come back
+    /// — must have opened before that deregistration. Voting closes when the action is
+    /// ratified/enacted/dropped/expired, or at its `expiration` epoch if none of those has
+    /// happened yet.
+    ///
+    /// Without the overlap test a DRep registered last month would read as ~2% simply because
+    /// it did not exist for the first 140 actions; with it, the same DRep reads ~13% of the 27
+    /// actions it could actually reach.
+    pub async fn drep_eligible_actions(
+        &self,
+        last_tx_id: i64,
+    ) -> Result<std::collections::HashMap<Vec<u8>, u32>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"WITH act AS (
+                 SELECT b.epoch_no AS opened,
+                        COALESCE(gap.ratified_epoch, gap.enacted_epoch, gap.dropped_epoch,
+                                 gap.expired_epoch, gap.expiration) AS closed
+                 FROM gov_action_proposal gap
+                 JOIN tx t ON t.id = gap.tx_id
+                 JOIN block b ON b.id = t.block_id
+                 WHERE gap.tx_id <= $1
+               ), reg AS (
+                 SELECT dr.drep_hash_id,
+                        MIN(b.epoch_no) FILTER (WHERE dr.deposit > 0) AS first_reg,
+                        MAX(b.epoch_no) FILTER (WHERE dr.deposit < 0) AS last_dereg,
+                        COUNT(*) FILTER (WHERE dr.deposit > 0) AS regs,
+                        COUNT(*) FILTER (WHERE dr.deposit < 0) AS deregs
+                 FROM drep_registration dr
+                 JOIN tx t ON t.id = dr.tx_id
+                 JOIN block b ON b.id = t.block_id
+                 WHERE dr.tx_id <= $1
+                 GROUP BY dr.drep_hash_id
+               )
+               SELECT dh.raw AS "raw!", dh.has_script AS "has_script!",
+                      COUNT(*) AS "eligible!"
+               FROM reg r
+               JOIN drep_hash dh ON dh.id = r.drep_hash_id
+               JOIN act a ON a.closed >= r.first_reg
+                         AND (r.regs > r.deregs OR a.opened <= r.last_dereg)
+               WHERE dh.raw IS NOT NULL
+               GROUP BY dh.raw, dh.has_script"#,
+            last_tx_id
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let tag = if r.has_script { 0x01u8 } else { 0x00 };
+                ([&[tag][..], &r.raw[..]].concat(), r.eligible.max(0) as u32)
+            })
+            .collect())
     }
 
     /// Pools with a pending (un-cancelled) retirement as of `last_tx_id`, as
