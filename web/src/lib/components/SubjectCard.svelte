@@ -70,14 +70,18 @@
   <div class="subject-card" class:landscape style:--subject-color={color}>
     <span class="drep-name" style:color>{drep.given_name ?? drep.drep_id.slice(5, 13)}</span>
     <span class="pool-stake">{formatAda(drep.live_stake)}</span>
-    <!-- Votes are to a DRep what minted blocks are to a pool — same line, same shape. -->
-    <span class="pool-delegators">
-      {#if drep.delegators > 0}
-        <a class="delegators-link" href="/{drep.drep_id}/delegators">{drep.delegators.toLocaleString()} delegators</a>
-      {:else}
-        {drep.delegators.toLocaleString()} delegators
-      {/if}
-      · {formatVotes(drep.votes ?? 0, drep.eligible)}
+    <!-- Votes are to a DRep what minted blocks are to a pool, but with the participation %
+         appended the pair no longer fits the card's width — so they stack, one fact per line,
+         instead of wrapping mid-figure ("148 votes" / "(98%)"). -->
+    <span class="pool-delegators stacked">
+      <span class="fact">
+        {#if drep.delegators > 0}
+          <a class="delegators-link" href="/{drep.drep_id}/delegators">{drep.delegators.toLocaleString()} delegators</a>
+        {:else}
+          {drep.delegators.toLocaleString()} delegators
+        {/if}
+      </span>
+      <span class="fact">{formatVotes(drep.votes ?? 0, drep.eligible)}</span>
     </span>
   </div>
 {:else if stake}
@@ -304,6 +308,18 @@
   .pool-delegators {
     font-size: 13px;
     color: var(--text-muted);
+  }
+
+  /* One fact per line, tighter than the card's 6px flex gap. `nowrap` keeps each line whole,
+     so a count and its percentage can never be split across lines. */
+  .pool-delegators.stacked {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .pool-delegators .fact {
+    white-space: nowrap;
   }
 
   .pool-params {

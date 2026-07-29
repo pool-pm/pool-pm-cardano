@@ -959,28 +959,39 @@ impl DbSync {
     /// Governance actions each DRep **could** have voted on as of `last_tx_id`: the `%`
     /// denominator on the DRep card (`DRepVotes::eligible`).
     ///
-    /// An action is eligible for a DRep when its voting window overlaps the DRep's registered
-    /// period: it must still have been open at or after the DRep's first registration
-    /// (`closed >= first_reg`), and — for a DRep that has since deregistered and not come back
-    /// — must have opened before that deregistration. Voting closes when the action is
-    /// ratified/enacted/dropped/expired, or at its `expiration` epoch if none of those has
-    /// happened yet.
+    /// An action counts for a DRep when its voting **closed while the DRep was registered**:
+    /// at or after its first registration (`closed >= first_reg`) and — for a DRep that has
+    /// since deregistered and not come back — at or before that deregistration
+    /// (`closed <= last_dereg`). Voting closes when the action is ratified/enacted/dropped/
+    /// expired, or at its `expiration` epoch if none of those has happened yet, so a currently
+    /// open action still counts for a currently registered DRep (it can still vote on it).
     ///
-    /// Without the overlap test a DRep registered last month would read as ~2% simply because
-    /// it did not exist for the first 140 actions; with it, the same DRep reads ~13% of the 27
+    /// Keying both ends on `closed` is what makes a deregistered DRep read fairly. Testing
+    /// `opened <= last_dereg` instead would count every action that was still open the moment
+    /// it left — 22 of them for `drep1cm6mupj0…`, dropping it from 82/96 (85%) to 82/118 (69%)
+    /// for votes it had no chance to cast. An action that opened *before* the DRep registered
+    /// and closed after does count, since it could vote during the overlap.
+    ///
+    /// Without any such test a DRep registered last month would read as ~2% simply because it
+    /// did not exist for the first 140 actions; with it, the same DRep reads ~13% of the 27
     /// actions it could actually reach.
+    ///
+    /// A DRep that deregistered and re-registered is measured over `[first_reg, last_dereg]`
+    /// as one span, so a gap in the middle is counted as registered time. Exact per-period
+    /// accounting would need a window join for a handful of DReps; the coarse span is left in
+    /// deliberately.
     pub async fn drep_eligible_actions(
         &self,
         last_tx_id: i64,
     ) -> Result<std::collections::HashMap<Vec<u8>, u32>, sqlx::Error> {
         let rows = sqlx::query!(
             r#"WITH act AS (
-                 SELECT b.epoch_no AS opened,
+                 -- Only the closing epoch is needed, and every candidate for it is a column of
+                 -- gov_action_proposal — so no tx/block join here at all.
+                 SELECT gap.id,
                         COALESCE(gap.ratified_epoch, gap.enacted_epoch, gap.dropped_epoch,
                                  gap.expired_epoch, gap.expiration) AS closed
                  FROM gov_action_proposal gap
-                 JOIN tx t ON t.id = gap.tx_id
-                 JOIN block b ON b.id = t.block_id
                  WHERE gap.tx_id <= $1
                ), reg AS (
                  SELECT dr.drep_hash_id,
@@ -993,13 +1004,23 @@ impl DbSync {
                  JOIN block b ON b.id = t.block_id
                  WHERE dr.tx_id <= $1
                  GROUP BY dr.drep_hash_id
+               ), elig AS (
+                 SELECT r.drep_hash_id AS drep, a.id AS action
+                 FROM reg r
+                 JOIN act a ON a.closed >= r.first_reg
+                           AND (r.regs > r.deregs OR a.closed <= r.last_dereg)
+                 UNION  -- dedupes (drep, action)
+                 -- An action the DRep actually voted on is eligible by definition. Without this
+                 -- leg a deregistered DRep that voted on an action still open when it left would
+                 -- score above 100% (12 DReps on mainnet, one at 317%).
+                 SELECT vp.drep_voter, vp.gov_action_proposal_id
+                 FROM voting_procedure vp
+                 WHERE vp.tx_id <= $1 AND vp.drep_voter IS NOT NULL
                )
                SELECT dh.raw AS "raw!", dh.has_script AS "has_script!",
                       COUNT(*) AS "eligible!"
-               FROM reg r
-               JOIN drep_hash dh ON dh.id = r.drep_hash_id
-               JOIN act a ON a.closed >= r.first_reg
-                         AND (r.regs > r.deregs OR a.opened <= r.last_dereg)
+               FROM elig e
+               JOIN drep_hash dh ON dh.id = e.drep
                WHERE dh.raw IS NOT NULL
                GROUP BY dh.raw, dh.has_script"#,
             last_tx_id
