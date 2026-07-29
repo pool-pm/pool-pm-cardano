@@ -482,6 +482,15 @@
     });
   });
 
+  // A block carrying this DRep's own governance vote — the DRep-feed counterpart of a
+  // pool's own minted block, so it keeps the minting pool's color while folded instead of
+  // going grey like the surrounding stake-change blocks.
+  function hasSubjectVote(section: Section): boolean {
+    const id = $drep?.drep_id;
+    if (!id || !section.block) return false;
+    return section.txs.some((tx) => tx.votes?.some((v) => v.voter_id === id));
+  }
+
   function sectionColors(section: Section, folded: boolean): { bg: string; border: string; accent: string } {
     // Reward capsule: neutral (not pool-colored) with a visible gray border.
     // Neutral panels (reward capsule, mempool) sit at the shared elevated surface tone
@@ -490,8 +499,10 @@
     if (!section.block) return { bg: '#26262c', border: '#26262c', accent: 'rgb(255 255 255 / 0.4)' };
     // Folded stake-change block (pool/DRep feed): the minting pool isn't its meaning — the
     // delegator activity is — so it wears the neutral mempool grey and only regains the
-    // pool color when unfolded (where the minter is shown). Own blocks keep their color.
-    if (folded && !isOwnBlock(section)) return { bg: '#26262c', border: '#26262c', accent: 'rgb(255 255 255 / 0.4)' };
+    // pool color when unfolded (where the minter is shown). A pool's own minted block and a
+    // DRep's own vote block are that feed's headline events: they keep their color.
+    if (folded && !isOwnBlock(section) && !hasSubjectVote(section))
+      return { bg: '#26262c', border: '#26262c', accent: 'rgb(255 255 255 / 0.4)' };
     const c = poolColor(section.block.pool_id);
     return { bg: c, border: c, accent: c };
   }
