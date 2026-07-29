@@ -98,6 +98,10 @@ fn start_from_boundary(db_url: &Url, tip_slot: u64) -> (IntersectConfig, Option<
     }
 }
 
+/// Only log a startup populate step that took at least this long — the rest are no-ops on
+/// a warm resume and would just be noise.
+const STARTUP_STEP_LOG_MS: u64 = 100;
+
 pub fn run(args: Args) -> Result<(), Error> {
     setup_tracing(args.verbose);
 
@@ -153,21 +157,51 @@ pub fn run(args: Args) -> Result<(), Error> {
                 .enable_all()
                 .build()
                 .unwrap();
-            rt.block_on(state.populate_handles());
-            rt.block_on(state.populate_gov_titles());
-            rt.block_on(state.populate_address_balances());
-            rt.block_on(state.populate_asset_holdings());
-            rt.block_on(state.populate_pool_retirements());
-            rt.block_on(state.populate_block_counts());
-            rt.block_on(state.populate_drep_active());
+            // Each populate is a no-op when the resumed snapshot already carries its field,
+            // so on a warm start these are ~free — but a cold one (or a newly added field)
+            // runs real queries. Time them and log the ones that actually cost something,
+            // so a slow startup can be attributed instead of guessed at.
+            let timed = |label: &str, f: &mut dyn FnMut()| {
+                let started = std::time::Instant::now();
+                f();
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                if elapsed_ms >= STARTUP_STEP_LOG_MS {
+                    info!(step = label, elapsed_ms, "startup step");
+                }
+            };
+            timed("handles", &mut || rt.block_on(state.populate_handles()));
+            timed("gov_titles", &mut || {
+                rt.block_on(state.populate_gov_titles())
+            });
+            timed("address_balances", &mut || {
+                rt.block_on(state.populate_address_balances())
+            });
+            timed("asset_holdings", &mut || {
+                rt.block_on(state.populate_asset_holdings())
+            });
+            timed("pool_retirements", &mut || {
+                rt.block_on(state.populate_pool_retirements())
+            });
+            timed("block_counts", &mut || {
+                rt.block_on(state.populate_block_counts())
+            });
+            timed("drep_active", &mut || {
+                rt.block_on(state.populate_drep_active())
+            });
             let epoch = State::epoch_for_slot(
                 snap_slot,
                 &GenesisValues::from(args.network.config().clone()),
             );
-            rt.block_on(state.populate_active_stakes(epoch));
-            rt.block_on(state.populate_drep_vote_counts(epoch));
-            rt.block_on(state.populate_delegation_slots());
-            state.populate_total_staked();
+            timed("active_stakes", &mut || {
+                rt.block_on(state.populate_active_stakes(epoch))
+            });
+            timed("drep_vote_counts", &mut || {
+                rt.block_on(state.populate_drep_vote_counts(epoch))
+            });
+            timed("delegation_slots", &mut || {
+                rt.block_on(state.populate_delegation_slots())
+            });
+            timed("total_staked", &mut || state.populate_total_staked());
         }
 
         if let Some(snap) = state.current() {

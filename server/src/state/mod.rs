@@ -2509,7 +2509,15 @@ impl State {
                 return None;
             }
         };
-        tracing::info!("loading snapshot from {}...", path.display());
+        // Timed: on mainnet this is the single longest step of a warm start (a multi-GB
+        // msgpack decode of ~15M holdings entries), and without an elapsed figure the gap
+        // to the next log line reads like whichever db populate happens to log next.
+        let started = std::time::Instant::now();
+        let file_mb = file
+            .metadata()
+            .map(|m| m.len() / (1024 * 1024))
+            .unwrap_or(0);
+        tracing::info!(file_mb, "loading snapshot from {}...", path.display());
         let rd = std::io::BufReader::new(file);
         let mut de = rmp_serde::Deserializer::new(rd);
 
@@ -2553,7 +2561,16 @@ impl State {
             Ok((snap, fi))
         })();
         match result {
-            Ok((snap, fi)) => Some((snap, fi, interner)),
+            Ok((snap, fi)) => {
+                tracing::info!(
+                    file_mb,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    holdings = snap.asset_holdings.len(),
+                    slot = snap.slot,
+                    "snapshot loaded"
+                );
+                Some((snap, fi, interner))
+            }
             Err(e) => {
                 tracing::warn!("failed to deserialize snapshot: {}", e);
                 None

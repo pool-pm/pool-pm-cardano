@@ -122,6 +122,64 @@ impl Worker {
             // ADA Handle: collect (handle_name, owner_address) for this block
             let mut handle_changes: Vec<(String, String)> = Vec::new();
 
+            // Every previous output this block spends, fetched in ONE db round trip.
+            //
+            // The loop below needs each input's previous output (address, ADA, tokens) to move
+            // stake and holdings. Inputs created in this block, or still in `snap.utxos`, are
+            // free; the rest used to be fetched one at a time — two queries per input, awaited
+            // in sequence — which is what made a resume's catch-up slow (~800 inputs across the
+            // blocks it replays, ~7 ms each). `resolve_utxos_batch` matches them all with one
+            // UNNEST'd statement, the same call the feed-replay path makes (`decode.rs`).
+            //
+            // Anything the batch doesn't return (no db handle yet, a query error) still falls
+            // back to the per-input lookup below, so behaviour is unchanged — only the number
+            // of round trips is.
+            let prefetched: std::collections::HashMap<(Vec<u8>, i16), TxOutput> = {
+                let mut in_block: std::collections::HashSet<(Vec<u8>, i16)> =
+                    std::collections::HashSet::new();
+                let mut spent: Vec<(Vec<u8>, i16)> = Vec::new();
+                for tx in block.txs() {
+                    let (inputs, outputs) = crate::pallas::effective_io(&tx);
+                    let hash = tx.hash().as_ref().to_vec();
+                    for i in 0..outputs.len() {
+                        in_block.insert((hash.clone(), i as i16));
+                    }
+                    for input in &inputs {
+                        spent.push((input.hash().as_ref().to_vec(), input.index() as i16));
+                    }
+                }
+                // A tx can only spend an output made earlier in the same block, but filtering
+                // after the full pass is order-independent — and dedup keeps a doubly-spent
+                // key (impossible on-chain, cheap to guard) out of the array parameter.
+                spent.retain(|key| {
+                    !in_block.contains(key) && !snap.is_some_and(|s| s.utxos.contains_key(key))
+                });
+                spent.sort_unstable();
+                spent.dedup();
+                match (spent.is_empty(), state.db_handle()) {
+                    (false, Some(db)) => db
+                        .resolve_utxos_batch(&spent)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(|(key, (address, lovelace, assets, _unspent))| {
+                            let address = pallas::ledger::addresses::Address::from_bech32(&address)
+                                .ok()
+                                .map(|a| a.to_vec())?;
+                            Some((
+                                key,
+                                TxOutput {
+                                    lovelaces: Decimal::from(lovelace),
+                                    address,
+                                    assets,
+                                },
+                            ))
+                        })
+                        .collect(),
+                    _ => std::collections::HashMap::new(),
+                }
+            };
+
             // Feed index: collect raw delegation certs for building DelegationEntry
             struct RawDelegCert {
                 tx_hash: String,
@@ -167,6 +225,8 @@ impl Worker {
                     let resolved: Option<TxOutput> = if let Some(utxo) = produced.get(&key) {
                         Some(utxo.clone())
                     } else if let Some(utxo) = snap.and_then(|s| s.utxos.get(&key)) {
+                        Some(utxo.clone())
+                    } else if let Some(utxo) = prefetched.get(&key) {
                         Some(utxo.clone())
                     } else {
                         let (addr_str, lovelace, assets) = state
