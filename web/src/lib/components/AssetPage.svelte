@@ -3,6 +3,7 @@
   import { fade } from 'svelte/transition';
   import '@nftcdn/media-player/nftcdn-media-player.js';
   import type { AssetMedia, AssetMediaResponse } from '../types';
+  import { hasInvertedArt } from '../darkArt';
 
   // `initialIndex` comes from the URL (`/asset1…/files/N`); 0 is the bare asset page.
   let { fingerprint, initialIndex = 0 }: { fingerprint: string; initialIndex?: number } = $props();
@@ -212,7 +213,11 @@
       style:padding-bottom={`${placardHeight + MEDIA_BOTTOM_GAP}px`}
     >
       {#key current}
-        <nftcdn-media-player src={media[current].src} type={media[current].type} name={media[current].name}
+        <nftcdn-media-player
+          class:inverted={hasInvertedArt(fingerprint)}
+          src={media[current].src}
+          type={media[current].type}
+          name={media[current].name}
         ></nftcdn-media-player>
       {/key}
     </div>
@@ -327,6 +332,13 @@
     height: 100%;
     object-fit: contain;
     outline: none;
+  }
+
+  /* Near-black art (see darkArt.ts) would be a black-on-black silhouette on this page's
+     black background; inverting the still image turns the ink light and leaves the
+     transparent background transparent. Stills only — video and 3D keep their own colours. */
+  nftcdn-media-player.inverted::part(img) {
+    filter: invert(1);
   }
 
   .status {

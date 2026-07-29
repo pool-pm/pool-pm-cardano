@@ -5,6 +5,7 @@
   import { stake, address } from '../stores';
   import { onAssetLive } from '../sse';
   import { commonNamePrefix } from '../assetName';
+  import { hasInvertedArt } from '../darkArt';
   import { formatQuantity, formatAda, formatTicker } from '../layout';
 
   // Compact a long bech32 for the minimalist header (e.g. addr1q8e533…u6aldq).
@@ -387,6 +388,7 @@
         {:else if !suppressImages || loaded.has(a.fingerprint)}
           <img
             class="thumb"
+            class:inverted={hasInvertedArt(a.fingerprint)}
             src={a.src}
             srcset={a.srcset}
             decoding="async"
@@ -558,6 +560,7 @@
                             {#if (!suppressImages || loaded.has(s.fingerprint)) && !broken.has(s.fingerprint)}
                               <img
                                 class="card-img"
+                                class:inverted={hasInvertedArt(s.fingerprint)}
                                 src={s.src}
                                 srcset={s.srcset}
                                 decoding="async"
@@ -911,6 +914,13 @@
     object-fit: contain;
     display: block;
     transition: transform 0.25s ease;
+  }
+
+  /* Near-black art (see darkArt.ts) would be a black-on-black silhouette here; inverting
+     turns the ink light and leaves the transparent background transparent. */
+  .thumb.inverted,
+  .card-img.inverted {
+    filter: invert(1);
   }
 
   /* Non-image token (image 404'd): the name/fingerprint stands in for the missing art. Flat. */
