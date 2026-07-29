@@ -66,6 +66,7 @@ impl Worker {
 
     async fn handle_apply(&self, cbor: &[u8], stage: &Stage) -> Result<(), WorkerError> {
         let apply_started = std::time::Instant::now();
+        let decode_started = apply_started;
         let block = MultiEraBlock::decode(cbor).or_panic()?;
         let slot = block.slot();
         let height = block.number();
@@ -163,7 +164,8 @@ impl Worker {
                 });
                 spent.sort_unstable();
                 spent.dedup();
-                match (spent.is_empty(), state.db_handle()) {
+                let db_started = std::time::Instant::now();
+                let resolved = match (spent.is_empty(), state.db_handle()) {
                     (false, Some(db)) => db
                         .resolve_utxos_batch(&spent)
                         .await
@@ -184,7 +186,11 @@ impl Worker {
                         })
                         .collect(),
                     _ => std::collections::HashMap::new(),
-                }
+                };
+                stage
+                    .catchup_db_us
+                    .fetch_add(db_started.elapsed().as_micros() as u64, Ordering::Relaxed);
+                resolved
             };
 
             // Feed index: collect raw delegation certs for building DelegationEntry
@@ -515,6 +521,10 @@ impl Worker {
                 handle_changes,
             )
         };
+        stage.catchup_decode_us.fetch_add(
+            decode_started.elapsed().as_micros() as u64,
+            Ordering::Relaxed,
+        );
 
         let timestamp = crate::mempool::slot_to_timestamp(slot, &stage.genesis);
         let epoch = State::epoch_for_slot(slot, &stage.genesis);
@@ -589,6 +599,7 @@ impl Worker {
             }
         };
 
+        let state_started = std::time::Instant::now();
         {
             let mut state = stage.state.write().await;
             if let Some((pools, dreps)) = new_active_stakes {
@@ -696,6 +707,10 @@ impl Worker {
                 }
             }
         }
+        stage.catchup_state_us.fetch_add(
+            state_started.elapsed().as_micros() as u64,
+            Ordering::Relaxed,
+        );
 
         let tx_count = txs.len();
 
@@ -755,6 +770,9 @@ impl Worker {
                 // hand it the next block, which on mainnet means waiting for one to be minted.
                 let blocks = stage.catchup_blocks.load(Ordering::Relaxed);
                 let apply_ms = stage.catchup_apply_us.load(Ordering::Relaxed) / 1000;
+                let decode_ms = stage.catchup_decode_us.load(Ordering::Relaxed) / 1000;
+                let db_ms = stage.catchup_db_us.load(Ordering::Relaxed) / 1000;
+                let state_ms = stage.catchup_state_us.load(Ordering::Relaxed) / 1000;
                 let first_us = stage.catchup_first_us.load(Ordering::Relaxed);
                 let wall_ms = now_us.saturating_sub(first_us) / 1000;
                 info!(
@@ -764,6 +782,10 @@ impl Worker {
                     drained,
                     blocks,
                     apply_ms,
+                    // decode = block decode + building the SSE txs (db_ms is the query inside it)
+                    decode_ms,
+                    db_ms,
+                    state_ms,
                     wall_ms,
                     idle_ms = wall_ms.saturating_sub(apply_ms),
                     "catch-up complete"
@@ -923,6 +945,12 @@ pub struct Stage {
     catchup_blocks: AtomicU64,
     catchup_apply_us: AtomicU64,
     catchup_first_us: AtomicU64,
+    /// Where a block's apply time actually goes: decoding + building the SSE txs (`decode`),
+    /// the one batched UTXO query inside it (`db`), and mutating the state maps under the
+    /// write lock (`state`). Summed over the catch-up and reported when it ends.
+    catchup_decode_us: AtomicU64,
+    catchup_db_us: AtomicU64,
+    catchup_state_us: AtomicU64,
     /// Shared flag: set to false once catch-up is complete. SSE server waits on this.
     pub catching_up: Arc<std::sync::atomic::AtomicBool>,
     /// True while an offloaded periodic snapshot save is in flight, so a slow save can't
@@ -984,6 +1012,9 @@ pub fn bootstrapper(context: &Context, config: SinkConfig) -> Result<Stage, Erro
         catchup_blocks: AtomicU64::new(0),
         catchup_apply_us: AtomicU64::new(0),
         catchup_first_us: AtomicU64::new(0),
+        catchup_decode_us: AtomicU64::new(0),
+        catchup_db_us: AtomicU64::new(0),
+        catchup_state_us: AtomicU64::new(0),
         snapshot_saving: Arc::new(AtomicBool::new(false)),
         ops_count: Default::default(),
         latest_block: Default::default(),
