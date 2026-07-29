@@ -158,8 +158,11 @@ tuned hard (mainnet cold-reset RSS ~8.5 GB); any change here must preserve these
   30.0 s → 9.5 s, each step measured back-to-back. Load interns each address **once** and
   inserts its tokens as they stream, so the un-shared full map is never materialized and each
   entry costs exactly one allocation (`AssetIdSeed` writes `policy ++ name` straight into it).
-  The same array-of-ints encoding still applies to `AddrKey` and to the other maps' `Vec<u8>`
-  keys — ~400 MB and a chunk of the `fields` load still on the table.
+  The other maps' `Vec<u8>` keys (balances, stakes, rewards, delegations, delegator sets) get
+  the same treatment through `state/wire.rs` — `#[serde(with = …)]` on the field, so only the
+  wire changes and every call site keeps its `Vec<u8>`. Their readers accept **both** encodings,
+  which is why that change needed no format bump: 1.57 GB → 1.31 GB and the non-holdings half of
+  the load 15.3 s → 9.0 s, measured back-to-back.
   Bump `SNAPSHOT_FORMAT` on any persisted-shape change so old snapshots rebuild from db-sync;
   when the change is cheap to read both ways, a one-release read-only compat path lets a deploy
   resume rather than cold-reset (the grouping change shipped one, then removed it).

@@ -75,7 +75,9 @@ pub struct DRep {
 /// value), over ~1.7M entries. Same reasoning as the boxed asset ids in `asset_holdings`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Delegation {
-    /// Pool hash (28 B) or tagged DRep bytes (1 + 28 B).
+    /// Pool hash (28 B) or tagged DRep bytes (1 + 28 B). Persisted as msgpack `bin`; see
+    /// `state::wire` for why that isn't the default.
+    #[serde(with = "crate::state::wire_boxed_bytes")]
     pub target: Box<[u8]>,
     /// Slot of the first cert of the current run; 0 = unknown (pre-backfill snapshot).
     pub since_slot: u64,

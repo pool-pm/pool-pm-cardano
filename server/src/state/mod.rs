@@ -1,5 +1,7 @@
 mod dbsync;
 pub mod feed_index;
+mod wire;
+pub use wire::boxed_bytes as wire_boxed_bytes;
 
 use imbl::{hashmap::HashMap, hashset::HashSet, ordmap::OrdMap};
 use std::path::Path;
@@ -26,12 +28,22 @@ pub struct BlockSnapshot {
     pub pools: HashMap<String, Pool>,
     /// Stake credential → the pool it backs + the slot its current run there began
     /// (see [`Delegation`]).
+    ///
+    /// The byte-keyed maps below carry ~10M keys between them and are the bulk of the
+    /// snapshot's non-holdings half, so they go on the wire as msgpack `bin` rather than the
+    /// integer arrays a plain `Vec<u8>` produces — see `wire`. In-memory types are unchanged.
+    #[serde(with = "wire::byte_key_map")]
     pub pool_delegations: HashMap<Vec<u8>, Delegation>,
+    #[serde(with = "wire::byte_key_set_map")]
     pub pool_delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
     /// Stake credential → the DRep it backs (tagged bytes) + its run's start slot.
+    #[serde(with = "wire::byte_key_map")]
     pub drep_delegations: HashMap<Vec<u8>, Delegation>,
+    #[serde(with = "wire::byte_key_set_map")]
     pub drep_delegators: HashMap<Vec<u8>, HashSet<Vec<u8>>>,
+    #[serde(with = "wire::byte_key_map")]
     pub stakes: HashMap<Vec<u8>, i64>,
+    #[serde(with = "wire::byte_key_map")]
     pub rewards: HashMap<Vec<u8>, i64>,
     /// DRep bytes → DRep metadata (given_name from off-chain vote data)
     pub dreps: HashMap<Vec<u8>, DRep>,
@@ -63,7 +75,7 @@ pub struct BlockSnapshot {
     /// Entries with zero balance are removed; mirrors `stakes` at address level.
     /// Drives the live balance in the address feed header (replacing what used
     /// to be a one-shot db-sync query at connect).
-    #[serde(default)]
+    #[serde(default, with = "wire::byte_key_map")]
     pub address_balances: HashMap<Vec<u8>, i64>,
     /// True iff `address_balances` was fully populated from db-sync (either by
     /// `reset()` or `populate_address_balances`). False on old snapshots and
@@ -641,12 +653,6 @@ impl BlockSnapshot {
 /// positionally, so the extra fields shift the layout and old snapshots must rebuild.
 const SNAPSHOT_FORMAT: u32 = 15;
 
-/// The previous format: holdings grouped by address but one full `policy ++ name` per token,
-/// byte strings encoded as msgpack arrays. Still *readable* ([`LegacyHoldingsSeed`]) so a
-/// deploy resumes from the snapshot on disk instead of a multi-minute cold reset; never
-/// written. Remove once every deployment has rolled over.
-const SNAPSHOT_FORMAT_LEGACY_PER_TOKEN: u32 = 14;
-
 /// Serializes [`BlockSnapshot::asset_holdings`] **grouped by address**: a msgpack map of
 /// `AddrKey → [(AssetId, Held)]`, with the key `deref'd off its `Arc`` (the wire form carries
 /// no `Arc`, so no serde `rc` feature).
@@ -939,37 +945,6 @@ impl<'de> serde::de::DeserializeSeed<'de> for HoldingsSeed<'_> {
                         out: &mut out,
                         addr,
                     })?;
-                }
-                Ok(out)
-            }
-        }
-        d.deserialize_map(V(self.0))
-    }
-}
-
-/// Reads `SNAPSHOT_FORMAT` 14: grouped by address already, but each token carrying its whole
-/// `policy ++ name`. Only needed until deployments have written a format-15 snapshot.
-struct LegacyHoldingsSeed<'a>(&'a mut AddrInterner);
-
-impl<'de> serde::de::DeserializeSeed<'de> for LegacyHoldingsSeed<'_> {
-    type Value = AssetHoldings;
-    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<AssetHoldings, D::Error> {
-        struct V<'a>(&'a mut AddrInterner);
-        impl<'de> serde::de::Visitor<'de> for V<'_> {
-            type Value = AssetHoldings;
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a map of (cred, addr) → [(policy++name, Held)]")
-            }
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                mut map: A,
-            ) -> Result<AssetHoldings, A::Error> {
-                let mut out: AssetHoldings = OrdMap::new();
-                while let Some(addr_key) = map.next_key::<AddrKey>()? {
-                    let addr = intern_owned(self.0, addr_key);
-                    for (aid, held) in map.next_value::<Vec<(AssetId, Held)>>()? {
-                        out.insert((addr.clone(), aid), held);
-                    }
                 }
                 Ok(out)
             }
@@ -2844,26 +2819,14 @@ impl State {
                 return None;
             }
         };
-        let policy_grouped = match format {
-            SNAPSHOT_FORMAT => true,
-            SNAPSHOT_FORMAT_LEGACY_PER_TOKEN => {
-                tracing::info!(
-                    "snapshot is format {} (a policy id per token) — reading it once; the next \
-                     periodic write stores format {}",
-                    SNAPSHOT_FORMAT_LEGACY_PER_TOKEN,
-                    SNAPSHOT_FORMAT
-                );
-                false
-            }
-            _ => {
-                tracing::warn!(
-                    "snapshot format mismatch: snapshot={}, expected={} — rebuilding from db-sync",
-                    format,
-                    SNAPSHOT_FORMAT
-                );
-                return None;
-            }
-        };
+        if format != SNAPSHOT_FORMAT {
+            tracing::warn!(
+                "snapshot format mismatch: snapshot={}, expected={} — rebuilding from db-sync",
+                format,
+                SNAPSHOT_FORMAT
+            );
+            return None;
+        }
         match u64::deserialize(&mut de) {
             Ok(magic) if magic == network_magic => {}
             Ok(magic) => {
@@ -2891,11 +2854,7 @@ impl State {
             fields_ms = t.elapsed().as_millis() as u64;
 
             let t = std::time::Instant::now();
-            snap.asset_holdings = if policy_grouped {
-                HoldingsSeed(&mut interner).deserialize(&mut de)?
-            } else {
-                LegacyHoldingsSeed(&mut interner).deserialize(&mut de)?
-            };
+            snap.asset_holdings = HoldingsSeed(&mut interner).deserialize(&mut de)?;
             holdings_ms = t.elapsed().as_millis() as u64;
 
             let t = std::time::Instant::now();
