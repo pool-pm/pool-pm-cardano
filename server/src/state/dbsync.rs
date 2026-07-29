@@ -959,68 +959,71 @@ impl DbSync {
     /// Governance actions each DRep **could** have voted on as of `last_tx_id`: the `%`
     /// denominator on the DRep card (`DRepVotes::eligible`).
     ///
-    /// An action counts for a DRep when its voting **closed while the DRep was registered**:
-    /// at or after its first registration (`closed >= first_reg`) and — for a DRep that has
-    /// since deregistered and not come back — at or before that deregistration
-    /// (`closed <= last_dereg`). Voting closes when the action is ratified/enacted/dropped/
-    /// expired, or at its `expiration` epoch if none of those has happened yet, so a currently
-    /// open action still counts for a currently registered DRep (it can still vote on it).
+    /// An action counts for a DRep when the DRep was registered at some point while voting on it
+    /// was open — its window `[opened, closed]` overlaps one of the DRep's registered periods.
+    /// Voting closes when the action is ratified/enacted/dropped/expired, or at its `expiration`
+    /// epoch if none of those has happened yet.
     ///
-    /// Keying both ends on `closed` is what makes a deregistered DRep read fairly. Testing
-    /// `opened <= last_dereg` instead would count every action that was still open the moment
-    /// it left — 22 of them for `drep1cm6mupj0…`, dropping it from 82/96 (85%) to 82/118 (69%)
-    /// for votes it had no chance to cast. An action that opened *before* the DRep registered
-    /// and closed after does count, since it could vote during the overlap.
+    /// Overlap is the rule that makes the figure exact, and the reason is symmetry: it counts
+    /// every action the DRep had a chance to vote on and nothing else, so its own votes are
+    /// necessarily inside the denominator (a vote can only be cast while registered *and* while
+    /// the action is open) and the ratio can never exceed 100% by construction. Two stricter
+    /// variants were tried and are wrong:
+    /// - requiring the action to have *closed* while registered flatters DReps that go quiet
+    ///   before deregistering: `drep1cm6mupj0…` deregistered in epoch 632 but cast its last vote
+    ///   in 627, and the 22 actions still open at 632 — each of which it had 1–6 epochs to vote
+    ///   on — would drop out, reading 82/96 (85%) instead of the true 82/118 (69%);
+    /// - patching that by also counting actions it *did* vote on is asymmetric — an action open
+    ///   at deregistration would count only if the DRep voted, hiding exactly the misses.
     ///
-    /// Without any such test a DRep registered last month would read as ~2% simply because it
-    /// did not exist for the first 140 actions; with it, the same DRep reads ~13% of the 27
-    /// actions it could actually reach.
+    /// Without any window test at all, a DRep registered last month would read ~2% simply
+    /// because it did not exist for the first 140 actions; with it, ~13% of the 27 it could
+    /// actually reach.
     ///
-    /// A DRep that deregistered and re-registered is measured over `[first_reg, last_dereg]`
-    /// as one span, so a gap in the middle is counted as registered time. Exact per-period
-    /// accounting would need a window join for a handful of DReps; the coarse span is left in
-    /// deliberately.
+    /// Periods are per registration, not one `[first, last]` span, so the gap of a DRep that
+    /// deregistered and later came back is excluded (88 of mainnet's 1,673 DReps). Registration
+    /// rows with a `NULL` deposit are metadata updates, not registrations, and are skipped.
+    ///
+    /// The CTEs are `MATERIALIZED` deliberately: inlined, Postgres re-evaluates `ev` for every
+    /// row of the correlated period lookup and the query takes 26 s instead of 280 ms.
     pub async fn drep_eligible_actions(
         &self,
         last_tx_id: i64,
     ) -> Result<std::collections::HashMap<Vec<u8>, u32>, sqlx::Error> {
         let rows = sqlx::query!(
-            r#"WITH act AS (
-                 -- Only the closing epoch is needed, and every candidate for it is a column of
-                 -- gov_action_proposal — so no tx/block join here at all.
-                 SELECT gap.id,
+            r#"WITH act AS MATERIALIZED (
+                 SELECT gap.id, b.epoch_no AS opened,
                         COALESCE(gap.ratified_epoch, gap.enacted_epoch, gap.dropped_epoch,
                                  gap.expired_epoch, gap.expiration) AS closed
                  FROM gov_action_proposal gap
+                 JOIN tx t ON t.id = gap.tx_id
+                 JOIN block b ON b.id = t.block_id
                  WHERE gap.tx_id <= $1
-               ), reg AS (
-                 SELECT dr.drep_hash_id,
-                        MIN(b.epoch_no) FILTER (WHERE dr.deposit > 0) AS first_reg,
-                        MAX(b.epoch_no) FILTER (WHERE dr.deposit < 0) AS last_dereg,
-                        COUNT(*) FILTER (WHERE dr.deposit > 0) AS regs,
-                        COUNT(*) FILTER (WHERE dr.deposit < 0) AS deregs
+               ), ev AS MATERIALIZED (
+                 -- Registration certs: deposit > 0 registers, < 0 deregisters, NULL = an
+                 -- anchor/metadata update, which changes nothing here.
+                 SELECT dr.drep_hash_id AS drep, b.epoch_no AS epoch,
+                        dr.deposit < 0 AS is_dereg, dr.tx_id, dr.cert_index
                  FROM drep_registration dr
                  JOIN tx t ON t.id = dr.tx_id
                  JOIN block b ON b.id = t.block_id
-                 WHERE dr.tx_id <= $1
-                 GROUP BY dr.drep_hash_id
-               ), elig AS (
-                 SELECT r.drep_hash_id AS drep, a.id AS action
-                 FROM reg r
-                 JOIN act a ON a.closed >= r.first_reg
-                           AND (r.regs > r.deregs OR a.closed <= r.last_dereg)
-                 UNION  -- dedupes (drep, action)
-                 -- An action the DRep actually voted on is eligible by definition. Without this
-                 -- leg a deregistered DRep that voted on an action still open when it left would
-                 -- score above 100% (12 DReps on mainnet, one at 317%).
-                 SELECT vp.drep_voter, vp.gov_action_proposal_id
-                 FROM voting_procedure vp
-                 WHERE vp.tx_id <= $1 AND vp.drep_voter IS NOT NULL
+                 WHERE dr.tx_id <= $1 AND dr.deposit IS NOT NULL
+               ), per AS MATERIALIZED (
+                 -- One row per registration: the epoch it started, and the epoch of the next
+                 -- deregistration after it (NULL = still registered).
+                 SELECT r.drep, r.epoch AS from_epoch,
+                        (SELECT MIN(d.epoch) FROM ev d
+                          WHERE d.drep = r.drep AND d.is_dereg
+                            AND (d.tx_id, d.cert_index) > (r.tx_id, r.cert_index)) AS to_epoch
+                 FROM ev r
+                 WHERE NOT r.is_dereg
                )
                SELECT dh.raw AS "raw!", dh.has_script AS "has_script!",
-                      COUNT(*) AS "eligible!"
-               FROM elig e
-               JOIN drep_hash dh ON dh.id = e.drep
+                      COUNT(DISTINCT a.id) AS "eligible!"
+               FROM per p
+               JOIN drep_hash dh ON dh.id = p.drep
+               JOIN act a ON a.closed >= p.from_epoch
+                         AND a.opened <= COALESCE(p.to_epoch, 2147483647)
                WHERE dh.raw IS NOT NULL
                GROUP BY dh.raw, dh.has_script"#,
             last_tx_id
