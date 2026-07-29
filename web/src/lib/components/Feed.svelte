@@ -482,12 +482,16 @@
     });
   });
 
-  function sectionColors(section: Section): { bg: string; border: string; accent: string } {
+  function sectionColors(section: Section, folded: boolean): { bg: string; border: string; accent: string } {
     // Reward capsule: neutral (not pool-colored) with a visible gray border.
     // Neutral panels (reward capsule, mempool) sit at the shared elevated surface tone
     // (--surface-1 = #26262c), a touch lighter than the grey page so the shadow lifts them.
     if (section.reward) return { bg: '#26262c', border: '#555', accent: 'rgb(255 255 255 / 0.4)' };
     if (!section.block) return { bg: '#26262c', border: '#26262c', accent: 'rgb(255 255 255 / 0.4)' };
+    // Folded stake-change block (pool/DRep feed): the minting pool isn't its meaning — the
+    // delegator activity is — so it wears the neutral mempool grey and only regains the
+    // pool color when unfolded (where the minter is shown). Own blocks keep their color.
+    if (folded && !isOwnBlock(section)) return { bg: '#26262c', border: '#26262c', accent: 'rgb(255 255 255 / 0.4)' };
     const c = poolColor(section.block.pool_id);
     return { bg: c, border: c, accent: c };
   }
@@ -568,9 +572,9 @@
   <div class="canvas" style={landscape ? `width: ${canvasSize}px` : `height: ${canvasSize}px`}>
     {#each displaySections as section, i (section.id)}
       {@const isMempool = !section.block && !section.reward}
-      {@const colors = sectionColors(section)}
       {@const layout = sectionPositions.get(section.id)}
       {@const secFolded = sectionFolded(section)}
+      {@const colors = sectionColors(section, secFolded)}
       {@const secOwn = section.block ? isOwnBlock(section) : false}
       {@const foldOwn = !!section.block && secFolded && secOwn}
       <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
