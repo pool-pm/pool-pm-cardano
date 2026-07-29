@@ -64,7 +64,11 @@
   <div class="subject-card" class:landscape style:--subject-color={color}>
     <span class="drep-name" style:color>{drep.given_name ?? drep.drep_id.slice(5, 13)}</span>
     <span class="pool-stake">{formatAda(drep.live_stake)}</span>
-    <span class="pool-delegators">{drep.delegators.toLocaleString()} delegators</span>
+    <!-- Votes are to a DRep what minted blocks are to a pool — same line, same shape. -->
+    <span class="pool-delegators">
+      {drep.delegators.toLocaleString()} delegators · {drep.votes.toLocaleString()}
+      vote{drep.votes === 1 ? '' : 's'}
+    </span>
   </div>
 {:else if stake}
   {@const color = poolColor(stake.stake_address)}

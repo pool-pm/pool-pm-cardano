@@ -49,6 +49,18 @@
   function isOwnBlock(section: Section): boolean {
     return !!$pool && !!section.block && section.block.pool_id === $pool.pool_id;
   }
+  // A block carrying this DRep's own governance vote — the DRep-feed counterpart of a pool's
+  // own minted block: it keeps the minting pool's color while folded (instead of going grey
+  // like the stake-change blocks around it) and hides with the epoch-vote toggle.
+  function hasSubjectVote(section: Section): boolean {
+    const id = $drep?.drep_id;
+    if (!id || !section.block) return false;
+    return section.txs.some((tx) => tx.votes?.some((v) => v.voter_id === id));
+  }
+  // The feed subject's headline block: minted by this pool, or carrying this DRep's vote.
+  function isSubjectHeadline(section: Section): boolean {
+    return isOwnBlock(section) || hasSubjectVote(section);
+  }
 
   // Folded-block size scales with the block's KB, capped so a full block is ~2× a small one.
   // Folded own-block = a SQUARE whose side ∝ block KB, so a full (~90 KB) block is ~4× the
@@ -98,15 +110,13 @@
     toggleAllFold();
   }
 
-  // Hide/show all the pool's own minted blocks — toggled by clicking the epoch block-count on
-  // the mempool. `displaySections` (used for both rendering and layout) drops them when hidden;
-  // sections[0] (the mempool) and stake-change blocks always stay.
+  // Hide/show the feed subject's own headline blocks — a pool's minted blocks, a DRep's vote
+  // blocks — toggled by clicking the epoch count on the mempool. `displaySections` (used for
+  // both rendering and layout) drops them when hidden; sections[0] (the mempool) and
+  // stake-change blocks always stay.
   let hideOwnBlocks = $state(false);
-  // Hide the pool's own minted blocks when toggled (keep sections[0] = the mempool).
   const displaySections = $derived(
-    hideOwnBlocks && $pool
-      ? $sections.filter((s, i) => i === 0 || !(s.block && s.block.pool_id === $pool!.pool_id))
-      : $sections,
+    hideOwnBlocks && ($pool || $drep) ? $sections.filter((s, i) => i === 0 || !isSubjectHeadline(s)) : $sections,
   );
 
   // On a pool feed, number each block the pool *minted* by its lifetime index: the newest
@@ -482,15 +492,6 @@
     });
   });
 
-  // A block carrying this DRep's own governance vote — the DRep-feed counterpart of a
-  // pool's own minted block, so it keeps the minting pool's color while folded instead of
-  // going grey like the surrounding stake-change blocks.
-  function hasSubjectVote(section: Section): boolean {
-    const id = $drep?.drep_id;
-    if (!id || !section.block) return false;
-    return section.txs.some((tx) => tx.votes?.some((v) => v.voter_id === id));
-  }
-
   function sectionColors(section: Section, folded: boolean): { bg: string; border: string; accent: string } {
     // Reward capsule: neutral (not pool-colored) with a visible gray border.
     // Neutral panels (reward capsule, mempool) sit at the shared elevated surface tone
@@ -674,6 +675,29 @@
               }}
             >
               {n} block{n > 1 ? 's' : ''}
+            </div>
+          {/if}
+          {#if isMempool && $drep && $config?.genesis}
+            <!-- Governance votes this DRep cast in the current epoch — the DRep-feed
+                 counterpart of the pool's epoch block count, same placement and semantics
+                 (exact for `$drep.epoch`; 0 once the displayed epoch rolls past it, until the
+                 DRep's next vote re-emits an exact count). Click to hide/show the DRep's own
+                 vote blocks; dimmed while hidden. -->
+            {@const cur = epochInfo($config.genesis).epoch}
+            {@const n = cur === $drep.epoch ? $drep.epoch_votes : 0}
+            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+            <div
+              class="epoch-blocks"
+              class:dimmed={hideOwnBlocks}
+              style:color={poolColor($drep.drep_id)}
+              onclick={(e) => {
+                e.stopPropagation();
+                hideOwnBlocks = !hideOwnBlocks;
+                autoFillTries = 0; // let the viewport-fill run again for the new visible set
+                tick().then(scheduleMeasure);
+              }}
+            >
+              {n} vote{n === 1 ? '' : 's'}
             </div>
           {/if}
           <!-- Ticker. Own blocks: a plain label (a link to your own page would be redundant, and

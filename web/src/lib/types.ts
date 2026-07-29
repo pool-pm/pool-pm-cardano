@@ -266,6 +266,11 @@ export interface DRepInfo {
   given_name: string | null;
   live_stake: string;
   delegators: number;
+  /** Lifetime governance votes cast (one per voted action). */
+  votes: number;
+  /** Epoch `epoch_votes` was counted in — show it only while this is the current epoch. */
+  epoch: number;
+  epoch_votes: number;
 }
 
 export interface PoolInfo {
