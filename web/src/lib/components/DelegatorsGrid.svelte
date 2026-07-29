@@ -222,13 +222,15 @@
 </script>
 
 <!-- One delegator tile: when the run started (grey), the live stake (the headline), and
-     who — the ADA Handle if there is one, else the shortened stake address. -->
+     who — the ADA Handle if there is one, else the shortened stake address, in that
+     account's own colour (the same `poolColor(stake_address)` identity it wears on its
+     stake feed and wherever else the app names it). -->
 {#snippet delegatorCell(d: Delegator)}
   <a class="tile" href={'/' + d.stake_address} title={tileTitle(d)}>
     <span class="frame">
       <span class="epoch">{d.epoch != null ? `epoch ${d.epoch}` : ''}</span>
       <span class="stake">{formatAda(d.live_stake)}</span>
-      <span class="name">
+      <span class="name" style:color={poolColor(d.stake_address)}>
         {#if d.handle}
           <span class="name-text"><span class="dollar">$</span>{d.handle}</span>
         {:else}
@@ -565,8 +567,9 @@
     justify-content: center;
     overflow: hidden;
   }
+  /* Colour comes from the band (set inline per tile: the delegator's own identity
+     colour), so both the handle and the address inherit it. */
   .name-text {
-    color: rgb(255 255 255 / 0.5);
     font-size: 12px;
     line-height: 1.25;
     white-space: nowrap;
@@ -577,8 +580,9 @@
     font-family: 'SF Mono', Menlo, Consolas, monospace;
     font-size: 11px;
   }
+  /* The `$` sigil is a dimmer shade of the same colour, as on the subject card. */
   .dollar {
-    color: rgb(255 255 255 / 0.3);
+    opacity: 0.55;
   }
 
   .tile:hover .frame,
