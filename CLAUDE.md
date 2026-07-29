@@ -4,76 +4,54 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-pool-pm-cardano is a Cardano blockchain indexer and real-time event server written in Rust. It connects to a Cardano node via N2C (node-to-client) protocol using Oura/Pallas, processes chain events (blocks and rollbacks), monitors the mempool for pending transactions, and streams events to web clients via SSE (Server-Sent Events). Data is queried from a PostgreSQL database populated by cardano-db-sync.
-
-## Build Commands
-
-```bash
-cargo build                # Debug build
-cargo build --release      # Optimized release build
-cargo check                # Type-check without building (fastest feedback loop)
-cargo run                  # Build and run
-cargo clippy               # Lint
-```
+pool-pm-cardano is a Cardano indexer and real-time event server (Rust, single-package Cargo
+workspace in `server/`, Svelte 5 frontend in `web/`). It follows a Cardano node over N2C
+(chain-sync + LocalTxMonitor via pallas), keeps the chain state it needs in memory, and streams
+blocks, mempool txs and rollbacks to browsers over SSE. Anything historical comes from a
+cardano-db-sync PostgreSQL database.
 
 ## Testing
 
-```bash
-cargo test                    # Rust unit tests (server/)
-cd web && pnpm test           # Frontend unit tests (Vitest)
-```
-
-- **Rust**: unit tests live in a `#[cfg(test)] mod tests` block in the same file (e.g. `server/src/nftcdn.rs`). `cargo test` compiles the crate, so — like any build — it needs a reachable cardano-db-sync DB (the sqlx `query!` macros are validated at compile time). Test pure logic; queries that need the DB aren't unit-testable.
-- **Frontend**: Vitest. Put a `*.test.ts` next to the module it covers (e.g. `web/src/lib/search.test.ts`) and `import { describe, it, expect } from 'vitest'`. Test **pure functions** — extract logic out of `.svelte` components into a plain `.ts` module so it's testable without a DOM (see `search.ts` + `search.test.ts`). Run a single file with `pnpm test <path>`.
+- **Rust**: unit tests live in a `#[cfg(test)] mod tests` block in the same file. `cargo test`
+  compiles the crate, so — like any build — it needs a reachable cardano-db-sync DB (the sqlx
+  `query!` macros are validated against the schema at compile time). Test pure logic; queries
+  that need the DB aren't unit-testable.
+- **Frontend**: Vitest, `*.test.ts` next to the module it covers. Test **pure functions** —
+  extract logic out of `.svelte` components into a plain `.ts` module so it's testable without
+  a DOM (see `search.ts` + `search.test.ts`).
 
 ## Architecture
 
-The project is a Cargo workspace with a single package (`server/`).
-
 ### Stream Processing Pipeline
 
-The server uses the **Gasket** framework to build a multi-stage stream processing pipeline:
+Gasket stages, wired in `daemon.rs`:
 
 ```
-Cardano Node (N2C) → Source Stage (Oura) → Sink Stage → Cursor Stage (JSON file)
-                                               ↕
-                                       PostgreSQL (cardano-db-sync)
-                   → Mempool Monitor Stage
-                                               ↓
-                                    broadcast::Sender<Event>
-                                               ↓
-                                    axum SSE server (/events)
+Cardano Node ──N2C chain-sync──> source.rs ──> sink.rs ──> EventBus ──> axum SSE (server.rs)
+             ──LocalTxMonitor──> mempool.rs ──────────────────^              ^
+                                     PostgreSQL (cardano-db-sync) ───────────┘
 ```
 
-- **Source**: Oura N2C source connects to a Cardano node and emits `ChainEvent`s (blocks or rollback points).
-- **Sink** (`sink.rs`): Processes chain events, maintains versioned in-memory state using immutable data structures (`imbl` crate) with structural sharing. On blocks: updates UTXOs, sends `Event::Block`. On rollback: reverts state, sends `Event::Rollback`.
-- **Mempool** (`mempool.rs`): Monitors the node mempool via LocalTxMonitor mini-protocol. Decodes transactions, resolves input addresses from UTXO state, computes CIP-14 asset fingerprints, and sends `Event::MempoolTx`.
-- **Cursor**: Persists the current chain position to a JSON file on disk (kept for debugging, not used for resume).
-- **Snapshot**: Serializes a `BlockSnapshot` to `{output}/snapshot.bin` using MessagePack (`rmp-serde`) for fast resume on restart (see Snapshot Persistence below).
-- **SSE Server** (`server.rs`): axum HTTP server with `GET /events` endpoint that streams events as JSON via Server-Sent Events.
-- **Daemon** (`daemon.rs`): Orchestrates the full Gasket pipeline with retry policies, optional Prometheus metrics, and SSE server.
-
-### Key Modules
-
-- `args.rs` — CLI argument parsing via clap (socket, network, db connection, metrics endpoint, listen address, output dir)
-- `chain.rs` — Cardano network configuration (mainnet/preprod/preview magic numbers via Oura GenesisValues)
-- `state/dbsync.rs` — Async PostgreSQL queries via sqlx against cardano-db-sync schema (pools, delegations, UTXOs, stakes)
-- `event.rs` — Shared event types: `MempoolTx`, `Block`, `Rollback` (serializable for SSE)
-- `model.rs` — Data structures: `Pool`, `TxOutput`, CIP-14 asset fingerprint computation
-- `state/mod.rs` — Versioned state with `BlockSnapshot` history and structural sharing for O(1) rollbacks; `state/feed_index.rs` holds the 5-day per-subject feed index
-- `mempool.rs` — Gasket worker stage for mempool monitoring via LocalTxMonitor
-- `sink.rs` — Gasket worker stage that processes chain events into indexed state
-- `server.rs` — axum SSE server for streaming events to web clients
+- **source.rs** is our own N2C chain-sync driver, not oura's: identical behaviour plus a **read
+  timeout**, because oura's blocks forever on a half-alive socket and silently freezes the whole
+  pipeline (the 2026-07-28 production freeze). It publishes the node's tip and an `at_tip` flag
+  so the sink knows when it has drained everything available.
+- **sink.rs** applies blocks to the versioned in-memory state and emits `Event::Block` /
+  `Event::Rollback`; **mempool.rs** decodes pending txs the same way.
+- Feeds are served from that state plus db-sync; `state/feed_index.rs` holds a 5-day per-subject
+  index of the blocks each pool/DRep appears in.
 
 ### Key Patterns
 
-- **Immutable data structures**: State is held in `imbl::OrdMap`/`imbl::HashMap`/`imbl::HashSet` for safe structural sharing and efficient rollbacks.
-- **Versioned state**: `State` maintains a `Vec<BlockSnapshot>` history; each snapshot shares structure with the previous via `imbl` crate O(1) clone. Always store new per-block data in `BlockSnapshot` so rollbacks are handled automatically by history truncation — never maintain separate delta/rollback logic.
-- **Rollback correctness is critical**: Every new feature that tracks or derives data from blocks must handle rollbacks correctly. A `Rollback { slot }` event removes all blocks with `slot > rollback_slot` from the event bus, state history, and frontend sections. If a feature maintains counters, caches, or derived state from block data, it must revert cleanly on rollback — do not add features that only increment/accumulate without a rollback path.
-- **Event broadcasting**: `tokio::sync::broadcast` channel fans out events from pipeline stages to multiple SSE clients.
-- **Gasket error handling**: Worker methods return `gasket::error::Error` with `or_panic()` / `or_retry()` combinators.
-- **Async throughout**: tokio runtime with sqlx async database access.
-- **Compile-time SQL checking**: sqlx `query_as!` macros validate SQL against the DB schema at compile time.
+- **Versioned state**: `State` keeps a `Vec<BlockSnapshot>`; each snapshot shares structure with
+  the previous through `imbl`'s O(1) clone. Always put new per-block data **in `BlockSnapshot`**
+  so rollbacks come for free by truncating history — never maintain separate delta/undo logic.
+- **Rollback correctness is critical**: a `Rollback { slot }` drops every block after `slot` from
+  the event bus, the state history and the frontend sections. Any counter, cache or derived value
+  fed by blocks must revert cleanly — don't add something that only accumulates forward.
+- **Never block the feeds**: db work runs *off* the `chain_state` lock (`db_handle()` + short
+  await-free guard scopes). Holding the guard across a slow await starves the sink's per-block
+  write lock — the root cause of the 2026-07-28 freeze.
 
 ### Backward reconstruction of historical per-block state (feed replay)
 
@@ -183,31 +161,20 @@ a per-field byte breakdown — content bytes, the `asset_holdings` inline/heap s
 
 ## Runtime Configuration
 
-The server is configured via CLI args:
-- `-s, --socket` — Cardano node socket path (required)
-- `-n, --network` — mainnet (default), preprod, or preview
-- `-d, --db` — PostgreSQL connection string (default: `postgresql:///NETWORK?host=/var/run/postgresql`)
-- `-l, --listen` — SSE server listen address (e.g., `0.0.0.0:3000`; omit to disable SSE)
-- `-m, --metrics` — Prometheus metrics endpoint (`ADDR:PORT` or `default` for `127.0.0.1:9188`)
-- `-o, --output` — Directory for snapshot and cursor files (default: `/tmp/cardano`)
-- `--snapshot-depth` — How many blocks back from tip to persist the snapshot (default: `8`)
-- `-v, --verbose` — Enable DEBUG-level logging
-
-Requires a running cardano-db-sync PostgreSQL database for the target network.
+`--help` documents the flags (`args.rs`). The server needs a Cardano node socket **and** a
+cardano-db-sync PostgreSQL database for the same network.
 
 ### Snapshot Persistence
 
-On startup, the server tries to load `{output}/snapshot.bin`. If found, it restores the in-memory state and requests the node to resume from the snapshot's slot/block hash (`IntersectConfig::Point`). If the snapshot is missing, corrupt, or the node rejects the intersection point (e.g., snapshot too old), the server falls back to starting from tip with a full reset from db-sync.
+On startup the server loads `{output}/snapshot.bin` and asks the node to resume from its
+slot/hash (`IntersectConfig::Point`). Missing, stale or rejected → full reset from db-sync.
 
-The snapshot file is a sequence of msgpack values that **lead with `(format, magic)`**, validated before the multi-GB `asset_holdings` map is read — so a stale (`SNAPSHOT_FORMAT` bumped) or foreign-network snapshot is rejected cheaply, without deserializing ~10 GB only to drop it (freed pages the allocator would retain).
-
-Snapshots are saved:
-- Immediately after a reset (so a restart doesn't repeat the expensive db-sync queries)
-- Every 50 blocks during normal operation
-
-The snapshot is written `--snapshot-depth` blocks behind the tip (default 8) to provide rollback safety — on mainnet, rollbacks rarely exceed 3 blocks. The write is atomic (temp file + rename) to prevent corruption from crashes.
-
-The cursor file (`cursor.json`) is still written by the Gasket cursor stage but is no longer used for resume — it serves as a debug aid to see the current chain position.
+- The file leads with `(format, magic)`, checked **before** the multi-GB holdings map is read,
+  so a stale or foreign-network snapshot is rejected without deserializing gigabytes only to
+  drop them (freed pages the allocator would keep).
+- Written after a reset and every `SNAPSHOT_INTERVAL` (50) blocks, `--snapshot-depth` (8) blocks
+  behind the tip for rollback safety — so the file on disk is 8–58 blocks old, which is what a
+  restart has to replay. The write is atomic (temp file + rename).
 
 ## Frontend (web/)
 
@@ -215,7 +182,7 @@ The frontend is a Svelte 5 + TypeScript app built with Vite.
 
 ### Sections Pattern (mempool as unfinalized block)
 
-The frontend uses a unified `sections` store (`Section[]`) instead of separate mempool/blocks stores. `sections[0]` is always the mempool — an unfinalized block without a border or header. When a block is confirmed, `sections[0]` is finalized (block metadata attached, border/header appear via CSS), excluded txs move to a new `sections[0]`, and the BinPackGrid instance survives the transition. This means transactions never change DOM containers, so `animate:flip` handles repositioning naturally with no cross-container animation needed.
+The frontend uses a unified `sections` store (`Section[]`) instead of separate mempool/blocks stores. `sections[0]` is always the mempool — an unfinalized block without a border or header. When a block is confirmed, `sections[0]` is finalized (block metadata attached, border/header appear via CSS), excluded txs move to a new `sections[0]`, and the same grid instance survives the transition. Transactions therefore never change DOM containers, so `animate:flip` handles repositioning on its own — no cross-container animation.
 
 ### Large Integer Serialization
 
