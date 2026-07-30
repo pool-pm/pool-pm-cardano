@@ -19,10 +19,36 @@ User-agent: vkShare
 User-agent: Mastodon
 Disallow:
 
+# AI-training crawlers get nothing: they enumerate the whole subject space, execute the page's
+# JavaScript (so each visit also opens an SSE stream and hits the API), and return no traffic.
+# Meta's two crawlers are distinct — facebookexternalhit above serves link unfurls and stays
+# allowed; meta-externalagent only collects training data.
+User-agent: meta-externalagent
+User-agent: Meta-ExternalAgent
+User-agent: GPTBot
+User-agent: OAI-SearchBot
+User-agent: ChatGPT-User
+User-agent: ClaudeBot
+User-agent: Claude-Web
+User-agent: anthropic-ai
+User-agent: PerplexityBot
+User-agent: Google-Extended
+User-agent: Applebot-Extended
+User-agent: CCBot
+User-agent: Bytespider
+User-agent: Amazonbot
+User-agent: Diffbot
+User-agent: omgili
+Disallow: /
+
 # Search engines and everyone else: the home page is indexable, but the subject space — every
 # address / stake account / pool / DRep / asset / policy — is dynamic and effectively unbounded.
-# Crawling it all is pure server load with no ranking value, so disallow those paths.
+# Crawling it all is pure server load with no ranking value, so disallow those paths. The live
+# event streams and the JSON API are for the app itself, never for a crawler: a bot that runs
+# the page's JavaScript would otherwise hold an SSE connection open and be fanned every block.
 User-agent: *
+Disallow: /events
+Disallow: /api
 Disallow: /addr
 Disallow: /stake
 Disallow: /pool1
