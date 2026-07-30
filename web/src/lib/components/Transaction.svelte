@@ -582,6 +582,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    /* `overflow: hidden` is here for the ellipsis, but it clips vertically too, and at 10px the
+       mono underscore is painted on the very bottom edge of the line box — `$lynx_kpo` read as
+       "$lynx kpo". The clip region is the padding box, so padding pushes it down past the glyph
+       and the negative margin gives the space back: same outer height, same tile layout. */
+    padding-bottom: 2px;
+    margin-bottom: -2px;
   }
 
   .addr.label {
