@@ -1,5 +1,6 @@
 mod dbsync;
 pub mod feed_index;
+pub mod progress;
 mod wire;
 pub use wire::boxed_bytes as wire_boxed_bytes;
 
@@ -16,7 +17,7 @@ use crate::model::{
 use crate::pallas::{
     stake_credential_from_address_bytes, stake_credential_from_bech32, PoolUpdate,
 };
-pub use dbsync::{DbSync, DelegationFill, FillBlock};
+pub use dbsync::{pool_stats, DbSync, DelegationFill, FillBlock};
 pub use feed_index::FeedIndex;
 
 #[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -378,34 +379,6 @@ pub fn stake_token_qty(holdings: &AssetHoldings, cred: &[u8], policy: &[u8], nam
     cred_range(holdings, cred)
         .filter_map(|((_, asset), h)| (asset == &target).then_some(h.qty()))
         .sum()
-}
-
-/// Unix seconds at which the sink last applied a block; 0 until the first one.
-///
-/// A bare `static`, not a field of `State`, on purpose: the liveness watchdog reads it from a
-/// plain OS thread without taking a single lock or touching a tokio runtime. The freeze it
-/// exists to catch is exactly the one where every lock and every runtime is unavailable — a
-/// check that had to acquire something would hang with the rest.
-static LAST_BLOCK_APPLIED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
-/// Stamp the sink's progress. Called once per applied block.
-pub fn mark_block_applied() {
-    LAST_BLOCK_APPLIED.store(unix_now(), std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Seconds since the last applied block, or `None` before the first one — which is what keeps
-/// the watchdog from firing during a cold reset, when minutes pass with no block by design.
-pub fn secs_since_block() -> Option<u64> {
-    match LAST_BLOCK_APPLIED.load(std::sync::atomic::Ordering::Relaxed) {
-        0 => None,
-        t => Some(unix_now().saturating_sub(t)),
-    }
 }
 
 /// Process resident set size in MB (Linux `/proc/self/statm`, field 2 = resident pages),

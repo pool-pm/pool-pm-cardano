@@ -695,7 +695,7 @@ impl Worker {
             });
             // Liveness stamp for the watchdog: this is the one point that proves the whole
             // pipeline moved — source → sink → state — whatever any individual stage claims.
-            crate::state::mark_block_applied();
+            crate::state::progress::mark(crate::state::progress::Link::BlockApplied);
 
             // ADA Handle: keep the resolution live. `handle_changes` are the handles produced
             // (moved/minted) this block; also gather the handle names *spent* this block so a
@@ -931,6 +931,7 @@ impl gasket::framework::Worker<Stage> for Worker {
         stage: &mut Stage,
     ) -> Result<WorkSchedule<ChainEvent>, WorkerError> {
         let msg = stage.input.recv().await.or_panic()?;
+        crate::state::progress::mark(crate::state::progress::Link::SinkRecv);
         Ok(WorkSchedule::Unit(msg.payload))
     }
 

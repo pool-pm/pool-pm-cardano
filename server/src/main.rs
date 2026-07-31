@@ -8,6 +8,7 @@ mod chain;
 mod cip26;
 mod cip68;
 mod daemon;
+mod diagnostics;
 mod event;
 mod event_bus;
 mod filter;

@@ -522,6 +522,7 @@ impl gasket::framework::Worker<Stage> for Worker {
         stage.snapshots.inc(1);
 
         info!(slot, count, "mempool snapshot");
+        crate::state::progress::mark(crate::state::progress::Link::MempoolPass);
 
         Ok(())
     }

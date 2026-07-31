@@ -169,6 +169,10 @@ impl Worker {
                     ))
                     .await
                     .or_panic()?;
+                // The send returned, so the port had room. This is the hop with no timeout of
+                // its own: when the sink stops consuming, the port fills and the source parks
+                // here indefinitely, looking healthy from every angle except this stamp.
+                crate::state::progress::mark(crate::state::progress::Link::PortSend);
 
                 stage.breadcrumbs.track(point);
                 stage.last_slot = slot;
@@ -192,6 +196,7 @@ impl Worker {
                     .send(ChainEvent::reset(point.clone()))
                     .await
                     .or_panic()?;
+                crate::state::progress::mark(crate::state::progress::Link::PortSend);
 
                 stage.breadcrumbs.track(point.clone());
                 stage.last_slot = point.slot_or_default();
@@ -257,7 +262,10 @@ impl gasket::framework::Worker<Stage> for Worker {
         };
 
         match timeout(READ_TIMEOUT, read).await {
-            Ok(res) => Ok(WorkSchedule::Unit(res.or_restart()?)),
+            Ok(res) => {
+                crate::state::progress::mark(crate::state::progress::Link::NodeRead);
+                Ok(WorkSchedule::Unit(res.or_restart()?))
+            }
             Err(_elapsed) => {
                 warn!(
                     timeout_s = READ_TIMEOUT.as_secs(),

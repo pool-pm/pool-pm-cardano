@@ -102,58 +102,88 @@ fn start_from_boundary(db_url: &Url, tip_slot: u64) -> (IntersectConfig, Option<
 /// a warm resume and would just be noise.
 const STARTUP_STEP_LOG_MS: u64 = 100;
 
-pub fn run(args: Args) -> Result<(), Error> {
-    setup_tracing(args.verbose);
+const WATCHDOG_TICK: Duration = Duration::from_secs(30);
 
-    // Watchdog on a plain OS thread — no async runtime, no lock, nothing it could block on.
-    // That independence is the point: it has to survive the failure it detects.
-    //
-    // It does two things. An RSS/fd heartbeat for long-run monitoring, and a liveness check on
-    // the one fact that proves the whole pipeline is moving — a block reaching the state. A
-    // freeze can park any stage (a stuck db query, a held lock, a full gasket port) and every
-    // one of them looks identical from outside: the process is up, HTTP still accepts, and
-    // nothing is logged. On 2026-07-31 that state lasted seven hours. Rather than guess where
-    // the block might be, exit and let the supervisor restart us — a warm resume costs ~16s.
-    //
-    // `secs_since_block()` is `None` until the first block, so a cold reset (minutes with no
-    // block, by design) can't trip it. Mainnet produces a block every ~20s, so five minutes of
-    // silence is not a slow chain, it's us.
-    const WATCHDOG_TICK: Duration = Duration::from_secs(30);
-    const STALL_RESTART_AFTER_SECS: u64 = 300;
-    const HEARTBEAT_EVERY_TICKS: u64 = 10; // 30s × 10 = the 5-minute RSS heartbeat
-    std::thread::spawn(|| {
+/// Capture the process's state once a stall looks real but before acting on it. Mainnet mints a
+/// block every ~20s, so three minutes of silence is a ~1-in-10⁴ chain event and a dump here
+/// costs nothing in normal operation. This is the window the 2026-07-31 outage spent unobserved:
+/// the process was stuck for seven hours and the restart that fixed it erased the cause.
+const STALL_DUMP_AFTER_SECS: u64 = 180;
+
+/// Give up and let the supervisor restart us. A warm resume costs ~16s, against hours of silence.
+const STALL_RESTART_AFTER_SECS: u64 = 300;
+
+/// 30s × 10 = the 5-minute heartbeat.
+const HEARTBEAT_EVERY_TICKS: u64 = 10;
+
+/// Watchdog on a plain OS thread — no async runtime, no lock, nothing it could block on. That
+/// independence is the point: it has to outlive the failure it detects, and a check that had to
+/// acquire something would hang along with everything else.
+///
+/// It watches the one fact that proves the whole pipeline moved: a block reaching the state.
+/// A stall can park any stage — a wedged db query, a held lock, a full gasket port — and from
+/// outside all of them look identical: the process is up, HTTP still accepts, nothing is logged.
+/// So rather than guess, dump the evidence at [`STALL_DUMP_AFTER_SECS`] and exit at
+/// [`STALL_RESTART_AFTER_SECS`].
+///
+/// `secs_since` is `None` until the first block, so a cold reset — many minutes with no block, by
+/// design — cannot trip either threshold.
+fn spawn_watchdog(db_url: String) {
+    use crate::state::progress::{secs_since, summary, Link};
+
+    std::thread::spawn(move || {
         let mut ticks: u64 = 0;
+        // One dump per stall, not one per tick: the second dump of the same stall says nothing
+        // the first didn't, and the exit path dumps again anyway.
+        let mut dumped = false;
         loop {
             std::thread::sleep(WATCHDOG_TICK);
             ticks += 1;
-            if let Some(age) = crate::state::secs_since_block() {
-                if age >= STALL_RESTART_AFTER_SECS {
+            match secs_since(Link::BlockApplied) {
+                Some(age) if age >= STALL_RESTART_AFTER_SECS => {
                     tracing::error!(
                         secs_since_last_block = age,
-                        rss_mb = crate::state::rss_mb(),
-                        fd_count = crate::state::fd_count(),
+                        progress = %summary(),
                         "pipeline stalled — no block applied; exiting for the supervisor to restart"
                     );
-                    // Flush the log line before the process goes away.
+                    crate::diagnostics::dump("pipeline stalled, exiting", &db_url);
+                    // Flush the log lines before the process goes away.
                     std::thread::sleep(Duration::from_millis(200));
                     std::process::exit(1);
                 }
+                Some(age) if age >= STALL_DUMP_AFTER_SECS && !dumped => {
+                    dumped = true;
+                    warn!(
+                        secs_since_last_block = age,
+                        progress = %summary(),
+                        "no block applied recently — capturing state before it is lost"
+                    );
+                    crate::diagnostics::dump("pipeline stalling", &db_url);
+                }
+                Some(age) if age >= STALL_DUMP_AFTER_SECS => {}
+                // Recovered (or never stalled): re-arm, so a later stall dumps again.
+                _ => dumped = false,
             }
             if ticks.is_multiple_of(HEARTBEAT_EVERY_TICKS) {
-                tracing::info!(
+                info!(
                     rss_mb = crate::state::rss_mb(),
                     fd_count = crate::state::fd_count(),
-                    secs_since_last_block = crate::state::secs_since_block(),
+                    progress = %summary(),
                     "mem watchdog"
                 );
             }
         }
     });
+}
+
+pub fn run(args: Args) -> Result<(), Error> {
+    setup_tracing(args.verbose);
 
     let nftcdn = NftcdnConfig::new(&args.network);
     let event_bus = Arc::new(EventBus::new(4096));
     let db_url = Url::parse(&args.db.replace("NETWORK", &args.network.to_string()))
         .expect("invalid database URL");
+    spawn_watchdog(db_url.to_string());
     let mut state = State::new(db_url.clone());
 
     let listen = args.listen;

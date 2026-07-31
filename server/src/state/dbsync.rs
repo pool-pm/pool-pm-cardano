@@ -46,6 +46,35 @@ fn push_policy_asset(
 /// init (as they did at the previous 15s threshold).
 const SLOW_QUERY_THRESHOLD: Duration = Duration::from_secs(1);
 
+/// Server-side cap on a single statement. Far above any legitimate query — the whole-chain reset
+/// scans are the slowest at tens of seconds — and far below "forever". A query that hits this
+/// fails, which produces an error and a slow-statement log line; without it a query that never
+/// returns parks its stage in silence, because sqlx emits its slow-statement warning from the
+/// query logger's `Drop` and a query that never completes is never dropped.
+const STATEMENT_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Identifies this process's connections in `pg_stat_activity`, so ours can be told from
+/// db-sync's own workers on the same server.
+const APPLICATION_NAME: &str = "pool-pm";
+
+/// Every pool this process has opened, for the stall dump. `PgPool::size` / `num_idle` are
+/// atomics, so a watchdog can read them without waiting on anything.
+static LIVE_POOLS: std::sync::Mutex<Vec<sqlx::PgPool>> = std::sync::Mutex::new(Vec::new());
+
+/// Above the handful of pools this process creates (one per tokio runtime), so the cap only
+/// fires if pool creation ever runs away.
+const MAX_TRACKED_POOLS: usize = 32;
+
+/// `(connections, idle)` for each pool. All connections with none idle is the signature of
+/// queries that went out and never came back. `try_lock`, never `lock`: a diagnostic must not
+/// be able to block on the thing it is diagnosing.
+pub fn pool_stats() -> Vec<(u32, usize)> {
+    match LIVE_POOLS.try_lock() {
+        Ok(pools) => pools.iter().map(|p| (p.size(), p.num_idle())).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// `*_recent_blocks` fetches at most `limit * TOUCH_FACTOR` of a subject's most-recent
 /// `tx_out` touches per side (produced/consumed) before grouping to blocks. It must be
 /// large enough to span `limit` distinct blocks so the caller's `has_more = (returned ==
@@ -139,7 +168,8 @@ impl DbSync {
     /// across runtimes: sqlx binds a connection to the one that created it.
     pub fn new(url: &Url) -> Result<Self, sqlx::Error> {
         let options = PgConnectOptions::from_url(url)?
-            .log_slow_statements(log::LevelFilter::Warn, SLOW_QUERY_THRESHOLD);
+            .log_slow_statements(log::LevelFilter::Warn, SLOW_QUERY_THRESHOLD)
+            .application_name(APPLICATION_NAME);
 
         let db = PgPoolOptions::new()
             .max_connections(8)
@@ -153,12 +183,24 @@ impl DbSync {
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
                     sqlx::query("SET jit_above_cost = 200000")
-                        .execute(conn)
+                        .execute(&mut *conn)
                         .await?;
+                    sqlx::query(&format!(
+                        "SET statement_timeout = {}",
+                        STATEMENT_TIMEOUT.as_millis()
+                    ))
+                    .execute(conn)
+                    .await?;
                     Ok(())
                 })
             })
             .connect_lazy_with(options);
+
+        if let Ok(mut pools) = LIVE_POOLS.lock() {
+            if pools.len() < MAX_TRACKED_POOLS {
+                pools.push(db.clone());
+            }
+        }
 
         Ok(Self { db })
     }
@@ -1854,5 +1896,43 @@ impl DbSync {
         .await
         .ok()??;
         Some((row.slot as u64, row.hash))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `after_connect` settings apply per connection, so a typo or a rejected `SET` would only
+    /// surface in production — where a missing `statement_timeout` means a wedged query parks
+    /// its stage forever, which is the failure mode this exists to prevent. `#[ignore]`d because
+    /// it opens a real connection rather than testing pure logic.
+    ///
+    ///     cargo test -- --ignored connection_settings_are_applied
+    #[test]
+    #[ignore]
+    fn connection_settings_are_applied() {
+        let url = Url::parse(&std::env::var("DATABASE_URL").expect("DATABASE_URL")).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // The pool is built inside the runtime: `connect_lazy_with` registers with the current
+        // tokio context, which is the same reason `db_handle()` creates one pool per runtime.
+        let (timeout, app): (String, String) = runtime.block_on(async {
+            let db = DbSync::new(&url).expect("pool");
+            let row: (String,) = sqlx::query_as("SHOW statement_timeout")
+                .fetch_one(&db.db)
+                .await
+                .unwrap();
+            let app: (String,) = sqlx::query_as("SHOW application_name")
+                .fetch_one(&db.db)
+                .await
+                .unwrap();
+            (row.0, app.0)
+        });
+        println!("statement_timeout={timeout} application_name={app}");
+        assert_ne!(timeout, "0", "statement_timeout left unlimited");
+        assert_eq!(app, APPLICATION_NAME);
     }
 }
