@@ -693,6 +693,9 @@ impl Worker {
                 drep_votes: &vote_dreps,
                 drep_eligible: drep_eligible.as_ref(),
             });
+            // Liveness stamp for the watchdog: this is the one point that proves the whole
+            // pipeline moved — source → sink → state — whatever any individual stage claims.
+            crate::state::mark_block_applied();
 
             // ADA Handle: keep the resolution live. `handle_changes` are the handles produced
             // (moved/minted) this block; also gather the handle names *spent* this block so a

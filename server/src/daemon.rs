@@ -105,16 +105,49 @@ const STARTUP_STEP_LOG_MS: u64 = 100;
 pub fn run(args: Args) -> Result<(), Error> {
     setup_tracing(args.verbose);
 
-    // Memory watchdog on a plain OS thread (independent of any async runtime): a periodic
-    // RSS heartbeat for long-run monitoring.
-    const MEM_WATCHDOG_INTERVAL: Duration = Duration::from_secs(300);
-    std::thread::spawn(|| loop {
-        std::thread::sleep(MEM_WATCHDOG_INTERVAL);
-        tracing::info!(
-            rss_mb = crate::state::rss_mb(),
-            fd_count = crate::state::fd_count(),
-            "mem watchdog"
-        );
+    // Watchdog on a plain OS thread — no async runtime, no lock, nothing it could block on.
+    // That independence is the point: it has to survive the failure it detects.
+    //
+    // It does two things. An RSS/fd heartbeat for long-run monitoring, and a liveness check on
+    // the one fact that proves the whole pipeline is moving — a block reaching the state. A
+    // freeze can park any stage (a stuck db query, a held lock, a full gasket port) and every
+    // one of them looks identical from outside: the process is up, HTTP still accepts, and
+    // nothing is logged. On 2026-07-31 that state lasted seven hours. Rather than guess where
+    // the block might be, exit and let the supervisor restart us — a warm resume costs ~16s.
+    //
+    // `secs_since_block()` is `None` until the first block, so a cold reset (minutes with no
+    // block, by design) can't trip it. Mainnet produces a block every ~20s, so five minutes of
+    // silence is not a slow chain, it's us.
+    const WATCHDOG_TICK: Duration = Duration::from_secs(30);
+    const STALL_RESTART_AFTER_SECS: u64 = 300;
+    const HEARTBEAT_EVERY_TICKS: u64 = 10; // 30s × 10 = the 5-minute RSS heartbeat
+    std::thread::spawn(|| {
+        let mut ticks: u64 = 0;
+        loop {
+            std::thread::sleep(WATCHDOG_TICK);
+            ticks += 1;
+            if let Some(age) = crate::state::secs_since_block() {
+                if age >= STALL_RESTART_AFTER_SECS {
+                    tracing::error!(
+                        secs_since_last_block = age,
+                        rss_mb = crate::state::rss_mb(),
+                        fd_count = crate::state::fd_count(),
+                        "pipeline stalled — no block applied; exiting for the supervisor to restart"
+                    );
+                    // Flush the log line before the process goes away.
+                    std::thread::sleep(Duration::from_millis(200));
+                    std::process::exit(1);
+                }
+            }
+            if ticks.is_multiple_of(HEARTBEAT_EVERY_TICKS) {
+                tracing::info!(
+                    rss_mb = crate::state::rss_mb(),
+                    fd_count = crate::state::fd_count(),
+                    secs_since_last_block = crate::state::secs_since_block(),
+                    "mem watchdog"
+                );
+            }
+        }
     });
 
     let nftcdn = NftcdnConfig::new(&args.network);
