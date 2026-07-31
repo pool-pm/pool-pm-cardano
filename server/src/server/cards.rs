@@ -44,12 +44,9 @@ async fn build_card(state: &AppState, base_url: &str, path: &str) -> og::Card {
     // Policy grid.
     if let Some(policy) = path.strip_prefix("policy/") {
         if is_valid_policy_id(policy) {
-            let count = match hex::decode(policy) {
-                Ok(bytes) => match state.chain_state.read().await.db_handle() {
-                    Some(db) => db.policy_asset_count(&bytes).await.ok(),
-                    None => None,
-                },
-                Err(_) => None,
+            let count = match (hex::decode(policy), state.db_handle().await) {
+                (Ok(bytes), Some(db)) => db.policy_asset_count(&bytes).await.ok(),
+                _ => None,
             };
             let desc = match count {
                 Some(n) => format!("{} assets", og::commas(n)),
@@ -236,7 +233,7 @@ fn subject_card(
 /// (reuses the same NFTCDN-metadata + `asset_chain_info` merge as `asset_media`).
 async fn asset_card(state: &AppState, fingerprint: &str) -> og::Card {
     let image = state.nftcdn.signed_url(fingerprint, "image", "size=1024");
-    let db = state.chain_state.read().await.db_handle();
+    let db = state.db_handle().await;
     let info_fut = async {
         match db {
             Some(db) => db.asset_chain_info(fingerprint).await.unwrap_or(None),

@@ -57,6 +57,20 @@ struct AppState {
     cardano_cache: Arc<tokio::sync::Mutex<Option<CardanoCache>>>,
 }
 
+impl AppState {
+    /// This runtime's db pool, taking and releasing the `chain_state` read lock inside the call.
+    ///
+    /// Always reach for the pool through here rather than
+    /// `chain_state.read().await.db_handle()`: written inline as the scrutinee of a `match` or
+    /// `if let`, that guard is an unnamed temporary that lives until the end of the whole
+    /// expression — so it is still held across the db `await` inside it. `tokio::RwLock` is
+    /// write-preferring, so one slow query then parks the sink's `write()`, every later reader
+    /// queues behind the writer, and the pipeline stops with nothing in the log.
+    async fn db_handle(&self) -> Option<crate::state::DbSync> {
+        self.chain_state.read().await.db_handle()
+    }
+}
+
 /// Slow-changing homepage stats, refreshed once per epoch (see `cardano_stats_json`).
 #[derive(Clone, Copy)]
 struct CardanoCache {
@@ -919,7 +933,7 @@ async fn filtered_events(
             // renders ~empty. The newest-first send places any fill blocks after the
             // (few) rendering candidates, so over-triggering just wastes a sub-ms query.
             if minted.len() + deleg_slots.len() + pool_votes.len() < MAX_REPLAY_BLOCKS {
-                if let Some(dbh) = { replay_state.chain_state.read().await.db_handle() } {
+                if let Some(dbh) = replay_state.db_handle().await {
                     let limit = MAX_REPLAY_BLOCKS as i64;
                     for b in dbh
                         .pool_recent_blocks(ph, i64::MAX, limit)
@@ -1159,7 +1173,7 @@ async fn filtered_events(
             // `drep_stake_change` fills the window with sub-threshold candidate blocks
             // that get filtered at send time, same as the pool case.
             if deleg_slots.len() + drep_votes.len() < MAX_REPLAY_BLOCKS {
-                if let Some(dbh) = { replay_state.chain_state.read().await.db_handle() } {
+                if let Some(dbh) = replay_state.db_handle().await {
                     let limit = MAX_REPLAY_BLOCKS as i64;
                     for b in dbh
                         .drep_recent_votes(db, i64::MAX, limit)

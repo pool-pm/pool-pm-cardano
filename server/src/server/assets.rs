@@ -56,7 +56,7 @@ pub(super) async fn asset_media(
 
     // Chain facts (policy, supply, mint dates) run concurrently with the NFTCDN media
     // fetch; the db handle is cloned off the lock so the query never holds it.
-    let db = state.chain_state.read().await.db_handle();
+    let db = state.db_handle().await;
     let owner_db = db.clone(); // owner lookup after we know the supply (NFTs only)
     let info_fut = async {
         match db {
