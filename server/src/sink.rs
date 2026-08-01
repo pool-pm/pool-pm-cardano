@@ -122,7 +122,7 @@ impl Worker {
                 std::collections::HashMap::new();
 
             // CIP-68: collect decimals from reference token datums in this block
-            let mut new_decimals: Vec<(String, u8)> = Vec::new();
+            let mut new_decimals: Vec<(String, u8, Option<String>)> = Vec::new();
 
             // ADA Handle: collect (handle_name, owner_address) for this block
             let mut handle_changes: Vec<(String, String)> = Vec::new();
@@ -718,15 +718,22 @@ impl Worker {
                 }
             }
 
-            // CIP-68: update decimals in the latest snapshot
+            // CIP-68: update decimals and ticker overrides in the latest snapshot.
             if !new_decimals.is_empty() {
                 if let Some(snap) = state.current_mut() {
-                    for (fp, d) in new_decimals {
+                    for (fp, d, ticker) in new_decimals {
                         if d > 0 {
-                            snap.decimals.insert(fp, d);
+                            snap.decimals.insert(fp.clone(), d);
                         } else {
                             snap.decimals.remove(&fp);
                         }
+                        // A token that stops declaring a ticker falls back to its
+                        // on-chain name, so the override is dropped rather than left
+                        // behind saying something the datum no longer says.
+                        match ticker {
+                            Some(t) => snap.tickers.insert(fp, t),
+                            None => snap.tickers.remove(&fp),
+                        };
                     }
                 }
             }

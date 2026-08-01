@@ -28,6 +28,9 @@ pub fn has_cip68_label(asset_name: &[u8]) -> bool {
 
 /// "decimals" as UTF-8 bytes
 const DECIMALS_KEY: &[u8] = b"decimals";
+/// "ticker" as UTF-8 bytes. A CIP-68 fungible token declares what it's called here; its
+/// asset name is often the same thing, in which case there's nothing to store.
+const TICKER_KEY: &[u8] = b"ticker";
 
 /// Check if an asset name starts with the label 100 (reference NFT) prefix.
 pub fn is_reference_token(asset_name: &[u8]) -> bool {
@@ -77,6 +80,33 @@ pub fn extract_decimals(datum: &PlutusData) -> Option<u8> {
     }
     let metadata = constr.fields.first()?;
     extract_decimals_from_map(metadata)
+}
+
+/// The token's declared ticker, when it says something its asset name doesn't.
+///
+/// Same rule as the CIP-26 registry: this is an override table, not a name table. A
+/// label-333 name is usually the ticker already (`0014df10` + `USDM`, ticker `USDM`), and
+/// storing that would be storing what the client already derives.
+pub fn extract_ticker(datum: &PlutusData, asset_name: &[u8]) -> Option<String> {
+    let PlutusData::Constr(constr) = datum else {
+        return None;
+    };
+    if constr.constr_index() != 0 {
+        return None;
+    }
+    let PlutusData::Map(entries) = constr.fields.first()? else {
+        return None;
+    };
+    let ticker = entries.iter().find_map(|(key, value)| match (key, value) {
+        (PlutusData::BoundedBytes(k), PlutusData::BoundedBytes(v))
+            if k.as_slice() == TICKER_KEY =>
+        {
+            std::str::from_utf8(v).ok().filter(|s| !s.is_empty())
+        }
+        _ => None,
+    })?;
+    let on_chain = crate::model::display_asset_name(base_name(asset_name));
+    (on_chain.as_deref() != Some(ticker)).then(|| ticker.to_string())
 }
 
 /// Extract decimals from a PlutusData map by looking for key "decimals".
@@ -146,7 +176,7 @@ impl std::ops::Deref for DatumRef<'_> {
 
 /// Scan a transaction's outputs for reference token assets and extract decimals.
 /// Returns (fingerprint, decimals) pairs for both FT (333) and RFT (444) variants.
-pub fn extract_from_tx(tx: &MultiEraTx<'_>) -> Vec<(String, u8)> {
+pub fn extract_from_tx(tx: &MultiEraTx<'_>) -> Vec<(String, u8, Option<String>)> {
     let witness_datums = witness_datum_map(tx);
     let mut results = Vec::new();
     for output in tx.outputs().iter() {
@@ -173,12 +203,80 @@ pub fn extract_from_tx(tx: &MultiEraTx<'_>) -> Vec<(String, u8)> {
                     continue;
                 }
                 let decimals = extract_decimals(&datum).unwrap_or(0);
-                results.push((ft_fingerprint(&policy_id, name), decimals));
-                results.push((rft_fingerprint(&policy_id, name), decimals));
+                let ticker = extract_ticker(&datum, name);
+                results.push((ft_fingerprint(&policy_id, name), decimals, ticker.clone()));
+                results.push((rft_fingerprint(&policy_id, name), decimals, ticker));
             }
         }
     }
     results
+}
+
+#[cfg(test)]
+mod ticker_tests {
+    use super::*;
+    use pallas::codec::utils::MaybeIndefArray;
+    use pallas::ledger::primitives::alonzo::{BoundedBytes, Constr};
+
+    /// A CIP-68 reference datum: `Constr 0 [ {key: value, …}, … ]`.
+    fn datum(pairs: &[(&str, &str)]) -> PlutusData {
+        let entries: Vec<(PlutusData, PlutusData)> = pairs
+            .iter()
+            .map(|(k, v)| {
+                (
+                    PlutusData::BoundedBytes(BoundedBytes::from(k.as_bytes().to_vec())),
+                    PlutusData::BoundedBytes(BoundedBytes::from(v.as_bytes().to_vec())),
+                )
+            })
+            .collect();
+        PlutusData::Constr(Constr {
+            tag: 121,
+            any_constructor: None,
+            fields: MaybeIndefArray::Indef(vec![PlutusData::Map(entries.into())]),
+        })
+    }
+
+    /// Label 333 + "USDM".
+    fn usdm_name() -> Vec<u8> {
+        let mut name = LABEL_333.to_vec();
+        name.extend_from_slice(b"USDM");
+        name
+    }
+
+    #[test]
+    fn ticker_matching_the_asset_name_is_dropped() {
+        // The common case: a label-333 name already *is* the ticker, so an override
+        // would store what the client derives anyway.
+        assert_eq!(
+            extract_ticker(&datum(&[("ticker", "USDM")]), &usdm_name()),
+            None
+        );
+    }
+
+    #[test]
+    fn ticker_differing_from_the_asset_name_is_kept() {
+        let mut name = LABEL_333.to_vec();
+        name.extend_from_slice(b"MyLongTokenName");
+        assert_eq!(
+            extract_ticker(&datum(&[("ticker", "MLTN")]), &name),
+            Some("MLTN".to_string())
+        );
+    }
+
+    #[test]
+    fn the_label_is_stripped_before_comparing() {
+        // Without stripping, the four binary label bytes make the name unreadable and
+        // every ticker would look like a difference worth storing.
+        assert_eq!(extract_ticker(&datum(&[("ticker", "USDM")]), b"USDM"), None);
+    }
+
+    #[test]
+    fn a_datum_with_no_ticker_has_nothing_to_say() {
+        assert_eq!(
+            extract_ticker(&datum(&[("decimals", "6")]), &usdm_name()),
+            None
+        );
+    }
 }
 
 #[cfg(test)]

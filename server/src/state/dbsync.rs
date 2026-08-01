@@ -1742,10 +1742,10 @@ impl DbSync {
     /// (`unique_multi_asset`), and read decimals from that reference's current
     /// datum — ~5k `ma_tx_out.ident` index lookups instead of a 472M-row scan
     /// (~230s → ~2s).
-    pub async fn cip68_decimals(
+    pub async fn cip68_metadata(
         &self,
         last_tx_id: i64,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>, i32)>, sqlx::Error> {
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>, Option<i32>, Option<String>)>, sqlx::Error> {
         // The datum value JSONB is {"fields":[{"map":[{"k":…,"v":{"int":…}}]}, …]};
         // we read the "decimals" key (hex 646563696d616c73) from the first field's
         // map. Two indexed datum joins + COALESCE cover both inline and hash-
@@ -1772,7 +1772,9 @@ impl DbSync {
                   AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $1)
             )
             SELECT ref.policy AS "policy!", ref.user_name AS "name!",
-                   e->'v'->>'int' AS "decimals"
+                   e->'k'->>'bytes' AS "key",
+                   e->'v'->>'int' AS "int_value",
+                   e->'v'->>'bytes' AS "bytes_value"
             FROM held
             JOIN ref ON ref.ref_id = held.ref_id
             LEFT JOIN datum di ON di.id = held.inline_datum_id
@@ -1780,19 +1782,38 @@ impl DbSync {
             CROSS JOIN LATERAL jsonb_array_elements(
                 COALESCE(di.value, dh.value)->'fields'->0->'map'
             ) AS e
+            -- 646563696d616c73 = "decimals", 7469636b6572 = "ticker". Both keys are
+            -- read in one pass; splitting them into two queries would repeat the whole
+            -- reference-token join, which is the expensive part.
             WHERE (e->'k') @> '{"bytes":"646563696d616c73"}'
-              AND (e->'v'->>'int') IS NOT NULL"#,
+               OR (e->'k') @> '{"bytes":"7469636b6572"}'"#,
             last_tx_id
         )
         .fetch_all(&self.db)
         .await?;
 
-        Ok(rows
+        // One row per key, so fold the pair back into one entry per token.
+        let mut by_token: std::collections::HashMap<
+            (Vec<u8>, Vec<u8>),
+            (Option<i32>, Option<String>),
+        > = std::collections::HashMap::new();
+        for r in rows {
+            let entry = by_token.entry((r.policy, r.name)).or_default();
+            match r.key.as_deref() {
+                Some("646563696d616c73") => entry.0 = r.int_value.and_then(|v| v.parse().ok()),
+                Some("7469636b6572") => {
+                    entry.1 = r
+                        .bytes_value
+                        .and_then(|hex| hex::decode(hex).ok())
+                        .and_then(|b| String::from_utf8(b).ok())
+                        .filter(|s| !s.is_empty())
+                }
+                _ => {}
+            }
+        }
+        Ok(by_token
             .into_iter()
-            .filter_map(|r| {
-                let decimals: i32 = r.decimals?.parse().ok()?;
-                Some((r.policy, r.name, decimals))
-            })
+            .map(|((policy, name), (decimals, ticker))| (policy, name, decimals, ticker))
             .collect())
     }
 

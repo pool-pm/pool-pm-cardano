@@ -1749,15 +1749,27 @@ impl State {
         let pool_meta_cursor = db.max_pool_meta_id().await?;
         let drep_meta_cursor = db.max_drep_meta_id().await?;
 
-        tracing::info!("Fetching CIP-68 reference token decimals...");
-        let cip68_rows = db.cip68_decimals(last_tx_id).await?;
+        tracing::info!("Fetching CIP-68 reference token metadata...");
+        let cip68_rows = db.cip68_metadata(last_tx_id).await?;
         let mut decimals = HashMap::new();
-        // `cip68_decimals` returns the real (333/444) user token, so store exactly
+        let mut cip68_tickers: HashMap<String, String> = HashMap::new();
+        // `cip68_metadata` returns the real (333/444) user token, so store exactly
         // one fingerprint per token (the same key `decimals.get` computes at
         // display time) — no dead ft/rft variant.
-        for (policy, name, d) in &cip68_rows {
-            if *d > 0 && *d <= 255 {
-                decimals.insert(asset_fingerprint(policy, name), *d as u8);
+        for (policy, name, d, ticker) in &cip68_rows {
+            let fingerprint = asset_fingerprint(policy, name);
+            if let Some(d) = d {
+                if *d > 0 && *d <= 255 {
+                    decimals.insert(fingerprint.clone(), *d as u8);
+                }
+            }
+            // Same override rule as CIP-26: a ticker restating the asset's own name is
+            // what the client already derives, so only a difference is worth storing.
+            if let Some(t) = ticker {
+                let on_chain = crate::model::display_asset_name(name);
+                if on_chain.as_deref() != Some(t.as_str()) {
+                    cip68_tickers.insert(fingerprint, t.clone());
+                }
             }
         }
         tracing::info!("{} CIP-68 tokens with decimals", decimals.len());
@@ -1770,13 +1782,14 @@ impl State {
         };
         let client = reqwest::Client::new();
         let cip26_entries = cip26::fetch_registry(&client, &registry).await;
-        let mut tickers: HashMap<String, String> = HashMap::new();
+        // CIP-68 first: a token's own datum outranks the off-chain registry.
+        let mut tickers: HashMap<String, String> = cip68_tickers;
         for entry in cip26_entries {
             if let Some(d) = entry.decimals {
                 decimals.entry(entry.fingerprint.clone()).or_insert(d); // CIP-68 takes precedence
             }
             if let Some(t) = entry.ticker {
-                tickers.insert(entry.fingerprint, t);
+                tickers.entry(entry.fingerprint).or_insert(t);
             }
         }
         tracing::info!(
