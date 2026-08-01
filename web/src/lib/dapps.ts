@@ -43,6 +43,8 @@ interface RegistryFile {
   roles: string[];
   /** `[appIndex]` or `[appIndex, roleIndex]`. */
   addr: Record<string, number[]>;
+  /** Script hash (28-byte hex) → entry, from protocols that publish their own. */
+  hash: Record<string, number[]>;
   policy: Record<string, number[]>;
 }
 
@@ -98,6 +100,11 @@ function indexBy(credential: (address: string) => string | null): CredIndex {
 export function dappForAddress(address: string): Dapp | undefined {
   const exact = data.addr[address];
   if (exact) return resolve(exact);
+
+  // A hash a protocol published itself identifies the script under every address form
+  // it's deployed at, so it comes before anything derived from an address list.
+  const declared = data.hash[paymentCredential(address) ?? ''];
+  if (declared) return resolve(declared);
 
   byPayCred ??= indexBy(paymentCredential);
   const sameScript = byPayCred.get(paymentCredential(address) ?? '');

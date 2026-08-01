@@ -10,10 +10,14 @@ const MINSWAP_V2_BARE = 'addr1wxn9efv2f6w82hagxqtn62ju4m293tqvw0uhmdl64ch8uwc0h4
 /** …and the same script hash deployed with Minswap's staking part. */
 const MINSWAP_V2_STAKED =
   'addr1zxn9efv2f6w82hagxqtn62ju4m293tqvw0uhmdl64ch8uw6j2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pq6s3z70';
-/** The busiest script on mainnet: a Minswap contract the registry doesn't list at all,
- *  recognisable only by the staking part it shares with the ones it does. */
+/** The busiest script on mainnet — a Minswap contract CRFA doesn't list at all, named
+ *  by the script hash Minswap publishes in its own SDK. */
 const MINSWAP_UNLISTED =
   'addr1z84q0denmyep98ph3tmzwsmw0j7zau9ljmsqx6a4rvaau66j2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pq777e2a';
+/** A live VyFinance contract listed by neither source, recognisable only by the staking
+ *  part it shares with the ones CRFA does list. */
+const VYFI_UNLISTED =
+  'addr1z9ts0u4xn7mcj073gxw64cw0xmz22apq7c8glvfeda7n8n9ksyd8pn7amnr48geat0yft0uezfunealzy4ghl0cayp4s3pksc5';
 /** An ordinary wallet — no dApp behind it. */
 const WALLET =
   'addr1qx2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzer3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq2ytjqp';
@@ -31,9 +35,14 @@ describe('dappForAddress', () => {
     expect(dappForAddress(MINSWAP_V2_STAKED)).toMatchObject({ name: 'Minswap', role: 'order' });
   });
 
+  it('resolves a script the registry misses by the hash its dApp publishes', () => {
+    // CRFA's newest Minswap order script sees ~75 outputs a day; this one sees ~5,600.
+    expect(dappForAddress(MINSWAP_UNLISTED)).toMatchObject({ name: 'Minswap', role: 'pool' });
+  });
+
   it('resolves an unlisted script by the staking part its dApp uses', () => {
-    const dapp = dappForAddress(MINSWAP_UNLISTED)!;
-    expect(dapp.name).toBe('Minswap');
+    const dapp = dappForAddress(VYFI_UNLISTED)!;
+    expect(dapp.name).toBe('VyFinance');
     // The staking part says which project, never which contract — so no role is claimed.
     expect(dapp.role).toBeNull();
   });

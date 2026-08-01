@@ -36,7 +36,7 @@ const ROLES = [
   ['stake', /stak|delegat/],
   ['lend', /lend|borrow|cdp|collateral|loan|liquidat/],
   ['vault', /vault|bar\b|treasury|reserve/],
-  ['pool', /pool|liquidity|amm|factory/],
+  ['pool', /pool|liquidity|amm|factory|lppolicy/],
   ['market', /market|listing|sale|auction|offer|bid/],
   ['vesting', /vest|lock|claim|airdrop|distribut/],
   ['oracle', /oracle|feed|price/],
@@ -61,6 +61,36 @@ function roleOf(name) {
   return null;
 }
 
+/**
+ * Sources beyond the registry: a protocol's own published constants.
+ *
+ * CRFA describes contract versions that are largely no longer the ones in use — its
+ * newest Minswap order script sees ~75 outputs a day while the live one sees ~5,600 —
+ * and a protocol that open-sources its SDK is the authority on its own addresses. The
+ * constants are plain `name: "value"` pairs, so the key names double as role labels
+ * (`orderScriptHash` → order, `poolCreationAddress` → pool).
+ *
+ * Testnet entries come along harmlessly: a testnet address never matches a mainnet one,
+ * and a 28-byte script hash won't collide.
+ */
+const SUPPLEMENTS = [
+  { app: 'Minswap', url: 'https://raw.githubusercontent.com/minswap/sdk/main/src/types/constants.ts' },
+];
+
+/** `key: "value"` pairs from a TypeScript constants file, across line breaks. */
+function constantPairs(source) {
+  const pairs = [];
+  const re = /([A-Za-z_][\w]*)\s*:\s*\n?\s*"([^"\n]+)"/g;
+  for (let m = re.exec(source); m !== null; m = re.exec(source)) pairs.push([m[1], m[2]]);
+  return pairs;
+}
+
+async function text(url) {
+  const res = await fetch(url, { headers: { 'user-agent': 'pool-pm-dapps' } });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${url}`);
+  return res.text();
+}
+
 async function json(url) {
   const res = await fetch(url, {
     headers: { accept: 'application/vnd.github.raw+json', 'user-agent': 'pool-pm-dapps' },
@@ -77,6 +107,9 @@ console.error(`fetching ${files.length} dApp files…`);
 const apps = [];
 const roles = [];
 const addr = {};
+/** Script hash (28-byte hex) → entry. Matches a script under every address form it's
+ *  deployed at, which is what an address list can't do. */
+const hash = {};
 const policy = {};
 
 const roleIndex = (role) => {
@@ -111,9 +144,41 @@ for (const path of files) {
   }
 }
 
+for (const supplement of SUPPLEMENTS) {
+  let source;
+  try {
+    source = await text(supplement.url);
+  } catch (e) {
+    console.error(`  skipped ${supplement.app} constants: ${e.message}`);
+    continue;
+  }
+  // Reuse the app's registry entry when it has one, so a supplement never splits a
+  // project into two.
+  let app = apps.findIndex((a) => a.name === supplement.app);
+  if (app === -1) app = apps.push({ name: supplement.app, category: null, sub: null }) - 1;
+
+  let added = 0;
+  for (const [key, value] of constantPairs(source)) {
+    const role = roleIndex(roleOf(key));
+    const entry = role === -1 ? [app] : [app, role];
+    // A supplement is the protocol's own word, so it overrides the registry's guess.
+    if (/^(addr|stake)(_test)?1[a-z0-9]{20,}$/.test(value)) {
+      addr[value] = entry;
+      added++;
+    } else if (/^[0-9a-f]{56}$/.test(value)) {
+      // 28 bytes: a script hash, or a policy id — which is also a script hash, so both
+      // maps get it and whichever lookup asks first wins.
+      hash[value] = entry;
+      if (!(value in policy)) policy[value] = entry;
+      added++;
+    }
+  }
+  console.error(`  ${supplement.app}: +${added} entries from its own constants`);
+}
+
 mkdirSync(dirname(OUT), { recursive: true });
-writeFileSync(OUT, JSON.stringify({ apps, roles, addr, policy }) + '\n');
+writeFileSync(OUT, JSON.stringify({ apps, roles, addr, hash, policy }) + '\n');
 console.error(
-  `wrote ${OUT}: ${apps.length} apps, ${roles.length} roles, ` +
-    `${Object.keys(addr).length} addresses, ${Object.keys(policy).length} mint policies`,
+  `wrote ${OUT}: ${apps.length} apps, ${roles.length} roles, ${Object.keys(addr).length} addresses, ` +
+    `${Object.keys(hash).length} script hashes, ${Object.keys(policy).length} mint policies`,
 );
