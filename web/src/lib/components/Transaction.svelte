@@ -1,10 +1,12 @@
 <script lang="ts">
   import type { AssetInfo, DelegationInfo, FeedTx } from '../types';
+  import type { Amount, Party } from '../intent';
+  import { describeTx } from '../intent';
   import { config, pool, drep, stake, address } from '../stores';
   import { poolColor, formatTicker } from '../layout';
   import { nonChangeOutputs as computeNonChangeOutputs } from '../change';
   import { stakeCredential, rewardCredential } from '../bech32';
-  import dappRegistry from '../dapp_addresses.json';
+  import { dappForAddress } from '../dapps';
 
   // On a stake or address feed, highlight inputs/outputs belonging to the feed's
   // subject (stake feed: any address sharing the credential, incl. handles;
@@ -41,15 +43,9 @@
     return /^(addr1|addr_test1|stake1|stake_test1)/.test(addr) ? '/' + addr : undefined;
   }
 
-  const dappLookup: Record<string, string> = Object.fromEntries(
-    Object.entries(dappRegistry as Record<string, string[]>).flatMap(([name, addrs]) =>
-      addrs.map((addr) => [addr, name]),
-    ),
-  );
-
   function addressLabel(address: string, handle?: string): string | null {
     if (handle) return '$' + handle;
-    return dappLookup[address] ?? null;
+    return dappForAddress(address)?.name ?? null;
   }
 
   // `folded` = the decluttered rendering used on a folded stake-change block (pool/DRep
@@ -159,6 +155,41 @@
     return asset.tk ? `${base}?tk=${asset.tk}&size=${asset.size}` : `${base}?size=${asset.size}`;
   }
 
+  // The plain-language reading of this tx, when it has one. `folded` blocks (pool/DRep
+  // feeds) keep their own stake-centric rendering, and `describeTx` returns null for
+  // anything it can't state confidently — both fall through to the raw I/O view below.
+  const intent = $derived(folded ? null : describeTx(tx));
+  const shownTargets = $derived(intent ? intent.targets.slice(0, compact ? 2 : intent.targets.length) : []);
+  const extraTargets = $derived(intent ? intent.hiddenTargets + (intent.targets.length - shownTargets.length) : 0);
+
+  // The headline sits in ~88px of usable width (108px tile less the panel padding), so
+  // its size steps down as the number grows: `(max characters, px)`, largest first.
+  // 12 ₳ is worth shouting; 1,234,567.89 ₳ just has to stay on one line.
+  const HEADLINE_STEPS: [number, number][] = [
+    [7, 17],
+    [9, 15],
+    [11, 13],
+    [13, 11],
+  ];
+  const HEADLINE_MIN_PX = 10;
+
+  /** Font size for a headline amount, from the plain text it renders as. */
+  function headlineSize(html: string): number {
+    // Measured on the rendered characters, so the tag markup `formatAda` emits for the
+    // decimals and the ₳ has to come off first.
+    const text = html.replace(/<[^>]*>/g, '');
+    for (const [maxChars, px] of HEADLINE_STEPS) if (text.length <= maxChars) return px;
+    return HEADLINE_MIN_PX;
+  }
+
+  // A party takes the feed subject's colour when it *is* the subject (so you can see
+  // your own side of a tx at a glance); pools and DReps always carry their own.
+  function partyColor(party: Party): string | null {
+    if (party.kind === 'pool' || party.kind === 'drep') return poolColor(party.id);
+    if (!party.id) return null;
+    return party.id.startsWith('stake') ? ownedStakeColor(party.id) : ownedAddressColor(party.id);
+  }
+
   let maxOutputs = $derived(compact ? 2 : 8);
   let maxInputs = $derived(compact ? 2 : 8);
   let maxAssets = $derived(compact ? 10 : 50);
@@ -166,8 +197,12 @@
 
   let nonChangeOutputs = $derived(computeNonChangeOutputs(tx.inputs, tx.outputs));
 
-  // Total asset count across visible outputs → scale thumbnails
-  let totalAssets = $derived(nonChangeOutputs.reduce((sum, o) => sum + o.assets.length, 0));
+  // Total asset count → scale thumbnails, from whichever rendering is in use.
+  let totalAssets = $derived(
+    intent
+      ? (intent.assets?.length ?? 0) + shownTargets.reduce((sum, t) => sum + (t.assets?.length ?? 0), 0)
+      : nonChangeOutputs.reduce((sum, o) => sum + o.assets.length, 0),
+  );
   let thumbSize = $derived(totalAssets <= 1 ? 96 : Math.max(16, Math.floor(96 / Math.sqrt(totalAssets))));
   let sortedOutputs = $derived([...nonChangeOutputs].sort((a, b) => Number(BigInt(b.lovelace) - BigInt(a.lovelace))));
   let visibleOutputs = $derived.by(() => {
@@ -188,6 +223,73 @@
   let visibleInputs = $derived(uniqueInputs.slice(0, maxInputs));
   let hiddenInputCount = $derived(uniqueInputs.length - visibleInputs.length);
 </script>
+
+<!-- One named side of a sentence: the label, coloured by what it stands for, linked to
+     its own feed when it has one. -->
+{#snippet partyLine(party: Party)}
+  <svelte:element
+    this={party.href ? 'a' : 'span'}
+    href={party.href}
+    class="party"
+    class:mono={party.kind === 'address'}
+    class:handle={party.kind === 'handle'}
+    class:app={party.kind === 'app'}
+    class:pool={party.kind === 'pool'}
+    class:drep={party.kind === 'drep'}
+    class:former={party.former}
+    style:color={partyColor(party)}>{party.label}</svelte:element
+  >
+{/snippet}
+
+<!-- `headline` is the loud line under the verb; the small form sits next to a target. -->
+{#snippet amountLine(amount: Amount, headline: boolean)}
+  {#if amount.unit}
+    {@const text = formatAssetQuantity(amount.quantity) + ' ' + amount.unit}
+    <span class="amount" class:headline style:font-size={headline ? `${headlineSize(text)}px` : null}>{text}</span>
+  {:else}
+    {@const html = formatAda(amount.quantity)}
+    <span class="amount" class:headline style:font-size={headline ? `${headlineSize(html)}px` : null}>{@html html}</span
+    >
+  {/if}
+{/snippet}
+
+<!-- Asset thumbnails. `slot` keys the failed-image tally so a broken image is counted
+     against the group it belongs to, whichever rendering asked for it. -->
+{#snippet assetThumbs(assets: AssetInfo[], slot: number)}
+  {@const visibleCount = Math.min(assets.length, maxAssetsPerOutput)}
+  <div class="assets">
+    {#each assets.slice(0, visibleCount) as asset}
+      <div class="asset">
+        <a class="asset-link" href="/{asset.fingerprint}">
+          <img
+            class="asset-thumb"
+            src={nftcdnUrl(asset)}
+            alt={asset.fingerprint}
+            loading="lazy"
+            onload={(e: Event) => {
+              (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
+            }}
+            onerror={(e: Event) => {
+              const el = (e.target as HTMLElement).closest('.asset') as HTMLElement;
+              el.style.display = 'none';
+              el.dispatchEvent(new Event('remeasure', { bubbles: true }));
+              failedAssets = { ...failedAssets, [slot]: (failedAssets[slot] ?? 0) + 1 };
+            }}
+            onmouseenter={showPreview}
+            onmouseleave={hidePreview}
+          />
+        </a>
+        {#if thumbSize >= 32 && asset.quantity !== '1'}
+          <span class="asset-label">{formatAssetQuantity(asset.quantity)}</span>
+        {/if}
+      </div>
+    {/each}
+  </div>
+  {@const hiddenAssets = assets.length - visibleCount + (failedAssets[slot] ?? 0)}
+  {#if hiddenAssets > 0}
+    <span class="more-outputs">+{hiddenAssets} asset{hiddenAssets > 1 ? 's' : ''}</span>
+  {/if}
+{/snippet}
 
 <div class="tx-card" style:--thumb-size="{thumbSize}px">
   {#if tx.stake_change && !voteOnly}
@@ -242,194 +344,190 @@
       {/each}
     </div>
   {/if}
-  {#if visibleDelegations.length > 0}
-    <div class="deleg-section">
-      <div class="addr-list">
-        {#each visibleDelegations as deleg}
-          {@const isDeregistration =
-            !deleg.to_pool_id && !deleg.to_drep_id && (!!deleg.from_pool_id || !!deleg.from_drep_id)}
-          {@const hasFrom = !!(deleg.from_pool_id || deleg.from_drep_id)}
-          <div class="addr-item">
-            {#if deleg.to_pool_id}
-              <span class="deleg-kind">POOL</span>
-              <a class="deleg-pool" style:color={poolColor(deleg.to_pool_id)} href="/{deleg.to_pool_id}"
-                >{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a
-              >
-            {/if}
-            {#if deleg.to_drep_id}
-              <span class="deleg-kind">DREP</span>
-              <a class="deleg-drep" style:color={poolColor(deleg.to_drep_id)} href="/{deleg.to_drep_id}"
-                >{deleg.to_drep_name ?? deleg.to_drep_id.slice(5, 13)}</a
-              >
-            {/if}
-            {#if deleg.to_pool_id || deleg.to_drep_id}
-              <span class="deleg-arrow" style:color={ownedStakeColor(deleg.stake_address)}>{@html '&#x2191;'}</span>
-            {/if}
-            {#if deleg.from_pool_id}
-              <span class="deleg-kind">POOL</span>
-              <a
-                class="deleg-pool"
-                class:deregistered={isDeregistration}
-                style:color={poolColor(deleg.from_pool_id)}
-                href="/{deleg.from_pool_id}">{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
-              >
-            {/if}
-            {#if deleg.from_drep_id}
-              <span class="deleg-kind">DREP</span>
-              <a
-                class="deleg-drep"
-                class:deregistered={isDeregistration}
-                style:color={poolColor(deleg.from_drep_id)}
-                href="/{deleg.from_drep_id}">{deleg.from_drep_name ?? deleg.from_drep_id.slice(5, 13)}</a
-              >
-            {/if}
-            <div class="stake-group" class:spaced={hasFrom}>
-              {#if !folded}
-                <span class="ada">{@html formatAda(deleg.live_stake)}</span>
-              {/if}
-              <svelte:element
-                this={addrHref(deleg.stake_address) ? 'a' : 'span'}
-                href={addrHref(deleg.stake_address)}
-                style:color={ownedStakeColor(deleg.stake_address)}
-                class="addr mono">{deleg.stake_address}</svelte:element
-              >
-            </div>
-          </div>
-        {/each}
-      </div>
-    </div>
-  {/if}
-  {#if !folded && tx.catalyst}
-    <div class="deleg-section">
-      <div class="addr-list">
-        <div class="addr-item">
-          <span class="catalyst-label">Catalyst voting registration</span>
-          <div class="stake-group spaced">
-            {#if tx.catalyst.live_stake}
-              <span class="ada">{@html formatAda(tx.catalyst.live_stake)}</span>
-            {/if}
-            <svelte:element
-              this={addrHref(tx.catalyst.stake_address) ? 'a' : 'span'}
-              href={addrHref(tx.catalyst.stake_address)}
-              style:color={ownedStakeColor(tx.catalyst.stake_address)}
-              class="addr mono">{tx.catalyst.stake_address}</svelte:element
-            >
-          </div>
+  {#if intent}
+    <div class="sentence">
+      {#if intent.subject}{@render partyLine(intent.subject)}{/if}
+      <span class="verb">{intent.verb}</span>
+      {#if intent.amount}{@render amountLine(intent.amount, true)}{/if}
+      {#if intent.assets && $config}{@render assetThumbs(intent.assets, 0)}{/if}
+      {#if intent.preposition}<span class="prep">{intent.preposition}</span>{/if}
+      {#each shownTargets as target, ti}
+        <div class="target">
+          {#if target.amount}{@render amountLine(target.amount, false)}{/if}
+          {#if target.assets && $config}{@render assetThumbs(target.assets, ti + 1)}{/if}
+          {#if target.party}{@render partyLine(target.party)}{/if}
         </div>
-      </div>
-    </div>
-  {/if}
-  {#each shownAnnotations as ann}
-    {#if ann.kind === 'oracle'}
-      <div class="annotation">
-        <span class="annotation-label">{ann.source} price feed</span>
-        {#if ann.value}
-          <span class="oracle-value">
-            {ann.feed ? `1 ${ann.feed.split('/')[0]} = ${ann.value}` : ann.value}
-          </span>
-        {/if}
-      </div>
-    {/if}
-  {/each}
-
-  {#if !folded && (tx.inputs.length > 0 || tx.outputs.length > 0)}
-    <div class="tx-body">
-      <div class="addr-list">
-        {#each visibleOutputs as output, oi}
-          <div class="addr-item">
-            <span class="ada">{@html formatAda(output.lovelace)}</span>
-            {#if output.assets.length > 0 && $config}
-              {@const visibleAssetCount = Math.min(output.assets.length, maxAssetsPerOutput)}
-              {@const hiddenAssets = output.assets.length - visibleAssetCount}
-              <div class="assets">
-                {#each output.assets.slice(0, visibleAssetCount) as asset}
-                  <div class="asset">
-                    <a class="asset-link" href="/{asset.fingerprint}">
-                      <img
-                        class="asset-thumb"
-                        src={nftcdnUrl(asset)}
-                        alt={asset.fingerprint}
-                        loading="lazy"
-                        onload={(e: Event) => {
-                          (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
-                        }}
-                        onerror={(e: Event) => {
-                          const el = (e.target as HTMLElement).closest('.asset') as HTMLElement;
-                          el.style.display = 'none';
-                          el.dispatchEvent(new Event('remeasure', { bubbles: true }));
-                          failedAssets = { ...failedAssets, [oi]: (failedAssets[oi] ?? 0) + 1 };
-                        }}
-                        onmouseenter={showPreview}
-                        onmouseleave={hidePreview}
-                      />
-                    </a>
-                    {#if thumbSize >= 32 && asset.quantity !== '1'}
-                      <span class="asset-label">{formatAssetQuantity(asset.quantity)}</span>
-                    {/if}
-                  </div>
-                {/each}
-              </div>
-              {@const totalHidden = hiddenAssets + (failedAssets[oi] ?? 0)}
-              {#if totalHidden > 0}
-                <span class="more-outputs">+{totalHidden} asset{totalHidden > 1 ? 's' : ''}</span>
-              {/if}
-            {/if}
-            {#if addressLabel(output.address, output.handle)}
-              <svelte:element
-                this={addrHref(output.address) ? 'a' : 'span'}
-                href={addrHref(output.address)}
-                class="addr mono label"
-                style:color={ownedAddressColor(output.address)}
-                >{addressLabel(output.address, output.handle)}</svelte:element
-              >
-            {:else}
-              <svelte:element
-                this={addrHref(output.address) ? 'a' : 'span'}
-                href={addrHref(output.address)}
-                class="addr mono"
-                style:color={ownedAddressColor(output.address)}>{output.address}</svelte:element
-              >
-            {/if}
-          </div>
-        {/each}
-        {#if visibleOutputs.length === 0}
-          <span class="ada">{@html formatAda(tx.outputs.reduce((s, o) => s + BigInt(o.lovelace), 0n).toString())}</span>
-        {/if}
-        {#if hiddenOutputCount > 0}
-          <span class="more-outputs">+{hiddenOutputCount} output{hiddenOutputCount > 1 ? 's' : ''}</span>
-        {/if}
-      </div>
-      <div class="arrow" class:flip={visibleOutputs.length === 0}>{visibleOutputs.length === 0 ? '↻' : '↑'}</div>
-
-      <div class="addr-list">
-        {#each visibleInputs as input}
-          <div class="addr-item">
-            {#if addressLabel(input.address ?? '', input.handle)}
-              <svelte:element
-                this={addrHref(input.address) ? 'a' : 'span'}
-                href={addrHref(input.address)}
-                class="addr mono label"
-                style:color={ownedAddressColor(input.address)}
-                >{addressLabel(input.address ?? '', input.handle)}</svelte:element
-              >
-            {:else}
-              <svelte:element
-                this={addrHref(input.address) ? 'a' : 'span'}
-                href={addrHref(input.address)}
-                class="addr mono"
-                style:color={ownedAddressColor(input.address)}>{input.address ?? '???'}</svelte:element
-              >
-            {/if}
-          </div>
-        {/each}
-        {#if hiddenInputCount > 0}
-          <span class="more-outputs">+{hiddenInputCount} input{hiddenInputCount > 1 ? 's' : ''}</span>
-        {/if}
-      </div>
+      {/each}
+      {#if extraTargets > 0}
+        <span class="more-outputs">+{extraTargets} more</span>
+      {/if}
+      {#if intent.via}
+        <span class="prep">ON</span>
+        {@render partyLine(intent.via)}
+      {/if}
       {#if tx.hash}
         <div class="tx-hash mono">{tx.hash}</div>
       {/if}
     </div>
+  {:else}
+    {#if visibleDelegations.length > 0}
+      <div class="deleg-section">
+        <div class="addr-list">
+          {#each visibleDelegations as deleg}
+            {@const isDeregistration =
+              !deleg.to_pool_id && !deleg.to_drep_id && (!!deleg.from_pool_id || !!deleg.from_drep_id)}
+            {@const hasFrom = !!(deleg.from_pool_id || deleg.from_drep_id)}
+            <div class="addr-item">
+              {#if deleg.to_pool_id}
+                <span class="deleg-kind">POOL</span>
+                <a class="deleg-pool" style:color={poolColor(deleg.to_pool_id)} href="/{deleg.to_pool_id}"
+                  >{poolLabel(deleg.to_ticker, deleg.to_pool_id)}</a
+                >
+              {/if}
+              {#if deleg.to_drep_id}
+                <span class="deleg-kind">DREP</span>
+                <a class="deleg-drep" style:color={poolColor(deleg.to_drep_id)} href="/{deleg.to_drep_id}"
+                  >{deleg.to_drep_name ?? deleg.to_drep_id.slice(5, 13)}</a
+                >
+              {/if}
+              {#if deleg.to_pool_id || deleg.to_drep_id}
+                <span class="deleg-arrow" style:color={ownedStakeColor(deleg.stake_address)}>{@html '&#x2191;'}</span>
+              {/if}
+              {#if deleg.from_pool_id}
+                <span class="deleg-kind">POOL</span>
+                <a
+                  class="deleg-pool"
+                  class:deregistered={isDeregistration}
+                  style:color={poolColor(deleg.from_pool_id)}
+                  href="/{deleg.from_pool_id}">{poolLabel(deleg.from_ticker, deleg.from_pool_id)}</a
+                >
+              {/if}
+              {#if deleg.from_drep_id}
+                <span class="deleg-kind">DREP</span>
+                <a
+                  class="deleg-drep"
+                  class:deregistered={isDeregistration}
+                  style:color={poolColor(deleg.from_drep_id)}
+                  href="/{deleg.from_drep_id}">{deleg.from_drep_name ?? deleg.from_drep_id.slice(5, 13)}</a
+                >
+              {/if}
+              <div class="stake-group" class:spaced={hasFrom}>
+                {#if !folded}
+                  <span class="ada">{@html formatAda(deleg.live_stake)}</span>
+                {/if}
+                <svelte:element
+                  this={addrHref(deleg.stake_address) ? 'a' : 'span'}
+                  href={addrHref(deleg.stake_address)}
+                  style:color={ownedStakeColor(deleg.stake_address)}
+                  class="addr mono">{deleg.stake_address}</svelte:element
+                >
+              </div>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+    {#if !folded && tx.catalyst}
+      <div class="deleg-section">
+        <div class="addr-list">
+          <div class="addr-item">
+            <span class="catalyst-label">Catalyst voting registration</span>
+            <div class="stake-group spaced">
+              {#if tx.catalyst.live_stake}
+                <span class="ada">{@html formatAda(tx.catalyst.live_stake)}</span>
+              {/if}
+              <svelte:element
+                this={addrHref(tx.catalyst.stake_address) ? 'a' : 'span'}
+                href={addrHref(tx.catalyst.stake_address)}
+                style:color={ownedStakeColor(tx.catalyst.stake_address)}
+                class="addr mono">{tx.catalyst.stake_address}</svelte:element
+              >
+            </div>
+          </div>
+        </div>
+      </div>
+    {/if}
+    {#each shownAnnotations as ann}
+      {#if ann.kind === 'oracle'}
+        <div class="annotation">
+          <span class="annotation-label">{ann.source} price feed</span>
+          {#if ann.value}
+            <span class="oracle-value">
+              {ann.feed ? `1 ${ann.feed.split('/')[0]} = ${ann.value}` : ann.value}
+            </span>
+          {/if}
+        </div>
+      {/if}
+    {/each}
+
+    {#if !folded && (tx.inputs.length > 0 || tx.outputs.length > 0)}
+      <div class="tx-body">
+        <div class="addr-list">
+          {#each visibleOutputs as output, oi}
+            <div class="addr-item">
+              <span class="ada">{@html formatAda(output.lovelace)}</span>
+              {#if output.assets.length > 0 && $config}
+                {@render assetThumbs(output.assets, oi)}
+              {/if}
+              {#if addressLabel(output.address, output.handle)}
+                <svelte:element
+                  this={addrHref(output.address) ? 'a' : 'span'}
+                  href={addrHref(output.address)}
+                  class="addr mono label"
+                  style:color={ownedAddressColor(output.address)}
+                  >{addressLabel(output.address, output.handle)}</svelte:element
+                >
+              {:else}
+                <svelte:element
+                  this={addrHref(output.address) ? 'a' : 'span'}
+                  href={addrHref(output.address)}
+                  class="addr mono"
+                  style:color={ownedAddressColor(output.address)}>{output.address}</svelte:element
+                >
+              {/if}
+            </div>
+          {/each}
+          {#if visibleOutputs.length === 0}
+            <span class="ada"
+              >{@html formatAda(tx.outputs.reduce((s, o) => s + BigInt(o.lovelace), 0n).toString())}</span
+            >
+          {/if}
+          {#if hiddenOutputCount > 0}
+            <span class="more-outputs">+{hiddenOutputCount} output{hiddenOutputCount > 1 ? 's' : ''}</span>
+          {/if}
+        </div>
+        <div class="arrow" class:flip={visibleOutputs.length === 0}>{visibleOutputs.length === 0 ? '↻' : '↑'}</div>
+
+        <div class="addr-list">
+          {#each visibleInputs as input}
+            <div class="addr-item">
+              {#if addressLabel(input.address ?? '', input.handle)}
+                <svelte:element
+                  this={addrHref(input.address) ? 'a' : 'span'}
+                  href={addrHref(input.address)}
+                  class="addr mono label"
+                  style:color={ownedAddressColor(input.address)}
+                  >{addressLabel(input.address ?? '', input.handle)}</svelte:element
+                >
+              {:else}
+                <svelte:element
+                  this={addrHref(input.address) ? 'a' : 'span'}
+                  href={addrHref(input.address)}
+                  class="addr mono"
+                  style:color={ownedAddressColor(input.address)}>{input.address ?? '???'}</svelte:element
+                >
+              {/if}
+            </div>
+          {/each}
+          {#if hiddenInputCount > 0}
+            <span class="more-outputs">+{hiddenInputCount} input{hiddenInputCount > 1 ? 's' : ''}</span>
+          {/if}
+        </div>
+        {#if tx.hash}
+          <div class="tx-hash mono">{tx.hash}</div>
+        {/if}
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -528,6 +626,112 @@
     background: rgb(0 0 0 / 0.6);
     border-radius: 6px;
     padding: 8px 10px;
+  }
+
+  /* The plain-language reading of a tx, stacked one clause per line: subject, verb,
+     amount, preposition, object. The tile is 108px wide, so every line has to stand on
+     its own — which is why the verb is a word and not an arrow. */
+  .sentence {
+    background: rgb(0 0 0 / 0.6);
+    border-radius: 6px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 0;
+  }
+
+  /* Connective tissue. Small and dim on purpose: they carry the grammar, not the
+     information, and must never compete with the amount or the parties. */
+  .verb,
+  .prep {
+    font-size: 8px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    line-height: 1.5;
+    color: rgb(255 255 255 / 0.35);
+  }
+
+  .verb {
+    color: rgb(255 255 255 / 0.55);
+  }
+
+  .amount {
+    color: white;
+    font-weight: 600;
+    font-size: 10px;
+    line-height: 1.2;
+  }
+
+  /* The one line a casual reader should land on first. The size comes from
+     `headlineSize`, which fits it to the tile; nowrap keeps a long number one line
+     rather than breaking it across the thousands separator. */
+  .amount.headline {
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .amount :global(.ada-dec) {
+    font-weight: 400;
+    font-size: 0.72em;
+  }
+
+  .party {
+    font-size: 10px;
+    line-height: 1.3;
+    color: rgb(255 255 255 / 0.4);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-decoration: none;
+    /* Same underscore-clipping fix as `.addr`. */
+    padding-bottom: 2px;
+    margin-bottom: -2px;
+  }
+
+  a.party {
+    cursor: pointer;
+  }
+  a.party:hover {
+    text-decoration: underline;
+  }
+
+  /* A name someone chose — a handle or a dApp — reads at full strength; a bare address
+     stays dim, since it identifies without meaning anything. */
+  .party.handle,
+  .party.app {
+    color: white;
+  }
+
+  .party.app {
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+
+  .party.pool {
+    font-family: Inter, sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    color: white;
+  }
+
+  .party.drep {
+    font-family: Inter, sans-serif;
+    font-weight: 600;
+    color: white;
+  }
+
+  .party.former {
+    text-decoration: line-through;
+  }
+
+  .target {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .tx-body {
