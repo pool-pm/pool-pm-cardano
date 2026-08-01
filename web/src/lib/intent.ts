@@ -337,14 +337,19 @@ function describeTagged(
   const target = action ? targetFor(action) : null;
 
   if (sender) {
+    // Nothing left the wallet — a cancellation, or a settlement that only returns funds
+    // — so the tx's own output total is the only number there is to show.
+    const moved = recipients.length > 0 ? sumLovelace(recipients) : sumLovelace(outputs);
     return {
       subject: sender,
       verb: tag.verb ?? 'USED',
-      amount: target?.amount ?? { quantity: sumLovelace(recipients).toString() },
+      amount: target?.amount ?? { quantity: moved.toString() },
       assets: target?.assets,
       targets: [],
       hiddenTargets: 0,
-      via: app,
+      // The dApp spending its own script is already named as the subject; repeating it
+      // as the venue would read "MINSWAP CANCELLED … ON MINSWAP".
+      via: sender.label === app.label ? undefined : app,
       messageRead: true,
     };
   }

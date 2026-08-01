@@ -338,6 +338,21 @@ describe('describeTx: CIP-20 tags', () => {
     expect(intent.via).toMatchObject({ label: 'MINSWAP' });
   });
 
+  it('does not name the dApp twice when it is the one acting', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(MINSWAP_ORDER, '5000000')],
+        outputs: [output(MINSWAP_ORDER, '4800000')],
+        message: ['Minswap: Aggregator Cancel Order'],
+      }),
+    )!;
+    expect(intent.subject).toMatchObject({ label: 'MINSWAP' });
+    expect(intent.verb).toBe('CANCELLED');
+    expect(intent.via).toBeUndefined();
+    // Nothing left the wallet, so the tx's own output total is the only number there is.
+    expect(intent.amount).toEqual({ quantity: '4800000' });
+  });
+
   it('leaves a human memo to the ordinary reading', () => {
     const intent = describeTx(
       tx({
