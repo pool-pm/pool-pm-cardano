@@ -233,6 +233,32 @@ describe('describeTx: dApps', () => {
     expect(intent.targets).toEqual([]);
   });
 
+  it('reads through the batcher fee that comes with an order', () => {
+    // The shape almost every real DEX order has: the order itself, plus a small fee
+    // output to a separate address.
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '110000000')],
+        outputs: [output(MINSWAP_ORDER, '73000000'), output(BOB, '2000000')],
+      }),
+    )!;
+    expect(intent.verb).toBe('SWAPPED');
+    expect(intent.amount).toEqual({ quantity: '73000000' });
+    expect(intent.via).toMatchObject({ label: 'MINSWAP' });
+    expect(intent.targets).toEqual([]);
+  });
+
+  it('does not swallow a payment larger than the dApp output', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '110000000')],
+        outputs: [output(MINSWAP_ORDER, '2000000'), output(BOB, '73000000')],
+      }),
+    )!;
+    expect(intent.verb).toBe('SENT');
+    expect(intent.targets).toHaveLength(2);
+  });
+
   it('reads a marketplace script as a trade', () => {
     const intent = describeTx(
       tx({

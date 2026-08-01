@@ -288,6 +288,30 @@ function targetFor(output: TxOutputInfo): IntentTarget {
 }
 
 /**
+ * The one output that *is* the action, when this tx is an interaction with a dApp.
+ *
+ * A dApp interaction rarely has a single recipient: an order posted to a DEX comes with
+ * a batcher fee to a separate address, and listing both as recipients buries the action
+ * under its overheads. So the dApp output qualifies only when it's the dominant one —
+ * worth more than everything else the tx pays out combined — which is what distinguishes
+ * "swapped 73 ₳ on Minswap, 2 ₳ of it in fees" from "paid two different people".
+ *
+ * Null when no recipient is a dApp with a verb of its own, when several are (the tx does
+ * more than one thing), or when the dApp's share doesn't dominate.
+ */
+function dappAction(recipients: TxOutputInfo[]): TxOutputInfo | null {
+  const actions = recipients.filter((o) => {
+    const dapp = dappForAddress(o.address);
+    return dapp !== undefined && verbForDapp(dapp) !== null;
+  });
+  if (actions.length !== 1) return null;
+  const action = actions[0];
+  const rest = recipients.reduce((sum, o) => (o === action ? sum : sum + BigInt(o.lovelace)), 0n);
+  // Tokens carry the value in a token order, where the ADA is only min-UTXO.
+  return BigInt(action.lovelace) > rest || action.assets.length > 0 ? action : null;
+}
+
+/**
  * The default reading: value leaving one wallet for others. A single recipient gets the
  * full sentence with the amount on its own loud line; several recipients keep their
  * amounts next to their names, since there's no one number to headline.
@@ -299,23 +323,23 @@ function describeTransfer(subject: Party, recipients: TxOutputInfo[], outputs: T
     return { subject, verb: 'MOVED', amount: { quantity: moved.toString() }, targets: [], hiddenTargets: 0 };
   }
 
+  const action = dappAction(recipients);
+  if (action) {
+    // The dApp is the venue, not a recipient: `$bob SWAPPED 100 ₳ ON MINSWAP`.
+    const target = targetFor(action);
+    return {
+      subject,
+      verb: verbForDapp(dappForAddress(action.address)!)!,
+      amount: target.amount,
+      assets: target.assets,
+      targets: [],
+      hiddenTargets: 0,
+      via: target.party,
+    };
+  }
+
   if (recipients.length === 1) {
-    const [output] = recipients;
-    const target = targetFor(output);
-    const dapp = dappForAddress(output.address);
-    const verb = dapp ? verbForDapp(dapp) : null;
-    if (verb) {
-      // The dApp is the venue, not the recipient: `$bob SWAPPED 100 ₳ ON MINSWAP`.
-      return {
-        subject,
-        verb,
-        amount: target.amount,
-        assets: target.assets,
-        targets: [],
-        hiddenTargets: 0,
-        via: target.party,
-      };
-    }
+    const target = targetFor(recipients[0]);
     return {
       subject,
       verb: 'SENT',
