@@ -27,6 +27,9 @@ export interface TxOutputInfo {
   lovelace: string;
   assets: AssetInfo[];
   handle?: string;
+  /** Inline datum, hex, exactly as on chain. Script outputs only — it's the only place
+   * a protocol says what an order is for. Read by `plutus.ts`. */
+  datum?: string;
 }
 
 export interface AssetInfo {

@@ -317,6 +317,26 @@ describe('describeTx: dApps', () => {
     expect(intent.targets).toHaveLength(2);
   });
 
+  it('reads a pending swap out of the order datum', () => {
+    // A real Minswap V2 order: ADA in, WorldMobileTokenX out.
+    const datum =
+      'd8799fd8799f581c636d0d0118a8933ac167d4c448150bb325deaf7a4fdfb44adc7f2f5affd8799fd8799f581c636d0d0118a8933ac167d4c448150bb325deaf7a4fdfb44adc7f2f5affd8799fd8799fd8799f581ce39b5f40aa85fbc121a625d777a776eca1cb4c923426949c997d8828ffffffffd87980d8799fd8799f581c636d0d0118a8933ac167d4c448150bb325deaf7a4fdfb44adc7f2f5affd8799fd8799fd8799f581ce39b5f40aa85fbc121a625d777a776eca1cb4c923426949c997d8828ffffffffd87980d8799f581cf5808c2c990d86da54bfc97d89cee6efa20cd8461616359478d96b4c5820686db0c143a3a2cc19099d8909e315c4ed761a6ac5a3c5998c651d5e9d3cb253ffd8799fd87a80d8799f1a26ef03a4ff1adfaf40f4d87980ff1a001e8480d87a80ff';
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '700000000', { handle: 'alice' })],
+        outputs: [{ address: MINSWAP_ORDER, lovelace: '657198244', assets: [], datum }],
+      }),
+    )!;
+    expect(intent.subject).toMatchObject({ label: '$alice' });
+    // Present tense: the order hasn't executed. Its settlement reads SWAPPED, later.
+    expect(intent.verb).toBe('SWAPPING');
+    // From the datum, not the 657.2 ₳ output — which also holds the batcher fee.
+    expect(intent.amount).toEqual({ quantity: '653198244' });
+    expect(intent.preposition).toBe('FOR');
+    expect(intent.targets[0].amount).toEqual({ quantity: '3752804596', unit: 'WorldMobileTokenX' });
+    expect(intent.via).toMatchObject({ label: 'MINSWAP' });
+  });
+
   it('reads a marketplace script as a trade', () => {
     const intent = describeTx(
       tx({

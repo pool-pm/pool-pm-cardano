@@ -23,6 +23,8 @@ import { stakeAddressOf } from './bech32';
 import { dappForAddress, dappForPolicy, isDex, type Dapp } from './dapps';
 import { parseMessage, type TaggedAction } from './cip20';
 import { readSettlement, type Side } from './settlement';
+import { isAda, readSwapOrder, type SwapOrder } from './minswapOrder';
+import type { PoolAsset } from './minswapPools';
 import { formatTicker } from './layout';
 
 /** How a party's label was derived — drives its styling and colour. */
@@ -333,6 +335,59 @@ function targetFor({ output, party }: Recipient): IntentTarget {
 }
 
 /**
+ * A pending swap, read from the order's datum: `$bob SWAPPING 653.2 ₳ FOR 3,752.8 WMTX`.
+ *
+ * The transaction alone can't say this. It shows value going to a script and nothing
+ * about what for, and even the amount is wrong if taken from the order UTXO, which also
+ * holds the batcher fee and a deposit that come back. Only the datum has it.
+ *
+ * The present tense is load-bearing: this order hasn't executed. Its settlement arrives
+ * in a later block and reads `SWAPPED`, with the amount that was actually filled rather
+ * than the minimum asked for.
+ */
+function describePendingSwap(subject: Party, order: SwapOrder, app: Party): Intent {
+  return {
+    subject,
+    verb: 'SWAPPING',
+    amount: sideOfSwap(order.give, order.giveAmount),
+    preposition: 'FOR',
+    targets: [{ amount: sideOfSwap(order.want, order.wantAtLeast) }],
+    hiddenTargets: 0,
+    via: app,
+  };
+}
+
+/**
+ * One side of a pending swap as a sentence amount.
+ *
+ * A token's amount is left raw and unitless. The datum gives an integer in the asset's
+ * smallest unit, and the decimals needed to scale it aren't in the transaction — the
+ * wanted asset appears nowhere in it. Showing an unscaled number under a ticker would
+ * read as a quantity that is wrong by orders of magnitude, so it goes without one until
+ * the decimals reach the client.
+ */
+function sideOfSwap(asset: PoolAsset, amount: bigint): Amount {
+  if (isAda(asset)) return { quantity: amount.toString() };
+  return { quantity: amount.toString(), unit: assetTicker(asset) };
+}
+
+/** CIP-67 label prefixes, as the server's `display_asset_name` strips them. */
+const CIP67_LABELS = ['00000000', '00001070', '000643b0', '000de140', '0014df10', '001bc280'];
+
+/**
+ * A token's on-chain name, when it's readable text.
+ *
+ * The CIP-67 label has to come off first — it's four binary bytes that aren't part of
+ * what the token is called, and leaving them on turns `PULSE` into `\ufffdPULSE`.
+ */
+function assetTicker(asset: PoolAsset): string | undefined {
+  const label = CIP67_LABELS.find((l) => asset.name.startsWith(l));
+  const hex = label ? asset.name.slice(label.length) : asset.name;
+  const text = (hex.match(/../g) ?? []).map((b) => String.fromCharCode(parseInt(b, 16))).join('');
+  return /^[\x20-\x7e]+$/.test(text) ? text : undefined;
+}
+
+/**
  * The one output that *is* the action, when this tx is an interaction with a dApp.
  *
  * A dApp interaction rarely has a single recipient: an order posted to a DEX comes with
@@ -582,6 +637,15 @@ export function describeTx(tx: BlockTx): Intent | null {
 
   const rewards = withdrawn(tx.inputs);
   if (rewards > 0n && recipients.length === 0) return describeWithdrawal(tx, rewards, sender?.party);
+
+  // An order's datum outranks even the tx's own message: "Minswap: Market Order" says a
+  // swap was placed, the datum says which one, for how much, and against what.
+  if (sender) {
+    for (const recipient of recipients) {
+      const order = readSwapOrder(recipient.output.datum);
+      if (order) return describePendingSwap(sender.party, order, recipient.party);
+    }
+  }
 
   // What the tx says about itself beats anything inferred from its shape.
   const tag = parseMessage(tx.message);
