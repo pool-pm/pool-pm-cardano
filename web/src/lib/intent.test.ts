@@ -180,15 +180,17 @@ describe('describeTx: transfers', () => {
     ).toBeNull();
   });
 
-  it('keeps per-recipient amounts when there are several', () => {
+  it('sums several recipients into one total and lists who got it', () => {
     const intent = describeTx(
       tx({
         inputs: [input(ALICE_A, '20000000')],
         outputs: [output(BOB, '5000000'), output(CAROL, '9000000')],
       }),
     )!;
-    expect(intent.amount).toBeUndefined();
-    expect(intent.targets.map((t) => t.amount?.quantity)).toEqual(['9000000', '5000000']);
+    // An amount stacked above each name reads as "sent TO 9,000000" — the sum doesn't.
+    expect(intent.amount).toEqual({ quantity: '14000000' });
+    expect(intent.targets.map((t) => t.amount)).toEqual([undefined, undefined]);
+    expect(intent.targets.map((t) => t.party?.id)).toEqual([CAROL, BOB]);
     expect(intent.hiddenTargets).toBe(0);
   });
 

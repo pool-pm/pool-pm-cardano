@@ -363,12 +363,8 @@ function dappAction(recipients: Recipient[]): Recipient | null {
  * The amount comes from the dApp output when there is one, else from what left the
  * wallet, so the loud line stays the number the reader cares about.
  */
-function describeTagged(
-  tag: TaggedAction,
-  sender: Party | undefined,
-  recipients: Recipient[],
-  outputs: TxOutputInfo[],
-): Intent {
+function describeTagged(tag: TaggedAction, sender: Party | undefined, recipients: Recipient[], tx: BlockTx): Intent {
+  const outputs = tx.outputs;
   const app: Party = { label: tag.app.toUpperCase(), kind: 'app' };
   const action = dappAction(recipients) ?? (recipients.length === 1 ? recipients[0] : null);
   const target = action ? targetFor(action) : null;
@@ -390,16 +386,31 @@ function describeTagged(
       messageRead: true,
     };
   }
-  // No one wallet funded it — a batcher settling orders it holds. The dApp is the actor,
-  // and the number worth showing is what the tx paid out.
+  // No one wallet funded it — a batcher settling orders it holds, so the dApp is the
+  // actor. How many orders it settled is the number that means something; the tx's ADA
+  // total does not, being mostly liquidity pools rewritten and batcher change rather
+  // than value anybody sent. Better to show no figure than that one.
+  const orders = ordersSettled(tx.inputs);
   return {
     subject: app,
     verb: tag.verb ?? 'USED',
-    amount: { quantity: sumLovelace(outputs).toString() },
+    amount: orders > 0 ? { quantity: String(orders), unit: orders === 1 ? 'ORDER' : 'ORDERS' } : undefined,
     targets: [],
     hiddenTargets: 0,
     messageRead: true,
   };
+}
+
+/**
+ * Orders a batch settled: one per order UTXO it spent.
+ *
+ * Counted from the inputs rather than the payouts because the inputs are exact — every
+ * order the batcher consumed is an input from the app's order script, while the outputs
+ * mix user payouts with pool UTXOs and the batcher's own change. Zero when the order
+ * script isn't one we can name, which is the honest answer rather than a guess.
+ */
+function ordersSettled(inputs: TxInput[]): number {
+  return inputs.filter((i) => i.address && dappForAddress(i.address)?.role === 'order').length;
 }
 
 function sumLovelace(outputs: TxOutputInfo[]): bigint {
@@ -446,12 +457,22 @@ function describeTransfer(subject: Party, recipients: Recipient[], outputs: TxOu
     };
   }
 
+  // Several recipients share one total rather than each carrying their own amount.
+  // Stacked vertically in a 108px column an amount above a name doesn't read as belonging
+  // to it — "SENT / TO / 572 ₳ / DdzFF…" parses as sending *to* the amount. The sum is
+  // unambiguous, and the names still say who got it.
   const sorted = [...recipients].sort((a, b) => (BigInt(b.output.lovelace) > BigInt(a.output.lovelace) ? 1 : -1));
+  const total = sumLovelace(sorted.map((r) => r.output));
+  const assets = sorted.flatMap((r) => r.output.assets);
+  // Every output has to carry min-UTXO, so the dust floor scales with how many there are.
+  const carryingTokens = assets.length > 0 && total <= MIN_UTXO_DUST * BigInt(sorted.length);
   return {
     subject,
     verb: 'SENT',
+    amount: carryingTokens ? undefined : { quantity: total.toString() },
+    assets: assets.length > 0 ? assets : undefined,
     preposition: 'TO',
-    targets: sorted.slice(0, MAX_TARGETS).map(targetFor),
+    targets: sorted.slice(0, MAX_TARGETS).map((r) => ({ party: r.party })),
     hiddenTargets: Math.max(0, sorted.length - MAX_TARGETS),
   };
 }
@@ -525,7 +546,7 @@ export function describeTx(tx: BlockTx): Intent | null {
 
   // What the tx says about itself beats anything inferred from its shape.
   const tag = parseMessage(tx.message);
-  if (tag) return describeTagged(tag, sender?.party, recipients, tx.outputs);
+  if (tag) return describeTagged(tag, sender?.party, recipients, tx);
 
   if (!sender) return null; // several wallets funded it — "who sent" has no answer
   return describeTransfer(sender.party, recipients, tx.outputs);
