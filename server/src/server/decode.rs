@@ -33,6 +33,13 @@ pub(super) fn resolve_event_assets(event: &mut crate::event::Event, size: u16) {
         for out in &mut tx.outputs {
             resolve(&mut out.assets, size);
         }
+        // Annotations carry assets of their own — a burn's tokens appear nowhere else.
+        for annotation in &mut tx.annotations {
+            if let crate::event::TxAnnotation::Mint(mint) = annotation {
+                resolve(&mut mint.created, size);
+                resolve(&mut mint.destroyed, size);
+            }
+        }
     }
 }
 
@@ -179,7 +186,12 @@ pub(super) fn decode_block_txs(
             let catalyst = crate::pallas::extract_catalyst(tx, mainnet);
             let mut annotations = Vec::new();
             annotations.extend(crate::oracle::extract_oracle(tx));
-            annotations.extend(crate::mint::extract_mint(tx));
+            annotations.extend(crate::mint::extract_mint(tx, nftcdn, |fp| {
+                state
+                    .and_then(|s| s.current())
+                    .and_then(|s| s.decimals.get(fp).copied())
+                    .unwrap_or(0)
+            }));
 
             let votes = state
                 .map(|s| crate::mempool::extract_votes(tx, s))

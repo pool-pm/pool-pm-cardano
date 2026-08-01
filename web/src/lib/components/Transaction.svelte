@@ -219,6 +219,11 @@
   };
   const MONO_FAMILY = "'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace";
 
+  /** Up to this many tokens in a group get their name spelled out under the thumbnail.
+   *  Art identifies an NFT on its own; a fungible token's ticker is the only thing that
+   *  does, and a burn has nothing else to go on. */
+  const NAMED_ASSETS_MAX = 2;
+
   function labelSize(party: Party): number {
     const max = LABEL_SIZES[party.kind];
     const family = party.kind === 'address' ? MONO_FAMILY : HEADLINE_FAMILY;
@@ -323,6 +328,9 @@
         </a>
         {#if thumbSize >= 32 && asset.quantity !== '1'}
           <span class="asset-label">{formatAssetQuantity(asset.quantity)}</span>
+        {/if}
+        {#if asset.name && assets.length <= NAMED_ASSETS_MAX}
+          <span class="asset-name">{asset.name}</span>
         {/if}
       </div>
     {/each}
@@ -966,6 +974,17 @@
      affecting the .asset flex layout. */
   .asset-link {
     display: contents;
+  }
+
+  /* The token's on-chain name, under its art. */
+  .asset-name {
+    font-size: 9px;
+    color: rgb(255 255 255 / 0.75);
+    text-align: center;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .asset-label {

@@ -374,7 +374,7 @@ describe('describeTx: mints', () => {
       tx({
         inputs: [input(ALICE_A, '10000000', { handle: 'alice' })],
         outputs: [output(ALICE_A, '9500000', [asset('asset1nft')])],
-        annotations: [{ kind: 'mint', minted: 1, burned: 0, fingerprints: ['asset1nft'], policies: ['aa'] }],
+        annotations: [{ kind: 'mint', minted: 1, burned: 0, created: [asset('asset1nft')], policies: ['aa'] }],
       }),
     )!;
     expect(intent.subject).toMatchObject({ label: '$alice' });
@@ -389,7 +389,7 @@ describe('describeTx: mints', () => {
       tx({
         inputs: [input(ALICE_A, '10000000')],
         outputs: [output(BOB, '1500000', [asset('asset1nft')])],
-        annotations: [{ kind: 'mint', minted: 1, burned: 0, fingerprints: ['asset1nft'], policies: ['aa'] }],
+        annotations: [{ kind: 'mint', minted: 1, burned: 0, created: [asset('asset1nft')], policies: ['aa'] }],
       }),
     )!;
     expect(intent.verb).toBe('MINTED');
@@ -409,12 +409,23 @@ describe('describeTx: mints', () => {
     expect(intent.amount).toEqual({ quantity: '3', unit: 'TOKENS' });
   });
 
+  it('counts one minted token in the singular', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '10000000')],
+        outputs: [output(ALICE_A, '9500000')],
+        annotations: [{ kind: 'mint', minted: 1, burned: 0, created: [], policies: ['aa'] }],
+      }),
+    )!;
+    expect(intent.amount).toEqual({ quantity: '1', unit: 'TOKEN' });
+  });
+
   it('counts the assets when there are more than the server sent fingerprints for', () => {
     const intent = describeTx(
       tx({
         inputs: [input(ALICE_A, '10000000')],
         outputs: [output(ALICE_A, '9500000')],
-        annotations: [{ kind: 'mint', minted: 500, burned: 0, fingerprints: [], policies: ['aa'] }],
+        annotations: [{ kind: 'mint', minted: 500, burned: 0, created: [], policies: ['aa'] }],
       }),
     )!;
     expect(intent.amount).toEqual({ quantity: '500', unit: 'TOKENS' });

@@ -91,11 +91,14 @@ pub struct MintInfo {
     pub minted: u32,
     /// Distinct assets destroyed.
     pub burned: u32,
-    /// CIP-14 fingerprints of the created assets, so the client can pick their
-    /// thumbnails out of the outputs. Capped (see `mint::MAX_FINGERPRINTS`) while
-    /// `minted` stays exact; a burn leaves none, since it has no output to point at.
+    /// The created assets, with names and thumbnails. Capped (`mint::MAX_ASSETS`) while
+    /// the counts stay exact.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub fingerprints: Vec<String>,
+    pub created: Vec<AssetInfo>,
+    /// The destroyed ones. Nothing in the tx's outputs records these — a burn is exactly
+    /// the case where the annotation is the only place the asset is named.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub destroyed: Vec<AssetInfo>,
     /// The policies involved (hex), so the client can name the app that owns them.
     pub policies: Vec<String>,
 }

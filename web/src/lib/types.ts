@@ -218,9 +218,12 @@ export interface MintInfo {
   minted: number;
   /** Distinct assets destroyed. */
   burned: number;
-  /** Fingerprints of the created assets, for picking their thumbnails out of the
-   * outputs. Capped server-side, so it can be shorter than `minted`. */
-  fingerprints?: string[];
+  /** The created assets, with names and thumbnails. Capped server-side, so it can be
+   * shorter than `minted`. */
+  created?: AssetInfo[];
+  /** The destroyed ones. Nothing in the outputs records these — a burn is exactly the
+   * case where the annotation is the only place the asset is named. */
+  destroyed?: AssetInfo[];
   /** Policy ids (hex) involved — `dappForPolicy` names the app behind a known one. */
   policies: string[];
 }

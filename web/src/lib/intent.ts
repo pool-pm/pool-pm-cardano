@@ -419,6 +419,10 @@ function describeTransfer(subject: Party, recipients: TxOutputInfo[], outputs: T
   };
 }
 
+function tokenUnit(count: number): string {
+  return count === 1 ? 'TOKEN' : 'TOKENS';
+}
+
 /**
  * `$bob MINTED <thumbnails> ON JPG.STORE`, or `$bob BURNED 3 TOKENS`.
  *
@@ -426,32 +430,31 @@ function describeTransfer(subject: Party, recipients: TxOutputInfo[], outputs: T
  * one that was transferred, and since it usually lands back in the minter's own wallet
  * the tx would read as `MOVED`. A burn is worse — nothing in the outputs records it.
  */
-function describeMint(tx: BlockTx, mint: MintInfo, subject: Party | undefined, recipients: TxOutputInfo[]): Intent {
+function describeMint(mint: MintInfo, subject: Party | undefined, recipients: TxOutputInfo[]): Intent {
   const app = mint.policies.map(dappForPolicy).find((d) => d !== undefined);
   const via: Party | undefined = app ? { label: app.name.toUpperCase(), kind: 'app' } : undefined;
 
   if (mint.minted === 0) {
-    // Nothing to show a thumbnail of — the assets are gone.
+    // The assets are gone from the chain, but the annotation still carries their names
+    // and art — "BURNED 1 TOKEN" would say nothing a reader can act on.
     return {
       subject,
       verb: 'BURNED',
-      amount: { quantity: String(mint.burned), unit: mint.burned === 1 ? 'TOKEN' : 'TOKENS' },
+      amount: mint.destroyed?.length ? undefined : { quantity: String(mint.burned), unit: tokenUnit(mint.burned) },
+      assets: mint.destroyed?.length ? mint.destroyed : undefined,
       targets: [],
       hiddenTargets: 0,
       via,
     };
   }
 
-  const created = new Set(mint.fingerprints ?? []);
-  // The minted assets are in *some* output — usually the minter's own, which the
-  // recipient filter has already dropped — so look across all of them.
-  const assets = tx.outputs.flatMap((o) => o.assets.filter((a) => created.has(a.fingerprint)));
+  const assets = mint.created ?? [];
   // Minting straight to someone else is worth saying; minting to yourself isn't.
   const target = recipients.length === 1 ? partyForAddress(recipients[0].address, recipients[0].handle) : undefined;
   return {
     subject,
     verb: 'MINTED',
-    amount: assets.length > 0 ? undefined : { quantity: String(mint.minted), unit: 'TOKENS' },
+    amount: assets.length > 0 ? undefined : { quantity: String(mint.minted), unit: tokenUnit(mint.minted) },
     assets: assets.length > 0 ? assets : undefined,
     preposition: target ? 'TO' : undefined,
     targets: target ? [{ party: target }] : [],
@@ -478,7 +481,7 @@ export function describeTx(tx: BlockTx): Intent | null {
   const sender = soleSender(tx.inputs);
   const recipients = outsideRecipients(tx, sender?.wallet);
 
-  if (mint) return describeMint(tx, mint, sender?.party, recipients);
+  if (mint) return describeMint(mint, sender?.party, recipients);
 
   const rewards = withdrawn(tx.inputs);
   if (rewards > 0n && recipients.length === 0) return describeWithdrawal(tx, rewards, sender?.party);
