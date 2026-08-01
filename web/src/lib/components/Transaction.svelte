@@ -1,10 +1,10 @@
 <script lang="ts">
   import type { AssetInfo, DelegationInfo, FeedTx } from '../types';
-  import type { Amount, Party } from '../intent';
+  import type { Amount, Party, PartyKind } from '../intent';
   import { describeTx } from '../intent';
   import { config, pool, drep, stake, address } from '../stores';
   import { poolColor, formatTicker, TX_WIDTH } from '../layout';
-  import { fitFontSize } from '../fit.svelte';
+  import { fitFontSize, fontsAreReady } from '../fit.svelte';
   import { nonChangeOutputs as computeNonChangeOutputs } from '../change';
   import { stakeCredential, rewardCredential } from '../bech32';
   import { dappForAddress } from '../dapps';
@@ -197,14 +197,34 @@
     return { html, size, plain: !!amount.unit };
   });
 
-  // Re-fitting the headline changes the tile's height, and the grid packs to measured
-  // heights — so tell it to measure again (the webfont landing is the case that matters:
-  // every tile on screen resizes at once).
+  // Every fitted size on the tile changes at once when the webfont lands, and the grid
+  // packs to measured heights — so tell it to measure again when that happens.
   let card: HTMLElement | undefined = $state();
   $effect(() => {
-    void headline?.size;
+    void fontsAreReady();
     card?.dispatchEvent(new Event('remeasure', { bubbles: true }));
   });
+
+  // A name is worth more whole and small than truncated at full size: `$long.handle.name`
+  // beats `$long.hand…`, and a pool ticker or dApp name says nothing once it's clipped.
+  // So a label shrinks to fit rather than being ellipsised — down to a floor, past which
+  // it stops being readable and the ellipsis is the better answer after all.
+  const LABEL_MIN_PX = 7;
+  const LABEL_SIZES: Record<PartyKind, number> = {
+    handle: 10,
+    app: 10,
+    pool: 11,
+    drep: 10,
+    address: 10,
+  };
+  const MONO_FAMILY = "'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace";
+
+  function labelSize(party: Party): number {
+    const max = LABEL_SIZES[party.kind];
+    const family = party.kind === 'address' ? MONO_FAMILY : HEADLINE_FAMILY;
+    const weight = party.kind === 'pool' ? 700 : party.kind === 'address' ? 400 : 600;
+    return fitFontSize(party.label, family, weight, TX_WIDTH - SENTENCE_PADDING, { min: LABEL_MIN_PX, max });
+  }
 
   // A party takes the feed subject's colour when it *is* the subject (so you can see
   // your own side of a tx at a glance); pools and DReps always carry their own.
@@ -261,7 +281,8 @@
     class:pool={party.kind === 'pool'}
     class:drep={party.kind === 'drep'}
     class:former={party.former}
-    style:color={partyColor(party)}>{party.label}</svelte:element
+    style:color={partyColor(party)}
+    style:font-size="{labelSize(party)}px">{party.label}</svelte:element
   >
 {/snippet}
 
@@ -702,8 +723,9 @@
     font-size: 0.72em;
   }
 
+  /* Size comes from `labelSize`, which fits the label to the tile; the ellipsis is the
+     floor's safety net, for a name too long to fit even at the minimum. */
   .party {
-    font-size: 10px;
     line-height: 1.3;
     color: rgb(255 255 255 / 0.4);
     max-width: 100%;
@@ -737,7 +759,6 @@
 
   .party.pool {
     font-family: Inter, sans-serif;
-    font-size: 11px;
     font-weight: 700;
     color: white;
   }

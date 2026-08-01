@@ -29,6 +29,14 @@ if (typeof document !== 'undefined' && document.fonts) {
   });
 }
 
+/**
+ * Whether the webfont has landed. Read it from an effect that has to run again once
+ * every fitted size on the page changes at once.
+ */
+export function fontsAreReady(): boolean {
+  return fontsReady;
+}
+
 export interface FitBounds {
   /** Never go below this, even if the text still overflows — it would stop being legible. */
   min: number;
