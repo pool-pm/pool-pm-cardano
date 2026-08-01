@@ -946,9 +946,34 @@ pub fn write_snapshot(
     feed_index: &FeedIndex,
     network_magic: u64,
 ) -> Result<u64, Box<dyn std::error::Error>> {
+    // The scratch file carries the pid. Two instances sharing an output directory would
+    // otherwise interleave their writes into one scratch path and then rename the result
+    // into place — the atomic rename guards against a crash mid-write, not against a
+    // second writer, so the snapshot that lands is a mix of both and loads as neither.
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    match write_snapshot_parts(&tmp, snap, feed_index, network_magic) {
+        Ok(()) => {
+            std::fs::rename(&tmp, path)?;
+            Ok(snap.slot)
+        }
+        Err(e) => {
+            // Nothing will ever reuse this name, so a partial file would just sit there.
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// Serialize the snapshot to `tmp`, durably. Split out so the caller can delete the
+/// scratch file on any failure without duplicating the write.
+fn write_snapshot_parts(
+    tmp: &Path,
+    snap: &BlockSnapshot,
+    feed_index: &FeedIndex,
+    network_magic: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
-    let tmp = path.with_extension("tmp");
-    let mut wr = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+    let mut wr = std::io::BufWriter::new(std::fs::File::create(tmp)?);
     rmp_serde::encode::write(&mut wr, &SNAPSHOT_FORMAT)?;
     rmp_serde::encode::write(&mut wr, &network_magic)?;
     rmp_serde::encode::write(&mut wr, snap)?;
@@ -956,8 +981,7 @@ pub fn write_snapshot(
     rmp_serde::encode::write(&mut wr, feed_index)?;
     wr.flush()?;
     wr.into_inner()?.sync_all()?;
-    std::fs::rename(&tmp, path)?;
-    Ok(snap.slot)
+    Ok(())
 }
 
 impl BlockSnapshot {
