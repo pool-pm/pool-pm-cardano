@@ -278,14 +278,16 @@ describe('describeTx: tokens', () => {
 // --- dApps ---
 
 describe('describeTx: dApps', () => {
-  it('reads an order posted to a DEX as a swap on it', () => {
+  it('reads an order posted to a DEX as a swap in progress', () => {
     const intent = describeTx(
       tx({
         inputs: [input(ALICE_A, '110000000', { handle: 'alice' })],
         outputs: [output(MINSWAP_ORDER, '100000000'), output(ALICE_A, '9000000')],
       }),
     )!;
-    expect(intent.verb).toBe('SWAPPED');
+    // Present tense: this order hasn't executed. No datum here, so the assets go unnamed
+    // — but the tense is still the truth about it.
+    expect(intent.verb).toBe('SWAPPING');
     expect(intent.amount).toEqual({ quantity: '100000000' });
     expect(intent.via).toMatchObject({ label: 'MINSWAP', kind: 'app' });
     expect(intent.targets).toEqual([]);
@@ -300,7 +302,7 @@ describe('describeTx: dApps', () => {
         outputs: [output(MINSWAP_ORDER, '73000000'), output(BOB, '2000000')],
       }),
     )!;
-    expect(intent.verb).toBe('SWAPPED');
+    expect(intent.verb).toBe('SWAPPING');
     expect(intent.amount).toEqual({ quantity: '73000000' });
     expect(intent.via).toMatchObject({ label: 'MINSWAP' });
     expect(intent.targets).toEqual([]);

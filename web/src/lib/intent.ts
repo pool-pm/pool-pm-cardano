@@ -232,7 +232,11 @@ function byRecipient(outputs: TxOutputInfo[]): Recipient[] {
 function verbForDapp(dapp: Dapp): string | null {
   switch (dapp.role) {
     case 'order':
-      return isDex(dapp) ? 'SWAPPED' : 'ORDERED';
+      // Present tense: spending *into* an order script places an order, it doesn't
+      // execute one. The settlement that fills it is a later transaction, and says
+      // SWAPPED. This is the reading for orders whose datum we can't decode; the ones we
+      // can say the same thing with both assets named.
+      return isDex(dapp) ? 'SWAPPING' : 'ORDERED';
     case 'deposit':
       return 'DEPOSITED';
     case 'redeem':
