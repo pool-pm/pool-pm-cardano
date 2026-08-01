@@ -126,7 +126,10 @@ pub(super) fn decode_block_txs(
                                         .and_then(|s| s.current())
                                         .and_then(|s| s.decimals.get(&fp).copied())
                                         .unwrap_or(0);
-                                    let name = crate::model::display_asset_name(asset.name());
+                                    let name = state
+                                        .and_then(|s| s.current())
+                                        .and_then(|s| s.tickers.get(&fp).cloned())
+                                        .or_else(|| crate::model::display_asset_name(asset.name()));
                                     let tks = nftcdn.compute_ladder(&fp, "preview");
                                     Some(AssetInfo {
                                         fingerprint: fp,
@@ -183,12 +186,21 @@ pub(super) fn decode_block_txs(
             let catalyst = crate::pallas::extract_catalyst(tx, mainnet);
             let mut annotations = Vec::new();
             annotations.extend(crate::oracle::extract_oracle(tx));
-            annotations.extend(crate::mint::extract_mint(tx, nftcdn, |fp| {
-                state
-                    .and_then(|s| s.current())
-                    .and_then(|s| s.decimals.get(fp).copied())
-                    .unwrap_or(0)
-            }));
+            annotations.extend(crate::mint::extract_mint(
+                tx,
+                nftcdn,
+                |fp| {
+                    state
+                        .and_then(|s| s.current())
+                        .and_then(|s| s.decimals.get(fp).copied())
+                        .unwrap_or(0)
+                },
+                |fp| {
+                    state
+                        .and_then(|s| s.current())
+                        .and_then(|s| s.tickers.get(fp).cloned())
+                },
+            ));
 
             let votes = state
                 .map(|s| crate::mempool::extract_votes(tx, s))
@@ -238,10 +250,11 @@ pub(super) async fn resolve_block_inputs(
     // clone the per-snapshot lookup tables + take a db handle. Anything
     // synchronous; lock released before the slow db query so other readers
     // (homepage feed, every other SSE) aren't queued behind this one.
-    let (mut resolved, remaining_keys, decimals, handle_by_address, db) = {
+    let (mut resolved, remaining_keys, decimals, tickers, handle_by_address, db) = {
         let guard = chain_state.read().await;
         let snap = guard.current();
         let decimals = snap.map(|s| s.decimals.clone()).unwrap_or_default();
+        let tickers = snap.map(|s| s.tickers.clone()).unwrap_or_default();
         let handle_by_address = snap
             .map(|s| s.handle_by_address.clone())
             .unwrap_or_default();
@@ -271,7 +284,14 @@ pub(super) async fn resolve_block_inputs(
         } else {
             remaining = input_keys.clone();
         }
-        (resolved, remaining, decimals, handle_by_address, db)
+        (
+            resolved,
+            remaining,
+            decimals,
+            tickers,
+            handle_by_address,
+            db,
+        )
     };
 
     // Phase 2: db query for cache misses, with NO lock held.
@@ -323,6 +343,7 @@ pub(super) async fn resolve_block_inputs(
                     raw_assets,
                     |fp| decimals.get(fp).copied().unwrap_or(0),
                     |fp| nftcdn.compute_ladder(fp, "preview"),
+                    |fp| tickers.get(fp).cloned(),
                 );
             }
         }

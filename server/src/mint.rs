@@ -27,6 +27,7 @@ pub fn extract_mint(
     tx: &MultiEraTx<'_>,
     nftcdn: &NftcdnConfig,
     decimals_of: impl Fn(&str) -> u8,
+    ticker_of: impl Fn(&str) -> Option<String>,
 ) -> Option<TxAnnotation> {
     let mut minted = 0u32;
     let mut burned = 0u32;
@@ -65,6 +66,7 @@ pub fn extract_mint(
             assets,
             |fp| decimals_of(fp),
             |fp| nftcdn.compute_ladder(fp, "preview"),
+            |fp| ticker_of(fp),
         )
     };
     Some(TxAnnotation::Mint(MintInfo {

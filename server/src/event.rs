@@ -284,6 +284,7 @@ pub fn policy_assets_to_info(
     assets: &crate::model::PolicyAssets,
     mut decimals_of: impl FnMut(&str) -> u8,
     mut ladder_of: impl FnMut(&str) -> Vec<(u16, String)>,
+    mut ticker_of: impl FnMut(&str) -> Option<String>,
 ) -> Vec<AssetInfo> {
     let mut out = Vec::new();
     for (policy, tokens) in assets {
@@ -291,7 +292,10 @@ pub fn policy_assets_to_info(
             let fingerprint = crate::model::asset_fingerprint(policy, name);
             let decimals = decimals_of(&fingerprint);
             let tks = ladder_of(&fingerprint);
-            let name = crate::model::display_asset_name(name);
+            // A registered ticker wins over the on-chain name: it's stored only when it
+            // says something the name doesn't (`nutcoin` → `NUT`), or when there is no
+            // readable name at all.
+            let name = ticker_of(&fingerprint).or_else(|| crate::model::display_asset_name(name));
             out.push(AssetInfo {
                 fingerprint,
                 name,

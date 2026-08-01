@@ -65,6 +65,7 @@ pub async fn extract_tx(
                     .unwrap_or(0)
             },
             |fp| nftcdn.compute_ladder(fp, "preview"),
+            |fp| state.current().and_then(|s| s.tickers.get(fp).cloned()),
         );
         let handle = address
             .as_ref()
@@ -105,7 +106,10 @@ pub async fn extract_tx(
                                 .current()
                                 .and_then(|s| s.decimals.get(&fingerprint).copied())
                                 .unwrap_or(0);
-                            let name = crate::model::display_asset_name(asset.name());
+                            let name = state
+                                .current()
+                                .and_then(|s| s.tickers.get(&fingerprint).cloned())
+                                .or_else(|| crate::model::display_asset_name(asset.name()));
                             let tks = nftcdn.compute_ladder(&fingerprint, "preview");
                             Some(AssetInfo {
                                 fingerprint,
@@ -157,12 +161,17 @@ pub async fn extract_tx(
     let catalyst = crate::pallas::extract_catalyst(tx, mainnet);
     let mut annotations = Vec::new();
     annotations.extend(crate::oracle::extract_oracle(tx));
-    annotations.extend(crate::mint::extract_mint(tx, nftcdn, |fp| {
-        state
-            .current()
-            .and_then(|s| s.decimals.get(fp).copied())
-            .unwrap_or(0)
-    }));
+    annotations.extend(crate::mint::extract_mint(
+        tx,
+        nftcdn,
+        |fp| {
+            state
+                .current()
+                .and_then(|s| s.decimals.get(fp).copied())
+                .unwrap_or(0)
+        },
+        |fp| state.current().and_then(|s| s.tickers.get(fp).cloned()),
+    ));
 
     let mut block_tx = BlockTx {
         hash,

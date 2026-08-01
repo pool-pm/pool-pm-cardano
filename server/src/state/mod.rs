@@ -55,6 +55,14 @@ pub struct BlockSnapshot {
     pub drep_vote_counts: HashMap<Vec<u8>, DRepVotes>,
     /// Asset fingerprint → decimals (non-zero only, from CIP-26 + CIP-68)
     pub decimals: HashMap<String, u8>,
+    /// Asset fingerprint → the name to show *instead of* the asset's own on-chain name.
+    ///
+    /// Overrides only: a ticker that merely restates the asset name isn't stored, since
+    /// the client already falls back to that name. What's here is the part the chain
+    /// doesn't say — genuine renames (`nutcoin` → `NUT`), and assets whose on-chain name
+    /// is empty or isn't text, which would otherwise render with no name at all.
+    /// ~4,500 entries against ~7,000 decimals.
+    pub tickers: HashMap<String, String>,
     /// ADA Handle: address → list of handle names owned
     pub handle_by_address: HashMap<String, Vec<String>>,
     /// ADA Handle: handle name → owner address
@@ -625,7 +633,9 @@ impl BlockSnapshot {
 /// shape or semantics that rmp can't catch (it tolerates int-width changes, and encodes
 /// structs positionally, so an added or removed field silently shifts every field after it)
 /// — a mismatch is rejected on load and the state rebuilds from db-sync.
-const SNAPSHOT_FORMAT: u32 = 16;
+// 17: `BlockSnapshot::tickers` — CIP-26 ticker overrides for assets whose on-chain name
+//     is wrong or absent.
+const SNAPSHOT_FORMAT: u32 = 17;
 
 /// Serializes [`BlockSnapshot::asset_holdings`] **grouped by address**: a msgpack map of
 /// `AddrKey → [(AssetId, Held)]`, with the key `deref'd off its `Arc`` (the wire form carries
@@ -1759,13 +1769,20 @@ impl State {
             cip26::RegistryConfig::testnet()
         };
         let client = reqwest::Client::new();
-        let cip26_entries = cip26::fetch_decimals(&client, &registry).await;
-        for (fp, d) in cip26_entries {
-            decimals.entry(fp).or_insert(d); // CIP-68 takes precedence
+        let cip26_entries = cip26::fetch_registry(&client, &registry).await;
+        let mut tickers: HashMap<String, String> = HashMap::new();
+        for entry in cip26_entries {
+            if let Some(d) = entry.decimals {
+                decimals.entry(entry.fingerprint.clone()).or_insert(d); // CIP-68 takes precedence
+            }
+            if let Some(t) = entry.ticker {
+                tickers.insert(entry.fingerprint, t);
+            }
         }
         tracing::info!(
-            "{} total tokens with decimals (CIP-68 + CIP-26)",
-            decimals.len()
+            "{} total tokens with decimals (CIP-68 + CIP-26), {} ticker overrides",
+            decimals.len(),
+            tickers.len()
         );
 
         tracing::info!("Fetching ADA Handle owners...");
@@ -1837,6 +1854,7 @@ impl State {
             stakes,
             rewards,
             decimals,
+            tickers,
             handle_by_stake: build_handle_by_stake(&handle_by_address),
             handle_by_address,
             address_by_handle,
@@ -2091,6 +2109,7 @@ impl State {
             counts
         };
         let decimals = prev.decimals.clone();
+        let tickers = prev.tickers.clone();
         let handle_by_address = prev.handle_by_address.clone();
         let address_by_handle = prev.address_by_handle.clone();
         // Cloned forward (imbl O(1)); the sink's apply_handle_updates then applies this block's
@@ -2112,6 +2131,7 @@ impl State {
             stakes,
             rewards,
             decimals,
+            tickers,
             address_balances,
             asset_holdings,
             handle_by_address,

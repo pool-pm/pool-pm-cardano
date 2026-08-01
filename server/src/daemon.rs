@@ -423,7 +423,7 @@ async fn cip26_refresh_task(state: Arc<RwLock<State>>, mainnet: bool) {
             sha = sha.as_str(),
             "CIP-26 registry updated, refreshing decimals"
         );
-        let entries = cip26::fetch_decimals(&client, &config).await;
+        let entries = cip26::fetch_registry(&client, &config).await;
         if entries.is_empty() {
             continue;
         }
@@ -431,8 +431,12 @@ async fn cip26_refresh_task(state: Arc<RwLock<State>>, mainnet: bool) {
         let mut state = state.write().await;
         if let Some(snap) = state.current_mut() {
             let before = snap.decimals.len();
-            for (fp, d) in entries {
-                snap.decimals.entry(fp).or_insert(d);
+            for entry in entries {
+                if let Some(t) = entry.ticker {
+                    snap.tickers.insert(entry.fingerprint.clone(), t);
+                }
+                let Some(d) = entry.decimals else { continue };
+                snap.decimals.entry(entry.fingerprint).or_insert(d);
             }
             let added = snap.decimals.len() - before;
             if added > 0 {
