@@ -9,6 +9,7 @@
  * is an order, an output to its "Liquidity Pool" script is not.
  */
 import registry from './dapps.json';
+import { paymentCredential, stakeCredential } from './bech32';
 
 /** What a script is for. See `ROLES` in `scripts/build-dapps.mjs` for the mapping. */
 export type DappRole =
@@ -55,9 +56,56 @@ function resolve(entry: number[] | undefined): Dapp | undefined {
   return { name: app.name, category: app.category, sub: app.sub, role: role ?? null };
 }
 
-/** The dApp owning `address`, if it's a known script address. */
+/**
+ * Registry entries indexed by a credential of their address, `null` where two dApps
+ * share one. Built on first use rather than at import: almost every lookup is an exact
+ * hit, and decoding 1,600 bech32 addresses shouldn't sit on the first render.
+ */
+type CredIndex = Map<string, number[] | null>;
+let byPayCred: CredIndex | null = null;
+let byStakeCred: CredIndex | null = null;
+
+function indexBy(credential: (address: string) => string | null): CredIndex {
+  const index: CredIndex = new Map();
+  for (const [address, entry] of Object.entries(data.addr)) {
+    const cred = credential(address);
+    if (cred === null) continue;
+    if (!index.has(cred)) {
+      index.set(cred, entry);
+      continue;
+    }
+    const seen = index.get(cred)!;
+    if (seen === null || seen[0] === entry[0]) {
+      // Same dApp under two roles — keep the dApp, drop the role it can't decide.
+      if (seen !== null && seen[1] !== entry[1]) index.set(cred, [entry[0]]);
+    } else {
+      index.set(cred, null); // two dApps: the credential doesn't identify either
+    }
+  }
+  return index;
+}
+
+/**
+ * The dApp owning `address`, if it's a known script.
+ *
+ * The registry lists exact addresses, which under-matches badly: the same script is
+ * deployed both as a bare script address and as one with a staking part, and the
+ * registry usually lists only one of the two. So fall back to the script hash, then —
+ * because a dApp stakes all its script UTXOs to one credential — to the staking part.
+ * That last match identifies the project but not which of its contracts, so it comes
+ * back without a role rather than borrowing an unrelated one.
+ */
 export function dappForAddress(address: string): Dapp | undefined {
-  return resolve(data.addr[address]);
+  const exact = data.addr[address];
+  if (exact) return resolve(exact);
+
+  byPayCred ??= indexBy(paymentCredential);
+  const sameScript = byPayCred.get(paymentCredential(address) ?? '');
+  if (sameScript) return resolve(sameScript);
+
+  byStakeCred ??= indexBy(stakeCredential);
+  const sameProject = byStakeCred.get(stakeCredential(address) ?? '');
+  return sameProject ? resolve([sameProject[0]]) : undefined;
 }
 
 /** The dApp owning `policy` (hex), if it's a known mint policy. */
