@@ -22,6 +22,7 @@ import { nonChangeOutputs } from './change';
 import { stakeAddressOf } from './bech32';
 import { dappForAddress, dappForPolicy, isDex, type Dapp } from './dapps';
 import { parseMessage, type TaggedAction } from './cip20';
+import { readSettlement, type Side } from './settlement';
 import { formatTicker } from './layout';
 
 /** How a party's label was derived — drives its styling and colour. */
@@ -386,6 +387,23 @@ function describeTagged(tag: TaggedAction, sender: Party | undefined, recipients
       messageRead: true,
     };
   }
+  // A settled order states the whole swap — both sides, exactly — in the pool's balance
+  // change, and it belongs to the user who posted the order, not to the batcher that
+  // happened to submit it.
+  const settled = readSettlement(tx.inputs, tx.outputs, walletOf);
+  if (settled) {
+    return {
+      subject: partyForAddress(settled.beneficiary.address, settled.beneficiary.handle),
+      verb: tag.verb === 'EXECUTED' ? 'SWAPPED' : (tag.verb ?? 'SWAPPED'),
+      amount: sideAmount(settled.gave),
+      preposition: 'FOR',
+      targets: [{ amount: sideAmount(settled.got) }],
+      hiddenTargets: 0,
+      via: app,
+      messageRead: true,
+    };
+  }
+
   // No one wallet funded it — a batcher settling orders it holds, so the dApp is the
   // actor. How many orders it settled is the number that means something; the tx's ADA
   // total does not, being mostly liquidity pools rewritten and batcher change rather
@@ -411,6 +429,12 @@ function describeTagged(tag: TaggedAction, sender: Party | undefined, recipients
  */
 function ordersSettled(inputs: TxInput[]): number {
   return inputs.filter((i) => i.address && dappForAddress(i.address)?.role === 'order').length;
+}
+
+/** One side of a settled swap as a sentence amount: ADA carries no unit. */
+function sideAmount(side: Side): Amount {
+  if (!side.asset) return { quantity: side.quantity };
+  return { quantity: side.quantity, unit: side.asset.name, fingerprint: side.asset.fingerprint };
 }
 
 function sumLovelace(outputs: TxOutputInfo[]): bigint {
