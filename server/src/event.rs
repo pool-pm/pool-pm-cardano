@@ -80,6 +80,24 @@ pub struct BlockTx {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TxAnnotation {
     Oracle(OracleInfo),
+    Mint(MintInfo),
+}
+
+/// Tokens this tx created or destroyed — see `mint.rs`. The assets aren't repeated:
+/// a minted one is already in an output, and this says what the outputs can't.
+#[derive(Clone, Serialize)]
+pub struct MintInfo {
+    /// Distinct assets created.
+    pub minted: u32,
+    /// Distinct assets destroyed.
+    pub burned: u32,
+    /// CIP-14 fingerprints of the created assets, so the client can pick their
+    /// thumbnails out of the outputs. Capped (see `mint::MAX_FINGERPRINTS`) while
+    /// `minted` stays exact; a burn leaves none, since it has no output to point at.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fingerprints: Vec<String>,
+    /// The policies involved (hex), so the client can name the app that owns them.
+    pub policies: Vec<String>,
 }
 
 /// A recognized on-chain oracle price-feed update, decoded from an output's inline

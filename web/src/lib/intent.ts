@@ -17,10 +17,10 @@
  * raw input/output view. Adding a case here is always preferable to guessing: a
  * confident wrong sentence is worse than the raw view it replaces.
  */
-import type { AssetInfo, BlockTx, DelegationInfo, TxInput, TxOutputInfo } from './types';
+import type { AssetInfo, BlockTx, DelegationInfo, MintInfo, TxInput, TxOutputInfo } from './types';
 import { nonChangeOutputs } from './change';
 import { stakeAddressOf } from './bech32';
-import { dappForAddress, isDex, type Dapp } from './dapps';
+import { dappForAddress, dappForPolicy, isDex, type Dapp } from './dapps';
 import { formatTicker } from './layout';
 
 /** How a party's label was derived — drives its styling and colour. */
@@ -338,13 +338,56 @@ function describeTransfer(subject: Party, recipients: TxOutputInfo[], outputs: T
 }
 
 /**
+ * `$bob MINTED <thumbnails> ON JPG.STORE`, or `$bob BURNED 3 TOKENS`.
+ *
+ * A mint is otherwise invisible: the new token sits in an output looking exactly like
+ * one that was transferred, and since it usually lands back in the minter's own wallet
+ * the tx would read as `MOVED`. A burn is worse — nothing in the outputs records it.
+ */
+function describeMint(tx: BlockTx, mint: MintInfo, subject: Party | undefined, recipients: TxOutputInfo[]): Intent {
+  const app = mint.policies.map(dappForPolicy).find((d) => d !== undefined);
+  const via: Party | undefined = app ? { label: app.name.toUpperCase(), kind: 'app' } : undefined;
+
+  if (mint.minted === 0) {
+    // Nothing to show a thumbnail of — the assets are gone.
+    return {
+      subject,
+      verb: 'BURNED',
+      amount: { quantity: String(mint.burned), unit: mint.burned === 1 ? 'TOKEN' : 'TOKENS' },
+      targets: [],
+      hiddenTargets: 0,
+      via,
+    };
+  }
+
+  const created = new Set(mint.fingerprints ?? []);
+  // The minted assets are in *some* output — usually the minter's own, which the
+  // recipient filter has already dropped — so look across all of them.
+  const assets = tx.outputs.flatMap((o) => o.assets.filter((a) => created.has(a.fingerprint)));
+  // Minting straight to someone else is worth saying; minting to yourself isn't.
+  const target = recipients.length === 1 ? partyForAddress(recipients[0].address, recipients[0].handle) : undefined;
+  return {
+    subject,
+    verb: 'MINTED',
+    amount: assets.length > 0 ? undefined : { quantity: String(mint.minted), unit: 'TOKENS' },
+    assets: assets.length > 0 ? assets : undefined,
+    preposition: target ? 'TO' : undefined,
+    targets: target ? [{ party: target }] : [],
+    hiddenTargets: 0,
+    via: target ? undefined : via,
+  };
+}
+
+/**
  * The sentence for `tx`, or null when it can't be stated plainly — the caller then
  * renders the raw inputs and outputs.
  */
 export function describeTx(tx: BlockTx): Intent | null {
-  // Votes, Catalyst registrations and decoded protocol annotations each have a
-  // purpose-built rendering already; a generic sentence would only bury them.
-  if (tx.votes?.length || tx.catalyst || tx.annotations?.length) return null;
+  // Votes, Catalyst registrations and oracle updates each have a purpose-built
+  // rendering already; a generic sentence would only bury them.
+  const annotations = tx.annotations ?? [];
+  const mint = annotations.find((a) => a.kind === 'mint');
+  if (tx.votes?.length || tx.catalyst || annotations.some((a) => a.kind !== 'mint')) return null;
 
   const delegations = visibleDelegations(tx);
   if (delegations.length === 1) return describeDelegation(tx, delegations[0]);
@@ -352,6 +395,8 @@ export function describeTx(tx: BlockTx): Intent | null {
 
   const sender = soleSender(tx.inputs);
   const recipients = outsideRecipients(tx, sender?.wallet);
+
+  if (mint) return describeMint(tx, mint, sender?.party, recipients);
 
   const rewards = withdrawn(tx.inputs);
   if (rewards > 0n && recipients.length === 0) return describeWithdrawal(tx, rewards, sender?.party);

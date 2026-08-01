@@ -160,6 +160,7 @@ pub async fn extract_tx(
     let catalyst = crate::pallas::extract_catalyst(tx, mainnet);
     let mut annotations = Vec::new();
     annotations.extend(crate::oracle::extract_oracle(tx));
+    annotations.extend(crate::mint::extract_mint(tx));
 
     let mut block_tx = BlockTx {
         hash,

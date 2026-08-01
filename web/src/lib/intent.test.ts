@@ -256,6 +256,61 @@ describe('describeTx: dApps', () => {
   });
 });
 
+// --- Mints and burns ---
+
+describe('describeTx: mints', () => {
+  it('reads a mint that lands back in the minters own wallet', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '10000000', { handle: 'alice' })],
+        outputs: [output(ALICE_A, '9500000', [asset('asset1nft')])],
+        annotations: [{ kind: 'mint', minted: 1, burned: 0, fingerprints: ['asset1nft'], policies: ['aa'] }],
+      }),
+    )!;
+    expect(intent.subject).toMatchObject({ label: '$alice' });
+    expect(intent.verb).toBe('MINTED');
+    expect(intent.assets).toEqual([asset('asset1nft')]);
+    // Without the annotation this output is change, and the tx would read as MOVED.
+    expect(intent.amount).toBeUndefined();
+  });
+
+  it('names the recipient when the mint goes straight to someone else', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '10000000')],
+        outputs: [output(BOB, '1500000', [asset('asset1nft')])],
+        annotations: [{ kind: 'mint', minted: 1, burned: 0, fingerprints: ['asset1nft'], policies: ['aa'] }],
+      }),
+    )!;
+    expect(intent.verb).toBe('MINTED');
+    expect(intent.preposition).toBe('TO');
+    expect(intent.targets[0].party).toMatchObject({ id: BOB });
+  });
+
+  it('reads a burn, which leaves nothing in the outputs', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '10000000')],
+        outputs: [output(ALICE_A, '9500000')],
+        annotations: [{ kind: 'mint', minted: 0, burned: 3, policies: ['aa'] }],
+      }),
+    )!;
+    expect(intent.verb).toBe('BURNED');
+    expect(intent.amount).toEqual({ quantity: '3', unit: 'TOKENS' });
+  });
+
+  it('counts the assets when there are more than the server sent fingerprints for', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '10000000')],
+        outputs: [output(ALICE_A, '9500000')],
+        annotations: [{ kind: 'mint', minted: 500, burned: 0, fingerprints: [], policies: ['aa'] }],
+      }),
+    )!;
+    expect(intent.amount).toEqual({ quantity: '500', unit: 'TOKENS' });
+  });
+});
+
 // --- Withdrawals ---
 
 describe('describeTx: withdrawals', () => {

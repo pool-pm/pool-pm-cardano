@@ -210,9 +210,24 @@ export interface OracleInfo {
   valid_until?: number;
 }
 
+/** Tokens a tx created or destroyed. The assets themselves are in the outputs; this
+ * says what the outputs can't — that they came into existence, and under whose policy.
+ * A burn has no output at all, so without this it would read as a self-transfer. */
+export interface MintInfo {
+  /** Distinct assets created. */
+  minted: number;
+  /** Distinct assets destroyed. */
+  burned: number;
+  /** Fingerprints of the created assets, for picking their thumbnails out of the
+   * outputs. Capped server-side, so it can be shorter than `minted`. */
+  fingerprints?: string[];
+  /** Policy ids (hex) involved — `dappForPolicy` names the app behind a known one. */
+  policies: string[];
+}
+
 /** Protocol-specific description of a tx, discriminated by `kind`. Add a protocol by
  * adding a member here and rendering it in Transaction.svelte — no new BlockTx field. */
-export type TxAnnotation = { kind: 'oracle' } & OracleInfo;
+export type TxAnnotation = ({ kind: 'oracle' } & OracleInfo) | ({ kind: 'mint' } & MintInfo);
 
 export interface BlockTx {
   hash: string;

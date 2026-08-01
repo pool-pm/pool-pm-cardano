@@ -179,6 +179,7 @@ pub(super) fn decode_block_txs(
             let catalyst = crate::pallas::extract_catalyst(tx, mainnet);
             let mut annotations = Vec::new();
             annotations.extend(crate::oracle::extract_oracle(tx));
+            annotations.extend(crate::mint::extract_mint(tx));
 
             let votes = state
                 .map(|s| crate::mempool::extract_votes(tx, s))

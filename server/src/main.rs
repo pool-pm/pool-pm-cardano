@@ -13,6 +13,7 @@ mod event;
 mod event_bus;
 mod filter;
 mod mempool;
+mod mint;
 mod model;
 mod nftcdn;
 mod og;
