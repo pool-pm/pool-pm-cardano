@@ -21,6 +21,7 @@ import type { AssetInfo, BlockTx, DelegationInfo, MintInfo, TxInput, TxOutputInf
 import { nonChangeOutputs } from './change';
 import { stakeAddressOf } from './bech32';
 import { dappForAddress, dappForPolicy, isDex, type Dapp } from './dapps';
+import { parseMessage, type TaggedAction } from './cip20';
 import { formatTicker } from './layout';
 
 /** How a party's label was derived — drives its styling and colour. */
@@ -71,6 +72,9 @@ export interface Intent {
   hiddenTargets: number;
   /** The dApp the action happened on, rendered as a trailing `ON <APP>`. */
   via?: Party;
+  /** This sentence *is* the tx's CIP-20 message, read. The caller should not also
+   *  render the raw message line, which would say the same thing twice. */
+  messageRead?: boolean;
 }
 
 /** Kept short enough that `addr1q8e…s2rm` fits one line at 108px. */
@@ -312,6 +316,55 @@ function dappAction(recipients: TxOutputInfo[]): TxOutputInfo | null {
 }
 
 /**
+ * What a tx states about itself in its CIP-20 message, as a sentence.
+ *
+ * This outranks every structural signal, because it isn't inference: the dApp wrote
+ * `"Minswap: Market Order"` into the tx to say exactly that. It also reaches the cases
+ * structure can't — a batcher settling other people's orders has no single sender, and
+ * a contract too new for any registry still names itself.
+ *
+ * The amount comes from the dApp output when there is one, else from what left the
+ * wallet, so the loud line stays the number the reader cares about.
+ */
+function describeTagged(
+  tag: TaggedAction,
+  sender: Party | undefined,
+  recipients: TxOutputInfo[],
+  outputs: TxOutputInfo[],
+): Intent {
+  const app: Party = { label: tag.app.toUpperCase(), kind: 'app' };
+  const action = dappAction(recipients) ?? (recipients.length === 1 ? recipients[0] : null);
+  const target = action ? targetFor(action) : null;
+
+  if (sender) {
+    return {
+      subject: sender,
+      verb: tag.verb ?? 'USED',
+      amount: target?.amount ?? { quantity: sumLovelace(recipients).toString() },
+      assets: target?.assets,
+      targets: [],
+      hiddenTargets: 0,
+      via: app,
+      messageRead: true,
+    };
+  }
+  // No one wallet funded it — a batcher settling orders it holds. The dApp is the actor,
+  // and the number worth showing is what the tx paid out.
+  return {
+    subject: app,
+    verb: tag.verb ?? 'USED',
+    amount: { quantity: sumLovelace(outputs).toString() },
+    targets: [],
+    hiddenTargets: 0,
+    messageRead: true,
+  };
+}
+
+function sumLovelace(outputs: TxOutputInfo[]): bigint {
+  return outputs.reduce((sum, o) => sum + BigInt(o.lovelace), 0n);
+}
+
+/**
  * The default reading: value leaving one wallet for others. A single recipient gets the
  * full sentence with the amount on its own loud line; several recipients keep their
  * amounts next to their names, since there's no one number to headline.
@@ -424,6 +477,10 @@ export function describeTx(tx: BlockTx): Intent | null {
 
   const rewards = withdrawn(tx.inputs);
   if (rewards > 0n && recipients.length === 0) return describeWithdrawal(tx, rewards, sender?.party);
+
+  // What the tx says about itself beats anything inferred from its shape.
+  const tag = parseMessage(tx.message);
+  if (tag) return describeTagged(tag, sender?.party, recipients, tx.outputs);
 
   if (!sender) return null; // several wallets funded it — "who sent" has no answer
   return describeTransfer(sender.party, recipients, tx.outputs);

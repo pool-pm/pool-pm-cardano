@@ -113,6 +113,12 @@ export function dappForPolicy(policy: string): Dapp | undefined {
   return resolve(data.policy[policy]);
 }
 
+/** Every project name in the registry — the vocabulary a dApp naming itself in a tx
+ *  message is matched against. See `cip20.ts`. */
+export function registryAppNames(): string[] {
+  return data.apps.map((a) => a.name);
+}
+
 /** Any exchange — AMM, order book, aggregator, concentrated liquidity. */
 export function isDex(dapp: Dapp): boolean {
   return dapp.sub !== null && dapp.sub.includes('DEX');

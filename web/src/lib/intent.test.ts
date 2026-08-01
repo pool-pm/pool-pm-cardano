@@ -282,6 +282,75 @@ describe('describeTx: dApps', () => {
   });
 });
 
+// --- What the tx says about itself ---
+
+describe('describeTx: CIP-20 tags', () => {
+  it('reads the dApp and action out of the message', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '110000000', { handle: 'alice' })],
+        outputs: [output(MINSWAP_ORDER, '100000000'), output(ALICE_A, '9000000')],
+        message: ['Minswap: Limit Order'],
+      }),
+    )!;
+    expect(intent.subject).toMatchObject({ label: '$alice' });
+    // The message says "Limit Order", so it isn't the SWAPPED the address alone implies.
+    expect(intent.verb).toBe('ORDERED');
+    expect(intent.amount).toEqual({ quantity: '100000000' });
+    expect(intent.via).toMatchObject({ label: 'MINSWAP' });
+    expect(intent.messageRead).toBe(true);
+  });
+
+  it('names a dApp whose script address is unknown to the registry', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '110000000')],
+        outputs: [output(BOB, '100000000')],
+        message: ['Surf - Borrow - ADA / NIGHT'],
+      }),
+    )!;
+    expect(intent.verb).toBe('BORROWED');
+    expect(intent.via).toMatchObject({ label: 'SURF' });
+  });
+
+  it('reads a batcher settlement, which has no single sender', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '50000000'), input(BOB, '50000000')],
+        outputs: [output(CAROL, '99000000')],
+        message: ['Minswap: Order Executed'],
+      }),
+    )!;
+    // Structure alone gives up here; the message names the actor.
+    expect(intent.subject).toMatchObject({ label: 'MINSWAP', kind: 'app' });
+    expect(intent.verb).toBe('EXECUTED');
+  });
+
+  it('says USED when the dApp names itself but no action we have a word for', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '10000000')],
+        outputs: [output(BOB, '9000000')],
+        message: ['Minswap: MasterChef'],
+      }),
+    )!;
+    expect(intent.verb).toBe('USED');
+    expect(intent.via).toMatchObject({ label: 'MINSWAP' });
+  });
+
+  it('leaves a human memo to the ordinary reading', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '10000000')],
+        outputs: [output(BOB, '9000000')],
+        message: ['thanks for lunch'],
+      }),
+    )!;
+    expect(intent.verb).toBe('SENT');
+    expect(intent.messageRead).toBeUndefined();
+  });
+});
+
 // --- Mints and burns ---
 
 describe('describeTx: mints', () => {

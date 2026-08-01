@@ -336,7 +336,7 @@
       </div>
     </div>
   {/if}
-  {#if !folded && tx.message?.length}
+  {#if !folded && tx.message?.length && !intent?.messageRead}
     <div class="msg-section">
       {#each tx.message as line}
         <span class="msg-line">{line}</span>
