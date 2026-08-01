@@ -3,7 +3,8 @@
   import type { Amount, Party } from '../intent';
   import { describeTx } from '../intent';
   import { config, pool, drep, stake, address } from '../stores';
-  import { poolColor, formatTicker } from '../layout';
+  import { poolColor, formatTicker, TX_WIDTH } from '../layout';
+  import { fitFontSize } from '../fit.svelte';
   import { nonChangeOutputs as computeNonChangeOutputs } from '../change';
   import { stakeCredential, rewardCredential } from '../bech32';
   import { dappForAddress } from '../dapps';
@@ -162,25 +163,48 @@
   const shownTargets = $derived(intent ? intent.targets.slice(0, compact ? 2 : intent.targets.length) : []);
   const extraTargets = $derived(intent ? intent.hiddenTargets + (intent.targets.length - shownTargets.length) : 0);
 
-  // The headline sits in ~88px of usable width (108px tile less the panel padding), so
-  // its size steps down as the number grows: `(max characters, px)`, largest first.
-  // 12 ₳ is worth shouting; 1,234,567.89 ₳ just has to stay on one line.
-  const HEADLINE_STEPS: [number, number][] = [
-    [7, 17],
-    [9, 15],
-    [11, 13],
-    [13, 11],
-  ];
+  // The headline — the one line a reader should land on first — is set as large as the
+  // tile allows. `.sentence`'s horizontal padding, both sides; keep in step with the
+  // style block below.
+  const SENTENCE_PADDING = 20;
+  const HEADLINE_FAMILY = 'InterVariable, Inter, sans-serif';
+  const HEADLINE_WEIGHT = 700;
+  /** Past this it stops reading as an amount and starts reading as a banner. */
+  const HEADLINE_MAX_PX = 20;
+  /** Below this it's no longer the loudest thing on the tile, which defeats the point. */
   const HEADLINE_MIN_PX = 10;
 
-  /** Font size for a headline amount, from the plain text it renders as. */
-  function headlineSize(html: string): number {
-    // Measured on the rendered characters, so the tag markup `formatAda` emits for the
-    // decimals and the ₳ has to come off first.
-    const text = html.replace(/<[^>]*>/g, '');
-    for (const [maxChars, px] of HEADLINE_STEPS) if (text.length <= maxChars) return px;
-    return HEADLINE_MIN_PX;
-  }
+  /**
+   * The headline amount, and the size it fits at. `formatAda` emits markup for the
+   * decimals and the ₳, so the size is fitted to the text those tags render as. The
+   * decimals are set smaller (`.ada-dec`) than what's measured here, so a value with a
+   * fractional part lands a shade under the true maximum rather than over it.
+   */
+  const headline = $derived.by(() => {
+    const amount = intent?.amount;
+    if (!amount) return null;
+    const html = amount.unit ? formatAssetQuantity(amount.quantity) + ' ' + amount.unit : formatAda(amount.quantity);
+    const size = fitFontSize(
+      html.replace(/<[^>]*>/g, ''),
+      HEADLINE_FAMILY,
+      HEADLINE_WEIGHT,
+      TX_WIDTH - SENTENCE_PADDING,
+      {
+        min: HEADLINE_MIN_PX,
+        max: HEADLINE_MAX_PX,
+      },
+    );
+    return { html, size, plain: !!amount.unit };
+  });
+
+  // Re-fitting the headline changes the tile's height, and the grid packs to measured
+  // heights — so tell it to measure again (the webfont landing is the case that matters:
+  // every tile on screen resizes at once).
+  let card: HTMLElement | undefined = $state();
+  $effect(() => {
+    void headline?.size;
+    card?.dispatchEvent(new Event('remeasure', { bubbles: true }));
+  });
 
   // A party takes the feed subject's colour when it *is* the subject (so you can see
   // your own side of a tx at a glance); pools and DReps always carry their own.
@@ -242,14 +266,11 @@
 {/snippet}
 
 <!-- `headline` is the loud line under the verb; the small form sits next to a target. -->
-{#snippet amountLine(amount: Amount, headline: boolean)}
+{#snippet amountLine(amount: Amount)}
   {#if amount.unit}
-    {@const text = formatAssetQuantity(amount.quantity) + ' ' + amount.unit}
-    <span class="amount" class:headline style:font-size={headline ? `${headlineSize(text)}px` : null}>{text}</span>
+    <span class="amount">{formatAssetQuantity(amount.quantity)} {amount.unit}</span>
   {:else}
-    {@const html = formatAda(amount.quantity)}
-    <span class="amount" class:headline style:font-size={headline ? `${headlineSize(html)}px` : null}>{@html html}</span
-    >
+    <span class="amount">{@html formatAda(amount.quantity)}</span>
   {/if}
 {/snippet}
 
@@ -291,7 +312,7 @@
   {/if}
 {/snippet}
 
-<div class="tx-card" style:--thumb-size="{thumbSize}px">
+<div class="tx-card" bind:this={card} style:--thumb-size="{thumbSize}px">
   {#if tx.stake_change && !voteOnly}
     {@const negative = tx.stake_change.startsWith('-')}
     <div class="stake-change" style:color={negative ? 'oklch(0.7 0.25 25)' : 'oklch(0.7 0.25 145)'}>
@@ -348,12 +369,16 @@
     <div class="sentence">
       {#if intent.subject}{@render partyLine(intent.subject)}{/if}
       <span class="verb">{intent.verb}</span>
-      {#if intent.amount}{@render amountLine(intent.amount, true)}{/if}
+      {#if headline}
+        <span class="amount headline" style:font-size="{headline.size}px">
+          {#if headline.plain}{headline.html}{:else}{@html headline.html}{/if}
+        </span>
+      {/if}
       {#if intent.assets && $config}{@render assetThumbs(intent.assets, 0)}{/if}
       {#if intent.preposition}<span class="prep">{intent.preposition}</span>{/if}
       {#each shownTargets as target, ti}
         <div class="target">
-          {#if target.amount}{@render amountLine(target.amount, false)}{/if}
+          {#if target.amount}{@render amountLine(target.amount)}{/if}
           {#if target.assets && $config}{@render assetThumbs(target.assets, ti + 1)}{/if}
           {#if target.party}{@render partyLine(target.party)}{/if}
         </div>
@@ -663,10 +688,11 @@
     line-height: 1.2;
   }
 
-  /* The one line a casual reader should land on first. The size comes from
-     `headlineSize`, which fits it to the tile; nowrap keeps a long number one line
-     rather than breaking it across the thousands separator. */
+  /* The one line a casual reader should land on first. Its size is measured to fit the
+     tile (see `headline`), so the family and weight have to match what was measured;
+     nowrap keeps a long number on one line rather than breaking it at a separator. */
   .amount.headline {
+    font-family: InterVariable, Inter, sans-serif;
     font-weight: 700;
     white-space: nowrap;
   }

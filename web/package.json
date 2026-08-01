@@ -21,6 +21,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
+    "@chenglou/pretext": "^0.0.8",
     "@nftcdn/media-player": "^1.1.2"
   }
 }
