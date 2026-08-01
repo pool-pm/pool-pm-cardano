@@ -147,7 +147,7 @@ pub(super) fn decode_block_txs(
                     let handle = state
                         .and_then(|s| s.current())
                         .and_then(|s| s.handle_for(&address));
-                    let datum = crate::pallas::inline_datum_hex(output, &address);
+                    let datum = crate::pallas::datum_hex(tx, output, &address);
                     TxOutputInfo {
                         address,
                         lovelace,

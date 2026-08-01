@@ -13,6 +13,7 @@
  */
 import { readSwapOrder as readMinswapOrder } from './minswapOrder';
 import { readSundaeSwapOrder } from './sundaeOrder';
+import { readSpectrumOrder } from './spectrumOrder';
 
 /** One side of a swap: the asset's on-chain identity. ADA is `("", "")`. */
 export interface OrderAsset {
@@ -47,6 +48,8 @@ export function readOrder(dapp: string | undefined, datumHex: string | undefined
       return readMinswapOrder(datumHex);
     case 'SundaeSwap':
       return readSundaeSwapOrder(datumHex);
+    case 'Spectrum Finance':
+      return readSpectrumOrder(datumHex);
     default:
       return null;
   }

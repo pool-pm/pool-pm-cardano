@@ -82,12 +82,19 @@ fn unknown_label_line(label: u64, datum: &Metadatum) -> String {
     }
 }
 
-/// The output's inline datum as hex, for script addresses only.
+/// The output's datum as hex, for script addresses only.
 ///
 /// Gated on the address being a script because that's where protocol datums live, and
 /// sending every datum on the chain would be paying for data no reader can use. Measured
 /// over 200 blocks, script datums are ~360 bytes a block raw — around 1% of the feed.
-pub fn inline_datum_hex(
+///
+/// An output can carry its datum inline or reference it by hash, and which a protocol
+/// picks decides whether its orders are readable at all: WingRiders publishes 955 orders
+/// by hash for every 1 inline. But the datum is nearly always in the same transaction's
+/// witness set regardless — 155 of 156 sampled — so a hash is resolved there rather than
+/// given up on.
+pub fn datum_hex(
+    tx: &MultiEraTx<'_>,
     output: &pallas::ledger::traverse::MultiEraOutput<'_>,
     address: &str,
 ) -> Option<String> {
@@ -99,7 +106,11 @@ pub fn inline_datum_hex(
         // `KeepRaw` hands back the bytes as they appeared on chain, so nothing is
         // re-encoded and the client sees exactly what the protocol wrote.
         DatumOption::Data(data) => Some(hex::encode(data.0.raw_cbor())),
-        DatumOption::Hash(_) => None,
+        DatumOption::Hash(hash) => tx
+            .plutus_data()
+            .iter()
+            .find(|data| Hasher::<256>::hash(data.raw_cbor()) == hash)
+            .map(|data| hex::encode(data.raw_cbor())),
     }
 }
 
