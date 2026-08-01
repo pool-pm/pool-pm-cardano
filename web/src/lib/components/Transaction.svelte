@@ -404,6 +404,11 @@
         </span>
       {/if}
       {#if intent.assets && $config}{@render assetThumbs(intent.assets, 0)}{/if}
+      {#if intent.note}
+        {#each intent.note as line}
+          <span class="note">{line}</span>
+        {/each}
+      {/if}
       {#if intent.preposition}<span class="prep">{intent.preposition}</span>{/if}
       {#each shownTargets as target, ti}
         <div class="target">
@@ -779,6 +784,15 @@
 
   .party.former {
     text-decoration: line-through;
+  }
+
+  /* The tx's own words, when they are the point rather than a caption on a payment. */
+  .note {
+    font-size: 11px;
+    color: white;
+    text-align: center;
+    overflow-wrap: anywhere;
+    line-height: 1.3;
   }
 
   .target {

@@ -76,6 +76,9 @@ export interface Intent {
   /** This sentence *is* the tx's CIP-20 message, read. The caller should not also
    *  render the raw message line, which would say the same thing twice. */
   messageRead?: boolean;
+  /** The tx's own words, when they *are* the point — an on-chain note, a timestamp, an
+   *  attestation. Rendered in place of an amount, since no value went anywhere. */
+  note?: string[];
 }
 
 /** Kept short enough that `addr1q8e…s2rm` fits one line at 108px. */
@@ -446,9 +449,21 @@ function sumLovelace(outputs: TxOutputInfo[]): bigint {
  * full sentence with the amount on its own loud line; several recipients keep their
  * amounts next to their names, since there's no one number to headline.
  */
-function describeTransfer(subject: Party, recipients: Recipient[], outputs: TxOutputInfo[]): Intent {
+function describeTransfer(
+  subject: Party,
+  recipients: Recipient[],
+  outputs: TxOutputInfo[],
+  message?: string[],
+): Intent {
   if (recipients.length === 0) {
-    // Everything came back to the sender: a wallet reorganising its own UTXOs.
+    // Everything came back to the sender. If the tx also carries metadata, that metadata
+    // is why it exists — nothing was paid to anyone, and leading with the ADA describes
+    // the mechanism while hiding the purpose. An on-chain timestamp or attestation moves
+    // value only because a transaction has to.
+    if (message?.length) {
+      return { subject, verb: 'WROTE', note: message, targets: [], hiddenTargets: 0, messageRead: true };
+    }
+    // Otherwise it really is just a wallet reorganising its own UTXOs.
     const moved = outputs.reduce((sum, o) => sum + BigInt(o.lovelace), 0n);
     return { subject, verb: 'MOVED', amount: { quantity: moved.toString() }, targets: [], hiddenTargets: 0 };
   }
@@ -573,7 +588,7 @@ export function describeTx(tx: BlockTx): Intent | null {
   if (tag) return describeTagged(tag, sender?.party, recipients, tx);
 
   if (!sender) return null; // several wallets funded it — "who sent" has no answer
-  return describeTransfer(sender.party, recipients, tx.outputs);
+  return describeTransfer(sender.party, recipients, tx.outputs, tx.message);
 }
 
 /**

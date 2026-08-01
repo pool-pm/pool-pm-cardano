@@ -47,10 +47,39 @@ fn metadata_lines(entries: &[(u64, &Metadatum)]) -> Vec<String> {
             // Catalyst registration (+witness) is surfaced structurally, not as text.
             CATALYST_REGISTRATION | CATALYST_WITNESS => {}
             SUNDAE_GOVERNANCE => lines.push(SUNDAE_LABEL.to_string()),
-            _ => lines.push(format!("metadata {label}")),
+            _ => lines.push(unknown_label_line(*label, datum)),
         }
     }
     lines
+}
+
+/// How many of a metadata map's keys to name before it stops being a summary.
+const MAX_METADATA_KEYS: usize = 3;
+
+/// A line for a label with no known meaning.
+///
+/// `metadata 1` names the envelope and says nothing about the contents, which for a tx
+/// whose whole purpose is the metadata leaves nothing to read at all. The map's own keys
+/// are the closest thing to a self-description on offer — label 1's `timestamp` /
+/// `absolute_slot` says what those ~9,800 txs a month are for far better than its number
+/// does — so name them when they're text, and fall back to the label when they aren't.
+fn unknown_label_line(label: u64, datum: &Metadatum) -> String {
+    let Metadatum::Map(entries) = datum else {
+        return format!("metadata {label}");
+    };
+    let keys: Vec<&str> = entries
+        .iter()
+        .filter_map(|(key, _)| match key {
+            Metadatum::Text(k) if !k.is_empty() => Some(k.as_str()),
+            _ => None,
+        })
+        .take(MAX_METADATA_KEYS)
+        .collect();
+    if keys.is_empty() {
+        format!("metadata {label}")
+    } else {
+        keys.join(" ")
+    }
 }
 
 /// Extract a CIP-36/CIP-15 Catalyst voting registration (label 61284). The
@@ -437,6 +466,37 @@ mod tests {
     fn unparseable_674_falls_back_to_generic() {
         let lines = metadata_lines(&[(CIP20_MESSAGE, &opaque())]);
         assert_eq!(lines, vec!["metadata 674"]);
+    }
+
+    /// An unknown label's own keys say more than its number. Label 1 carries a timestamp
+    /// on ~9,800 txs a month, and "metadata 1" says nothing about any of them.
+    #[test]
+    fn unknown_label_is_named_by_its_keys() {
+        let datum = Metadatum::Map(
+            vec![
+                (
+                    Metadatum::Text("timestamp".into()),
+                    Metadatum::Text("1785570471".into()),
+                ),
+                (
+                    Metadatum::Text("absolute_slot".into()),
+                    Metadatum::Text("194004180".into()),
+                ),
+            ]
+            .into(),
+        );
+        assert_eq!(
+            metadata_lines(&[(1, &datum)]),
+            vec!["timestamp absolute_slot"]
+        );
+    }
+
+    /// Keys that aren't text (a map keyed by integers) leave nothing to name it by.
+    #[test]
+    fn unknown_label_without_text_keys_keeps_the_number() {
+        let datum =
+            Metadatum::Map(vec![(Metadatum::Int(0.into()), Metadatum::Text("F".into()))].into());
+        assert_eq!(metadata_lines(&[(100, &datum)]), vec!["metadata 100"]);
     }
 
     #[test]

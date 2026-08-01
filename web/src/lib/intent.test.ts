@@ -219,6 +219,23 @@ describe('describeTx: transfers', () => {
     expect(intent.amount).toEqual({ quantity: '5000000' });
   });
 
+  it('leads with the metadata when a tx moved nothing but wrote something', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '10000000')],
+        outputs: [output(ALICE_A, '9800000')],
+        // Label 1's own keys, which is what these ~9,800 txs a month are actually for.
+        message: ['timestamp absolute_slot'],
+      }),
+    )!;
+    // "MOVED 9.8 ₳" describes the mechanism and hides the purpose: nothing was paid to
+    // anyone, and the tx exists to write this.
+    expect(intent.verb).toBe('WROTE');
+    expect(intent.note).toEqual(['timestamp absolute_slot']);
+    expect(intent.amount).toBeUndefined();
+    expect(intent.messageRead).toBe(true);
+  });
+
   it('reads a self-transfer as a move', () => {
     const intent = describeTx(
       tx({
