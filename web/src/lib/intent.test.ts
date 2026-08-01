@@ -333,7 +333,8 @@ describe('describeTx: dApps', () => {
     // From the datum, not the 657.2 ₳ output — which also holds the batcher fee.
     expect(intent.amount).toEqual({ quantity: '653198244' });
     expect(intent.preposition).toBe('FOR');
-    expect(intent.targets[0].amount).toEqual({ quantity: '3752804596', unit: 'WorldMobileTokenX' });
+    // Named, not counted: the datum's minimum is a slippage floor, not what will arrive.
+    expect(intent.targets[0].amount).toEqual({ unit: 'WorldMobileTokenX' });
     expect(intent.via).toMatchObject({ label: 'MINSWAP' });
   });
 

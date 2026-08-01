@@ -163,6 +163,18 @@
   const shownTargets = $derived(intent ? intent.targets.slice(0, compact ? 2 : intent.targets.length) : []);
   const extraTargets = $derived(intent ? intent.hiddenTargets + (intent.targets.length - shownTargets.length) : 0);
 
+  /**
+   * An amount as it renders. A quantity with no unit is ADA and gets `formatAda`'s
+   * markup; a unit with no quantity is an asset named without one — a swap's wanted
+   * side, where the only figure on offer is a slippage floor rather than what will
+   * actually arrive.
+   */
+  function amountText(amount: Amount): string {
+    if (!amount.unit) return formatAda(amount.quantity ?? '0');
+    if (amount.quantity === undefined) return amount.unit;
+    return formatAssetQuantity(amount.quantity) + ' ' + amount.unit;
+  }
+
   // The headline — the one line a reader should land on first — is set as large as the
   // tile allows. `.sentence`'s horizontal padding, both sides; keep in step with the
   // style block below.
@@ -183,7 +195,7 @@
   const headline = $derived.by(() => {
     const amount = intent?.amount;
     if (!amount) return null;
-    const html = amount.unit ? formatAssetQuantity(amount.quantity) + ' ' + amount.unit : formatAda(amount.quantity);
+    const html = amountText(amount);
     const size = fitFontSize(
       html.replace(/<[^>]*>/g, ''),
       HEADLINE_FAMILY,
@@ -294,9 +306,9 @@
 <!-- `headline` is the loud line under the verb; the small form sits next to a target. -->
 {#snippet amountLine(amount: Amount)}
   {#if amount.unit}
-    <span class="amount">{formatAssetQuantity(amount.quantity)} {amount.unit}</span>
+    <span class="amount">{amountText(amount)}</span>
   {:else}
-    <span class="amount">{@html formatAda(amount.quantity)}</span>
+    <span class="amount">{@html amountText(amount)}</span>
   {/if}
 {/snippet}
 

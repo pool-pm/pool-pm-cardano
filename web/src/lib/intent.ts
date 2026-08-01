@@ -43,9 +43,11 @@ export interface Party {
   former?: boolean;
 }
 
-/** A quantity in the sentence. `unit` absent means ADA and `quantity` is lovelace. */
+/** A quantity in the sentence. `unit` absent means ADA and `quantity` is lovelace.
+ *  `quantity` absent names an asset without one — a swap's wanted side, where the only
+ *  figure available is a slippage floor rather than what will actually arrive. */
 export interface Amount {
-  quantity: string;
+  quantity?: string;
   /** Token name for non-ADA amounts. */
   unit?: string;
   /** Asset fingerprint, so the amount can link to its asset page. */
@@ -345,30 +347,36 @@ function targetFor({ output, party }: Recipient): IntentTarget {
  * in a later block and reads `SWAPPED`, with the amount that was actually filled rather
  * than the minimum asked for.
  */
-function describePendingSwap(subject: Party, order: SwapOrder, app: Party): Intent {
+function describePendingSwap(subject: Party, order: SwapOrder, output: TxOutputInfo, app: Party): Intent {
   return {
     subject,
     verb: 'SWAPPING',
-    amount: sideOfSwap(order.give, order.giveAmount),
+    amount: offered(order, output),
+    // The wanted side is named but not counted. The datum's `minimumReceived` is a
+    // slippage floor, not a forecast — the fill is nearly always better — so putting a
+    // figure on it would claim a precision the order doesn't have. The settlement says
+    // what actually arrived.
     preposition: 'FOR',
-    targets: [{ amount: sideOfSwap(order.want, order.wantAtLeast) }],
+    targets: [{ amount: { unit: assetTicker(order.want) } }],
     hiddenTargets: 0,
     via: app,
   };
 }
 
 /**
- * One side of a pending swap as a sentence amount.
+ * What the order puts in, exactly.
  *
- * A token's amount is left raw and unitless. The datum gives an integer in the asset's
- * smallest unit, and the decimals needed to scale it aren't in the transaction — the
- * wanted asset appears nowhere in it. Showing an unscaled number under a ticker would
- * read as a quantity that is wrong by orders of magnitude, so it goes without one until
- * the decimals reach the client.
+ * ADA comes from the datum, since the order UTXO's lovelace also holds the batcher fee
+ * and a deposit that come back. A token comes from the output instead: the UTXO holds
+ * exactly the token being swapped — there's no fee taken in it — and the server has
+ * already scaled it by the asset's decimals and named it, which the datum's raw integer
+ * would need those decimals to do.
  */
-function sideOfSwap(asset: PoolAsset, amount: bigint): Amount {
-  if (isAda(asset)) return { quantity: amount.toString() };
-  return { quantity: amount.toString(), unit: assetTicker(asset) };
+function offered(order: SwapOrder, output: TxOutputInfo): Amount {
+  if (isAda(order.give)) return { quantity: order.giveAmount.toString() };
+  const asset = output.assets.length === 1 ? output.assets[0] : undefined;
+  if (asset) return { quantity: asset.quantity, unit: asset.name, fingerprint: asset.fingerprint };
+  return { quantity: order.giveAmount.toString(), unit: assetTicker(order.give) };
 }
 
 /** CIP-67 label prefixes, as the server's `display_asset_name` strips them. */
@@ -643,7 +651,7 @@ export function describeTx(tx: BlockTx): Intent | null {
   if (sender) {
     for (const recipient of recipients) {
       const order = readSwapOrder(recipient.output.datum);
-      if (order) return describePendingSwap(sender.party, order, recipient.party);
+      if (order) return describePendingSwap(sender.party, order, recipient.output, recipient.party);
     }
   }
 
