@@ -105,10 +105,7 @@ pub async fn extract_tx(
                                 .current()
                                 .and_then(|s| s.decimals.get(&fingerprint).copied())
                                 .unwrap_or(0);
-                            let name = std::str::from_utf8(asset.name())
-                                .ok()
-                                .filter(|s| !s.is_empty())
-                                .map(String::from);
+                            let name = crate::model::display_asset_name(asset.name());
                             let tks = nftcdn.compute_ladder(&fingerprint, "preview");
                             Some(AssetInfo {
                                 fingerprint,

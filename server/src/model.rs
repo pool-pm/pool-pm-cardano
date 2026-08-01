@@ -205,6 +205,38 @@ pub const CIP67_LABEL_001: &[u8] = &[0x00, 0x00, 0x10, 0x70]; // (001) SubHandle
 pub const CIP67_LABEL_100: &[u8] = &[0x00, 0x06, 0x43, 0xb0]; // (100) CIP-68 reference NFT
 pub const CIP67_LABEL_222: &[u8] = &[0x00, 0x0d, 0xe1, 0x40]; // (222) CIP-68 user NFT
 
+/// CIP-67 label prefixes for CIP-68 user tokens.
+pub const CIP67_LABEL_333: &[u8] = &[0x00, 0x14, 0xdf, 0x10]; // (333) fungible
+pub const CIP67_LABEL_444: &[u8] = &[0x00, 0x1b, 0xc2, 0x80]; // (444) rich fungible
+
+/// Every CIP-67 label a user-held asset can carry.
+const CIP67_LABELS: [&[u8]; 6] = [
+    CIP67_LABEL_000,
+    CIP67_LABEL_001,
+    CIP67_LABEL_100,
+    CIP67_LABEL_222,
+    CIP67_LABEL_333,
+    CIP67_LABEL_444,
+];
+
+/// The asset name to show a reader, or `None` when there isn't one worth showing.
+///
+/// This is the raw on-chain name, minus its CIP-67 label if it has one: a CIP-68 token's
+/// name is prefixed with 4 binary bytes that aren't part of what it's called, and
+/// rendering them turns a readable ticker into mojibake. Names that aren't UTF-8 at all
+/// (a hash, a binary id) have nothing to show, so they get `None` rather than a mangled
+/// approximation.
+pub fn display_asset_name(name: &[u8]) -> Option<String> {
+    let bare = CIP67_LABELS
+        .iter()
+        .find(|label| name.starts_with(label))
+        .map_or(name, |label| &name[label.len()..]);
+    std::str::from_utf8(bare)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
 /// Check if a policy ID is an ADA Handle policy.
 pub fn is_handle_policy(policy_id: &[u8]) -> bool {
     HANDLE_POLICIES.iter().any(|p| p == policy_id)

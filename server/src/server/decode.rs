@@ -126,10 +126,7 @@ pub(super) fn decode_block_txs(
                                         .and_then(|s| s.current())
                                         .and_then(|s| s.decimals.get(&fp).copied())
                                         .unwrap_or(0);
-                                    let name = std::str::from_utf8(asset.name())
-                                        .ok()
-                                        .filter(|s| !s.is_empty())
-                                        .map(String::from);
+                                    let name = crate::model::display_asset_name(asset.name());
                                     let tks = nftcdn.compute_ladder(&fp, "preview");
                                     Some(AssetInfo {
                                         fingerprint: fp,

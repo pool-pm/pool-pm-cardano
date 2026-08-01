@@ -118,16 +118,55 @@ describe('describeTx: transfers', () => {
     expect(intent.targets[0].party).toMatchObject({ label: '$bob', kind: 'handle' });
   });
 
-  it('treats payment addresses sharing a stake credential as one sender', () => {
+  it('names the account when the sender spent from several of its addresses', () => {
     const intent = describeTx(
       tx({
         inputs: [input(ALICE_A, '4000000'), input(ALICE_B, '9000000')],
         outputs: [output(BOB, '12000000')],
       }),
     )!;
-    // Alice's larger input is the one worth naming.
-    expect(intent.subject).toMatchObject({ id: ALICE_B });
+    // Two addresses, one account — the account is what they share.
+    expect(intent.subject).toMatchObject({ id: ALICE_STAKE, label: 'stake1u9…mky2' });
     expect(intent.verb).toBe('SENT');
+  });
+
+  it('finds the handle on any address of the sending account', () => {
+    const intent = describeTx(
+      tx({
+        // The handle sits on the address that contributed least.
+        inputs: [input(ALICE_A, '4000000', { handle: 'alice' }), input(ALICE_B, '9000000')],
+        outputs: [output(BOB, '12000000')],
+      }),
+    )!;
+    expect(intent.subject).toMatchObject({ label: '$alice' });
+  });
+
+  it('merges recipients that share a stake credential and sums them', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(BOB, '30000000')],
+        // Three addresses of Alice's one account.
+        outputs: [output(ALICE_A, '5000000'), output(ALICE_B, '9000000'), output(ALICE_C, '2000000')],
+      }),
+    )!;
+    expect(intent.targets).toHaveLength(1);
+    expect(intent.amount).toEqual({ quantity: '16000000' });
+    expect(intent.targets[0].party).toMatchObject({ id: ALICE_STAKE });
+  });
+
+  it('names a merged recipient by the account handle when it has one', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(BOB, '30000000')],
+        outputs: [output(ALICE_A, '5000000'), output(ALICE_B, '9000000', [], 'alice')],
+      }),
+    )!;
+    expect(intent.targets[0].party).toMatchObject({ label: '$alice' });
+  });
+
+  it('keeps naming a lone recipient by its own address', () => {
+    const intent = describeTx(tx({ inputs: [input(BOB, '30000000')], outputs: [output(ALICE_A, '5000000')] }))!;
+    expect(intent.targets[0].party).toMatchObject({ id: ALICE_A });
   });
 
   it('gives up when two wallets funded the tx', () => {

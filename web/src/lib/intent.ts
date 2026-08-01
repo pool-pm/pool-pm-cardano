@@ -141,20 +141,32 @@ interface Sender {
 }
 
 /**
- * The single wallet that funded this tx, or null when more than one did. Among the
- * wallet's payment addresses, the one that contributed most is the one worth naming.
+ * The single wallet that funded this tx, or null when more than one did.
+ *
+ * Among the wallet's payment addresses the one that contributed most is the one worth
+ * naming — but the handle is looked for across all of them, since the address holding
+ * the ADA Handle is rarely the address holding the funds.
  */
 function soleSender(inputs: TxInput[]): Sender | null {
-  const wallets = new Map<string, TxInput>();
+  const wallets = new Map<string, { input: TxInput; handle?: string; addresses: Set<string> }>();
   for (const input of inputs) {
     if (isWithdrawal(input) || !input.address) continue;
     const wallet = walletOf(input.address);
     const seen = wallets.get(wallet);
-    if (!seen || BigInt(input.lovelace) > BigInt(seen.lovelace)) wallets.set(wallet, input);
+    if (!seen) {
+      wallets.set(wallet, { input, handle: input.handle, addresses: new Set([input.address]) });
+      continue;
+    }
+    seen.addresses.add(input.address);
+    seen.handle ??= input.handle;
+    if (BigInt(input.lovelace) > BigInt(seen.input.lovelace)) seen.input = input;
   }
   if (wallets.size !== 1) return null;
-  const [wallet, input] = wallets.entries().next().value!;
-  return { party: partyForAddress(input.address!, input.handle), wallet };
+  const [wallet, { input, handle, addresses }] = wallets.entries().next().value!;
+  // Spending from several addresses of one account: the account is what they share, so
+  // name that rather than picking one address to stand for the rest.
+  const party = addresses.size === 1 ? partyForAddress(input.address!, handle) : partyForAddress(wallet, handle);
+  return { party, wallet };
 }
 
 /** Sum the lovelace withdrawn from reward accounts by this tx. */
@@ -162,19 +174,45 @@ function withdrawn(inputs: TxInput[]): bigint {
   return inputs.filter(isWithdrawal).reduce((sum, i) => sum + BigInt(i.lovelace), 0n);
 }
 
-/** Merge outputs that go to the same address — one recipient, one line. */
-function byRecipient(outputs: TxOutputInfo[]): TxOutputInfo[] {
-  const merged = new Map<string, TxOutputInfo>();
+/** Outputs merged into one recipient, plus how that recipient should be named. */
+interface Recipient {
+  output: TxOutputInfo;
+  party: Party;
+}
+
+/**
+ * Merge outputs that go to the same *account* — not the same address.
+ *
+ * A wallet spreads a payment across several of its own payment addresses routinely, and
+ * listing them separately says "paid three people" when one was paid. So outputs sharing
+ * a stake credential collapse into one recipient with the values summed, named by the
+ * account's ADA Handle if it has one, and by the stake address itself otherwise — which
+ * is the thing they actually have in common. A recipient that is only one address keeps
+ * being named by that address, since that's the more specific truth.
+ */
+function byRecipient(outputs: TxOutputInfo[]): Recipient[] {
+  const merged = new Map<string, { output: TxOutputInfo; addresses: Set<string>; handle?: string }>();
   for (const output of outputs) {
-    const seen = merged.get(output.address);
+    const account = walletOf(output.address);
+    const seen = merged.get(account);
     if (!seen) {
-      merged.set(output.address, { ...output, assets: [...output.assets] });
+      merged.set(account, {
+        output: { ...output, assets: [...output.assets] },
+        addresses: new Set([output.address]),
+        handle: output.handle,
+      });
       continue;
     }
-    seen.lovelace = (BigInt(seen.lovelace) + BigInt(output.lovelace)).toString();
-    seen.assets.push(...output.assets);
+    seen.output.lovelace = (BigInt(seen.output.lovelace) + BigInt(output.lovelace)).toString();
+    seen.output.assets.push(...output.assets);
+    seen.addresses.add(output.address);
+    seen.handle ??= output.handle;
   }
-  return [...merged.values()];
+
+  return [...merged.entries()].map(([account, { output, addresses, handle }]) => ({
+    output,
+    party: addresses.size === 1 ? partyForAddress(output.address, handle) : partyForAddress(account, handle),
+  }));
 }
 
 // --- Verbs ---
@@ -279,9 +317,8 @@ function describeWithdrawal(tx: BlockTx, amount: bigint, sender?: Party): Intent
   return { subject, verb: 'WITHDREW', amount: { quantity: amount.toString() }, targets: [], hiddenTargets: 0 };
 }
 
-/** Build the target for one recipient output, headlining tokens over min-UTXO dust. */
-function targetFor(output: TxOutputInfo): IntentTarget {
-  const party = partyForAddress(output.address, output.handle);
+/** Build the target for one recipient, headlining tokens over min-UTXO dust. */
+function targetFor({ output, party }: Recipient): IntentTarget {
   const lovelace = BigInt(output.lovelace);
   const carriesTokens = output.assets.length > 0;
   return {
@@ -303,16 +340,16 @@ function targetFor(output: TxOutputInfo): IntentTarget {
  * Null when no recipient is a dApp with a verb of its own, when several are (the tx does
  * more than one thing), or when the dApp's share doesn't dominate.
  */
-function dappAction(recipients: TxOutputInfo[]): TxOutputInfo | null {
-  const actions = recipients.filter((o) => {
-    const dapp = dappForAddress(o.address);
+function dappAction(recipients: Recipient[]): Recipient | null {
+  const actions = recipients.filter((r) => {
+    const dapp = dappForAddress(r.output.address);
     return dapp !== undefined && verbForDapp(dapp) !== null;
   });
   if (actions.length !== 1) return null;
   const action = actions[0];
-  const rest = recipients.reduce((sum, o) => (o === action ? sum : sum + BigInt(o.lovelace)), 0n);
+  const rest = recipients.reduce((sum, r) => (r === action ? sum : sum + BigInt(r.output.lovelace)), 0n);
   // Tokens carry the value in a token order, where the ADA is only min-UTXO.
-  return BigInt(action.lovelace) > rest || action.assets.length > 0 ? action : null;
+  return BigInt(action.output.lovelace) > rest || action.output.assets.length > 0 ? action : null;
 }
 
 /**
@@ -329,7 +366,7 @@ function dappAction(recipients: TxOutputInfo[]): TxOutputInfo | null {
 function describeTagged(
   tag: TaggedAction,
   sender: Party | undefined,
-  recipients: TxOutputInfo[],
+  recipients: Recipient[],
   outputs: TxOutputInfo[],
 ): Intent {
   const app: Party = { label: tag.app.toUpperCase(), kind: 'app' };
@@ -339,7 +376,7 @@ function describeTagged(
   if (sender) {
     // Nothing left the wallet — a cancellation, or a settlement that only returns funds
     // — so the tx's own output total is the only number there is to show.
-    const moved = recipients.length > 0 ? sumLovelace(recipients) : sumLovelace(outputs);
+    const moved = recipients.length > 0 ? sumLovelace(recipients.map((r) => r.output)) : sumLovelace(outputs);
     return {
       subject: sender,
       verb: tag.verb ?? 'USED',
@@ -374,7 +411,7 @@ function sumLovelace(outputs: TxOutputInfo[]): bigint {
  * full sentence with the amount on its own loud line; several recipients keep their
  * amounts next to their names, since there's no one number to headline.
  */
-function describeTransfer(subject: Party, recipients: TxOutputInfo[], outputs: TxOutputInfo[]): Intent {
+function describeTransfer(subject: Party, recipients: Recipient[], outputs: TxOutputInfo[]): Intent {
   if (recipients.length === 0) {
     // Everything came back to the sender: a wallet reorganising its own UTXOs.
     const moved = outputs.reduce((sum, o) => sum + BigInt(o.lovelace), 0n);
@@ -387,7 +424,7 @@ function describeTransfer(subject: Party, recipients: TxOutputInfo[], outputs: T
     const target = targetFor(action);
     return {
       subject,
-      verb: verbForDapp(dappForAddress(action.address)!)!,
+      verb: verbForDapp(dappForAddress(action.output.address)!)!,
       amount: target.amount,
       assets: target.assets,
       targets: [],
@@ -409,7 +446,7 @@ function describeTransfer(subject: Party, recipients: TxOutputInfo[], outputs: T
     };
   }
 
-  const sorted = [...recipients].sort((a, b) => (BigInt(b.lovelace) > BigInt(a.lovelace) ? 1 : -1));
+  const sorted = [...recipients].sort((a, b) => (BigInt(b.output.lovelace) > BigInt(a.output.lovelace) ? 1 : -1));
   return {
     subject,
     verb: 'SENT',
@@ -430,7 +467,7 @@ function tokenUnit(count: number): string {
  * one that was transferred, and since it usually lands back in the minter's own wallet
  * the tx would read as `MOVED`. A burn is worse — nothing in the outputs records it.
  */
-function describeMint(mint: MintInfo, subject: Party | undefined, recipients: TxOutputInfo[]): Intent {
+function describeMint(mint: MintInfo, subject: Party | undefined, recipients: Recipient[]): Intent {
   const app = mint.policies.map(dappForPolicy).find((d) => d !== undefined);
   const via: Party | undefined = app ? { label: app.name.toUpperCase(), kind: 'app' } : undefined;
 
@@ -450,7 +487,7 @@ function describeMint(mint: MintInfo, subject: Party | undefined, recipients: Tx
 
   const assets = mint.created ?? [];
   // Minting straight to someone else is worth saying; minting to yourself isn't.
-  const target = recipients.length === 1 ? partyForAddress(recipients[0].address, recipients[0].handle) : undefined;
+  const target = recipients.length === 1 ? recipients[0].party : undefined;
   return {
     subject,
     verb: 'MINTED',
@@ -500,7 +537,7 @@ export function describeTx(tx: BlockTx): Intent | null {
  * sentence: value landing on another payment address of the sender's own account hasn't
  * been sent anywhere.
  */
-function outsideRecipients(tx: BlockTx, wallet?: string): TxOutputInfo[] {
+function outsideRecipients(tx: BlockTx, wallet?: string): Recipient[] {
   const merged = byRecipient(nonChangeOutputs(tx.inputs, tx.outputs));
-  return wallet === undefined ? merged : merged.filter((o) => walletOf(o.address) !== wallet);
+  return wallet === undefined ? merged : merged.filter((r) => walletOf(r.output.address) !== wallet);
 }

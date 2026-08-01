@@ -291,10 +291,7 @@ pub fn policy_assets_to_info(
             let fingerprint = crate::model::asset_fingerprint(policy, name);
             let decimals = decimals_of(&fingerprint);
             let tks = ladder_of(&fingerprint);
-            let name = std::str::from_utf8(name)
-                .ok()
-                .filter(|s| !s.is_empty())
-                .map(String::from);
+            let name = crate::model::display_asset_name(name);
             out.push(AssetInfo {
                 fingerprint,
                 name,
