@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { isAda, readSwapOrder } from './minswapOrder';
+import { readSwapOrder } from './minswapOrder';
+import { isAda } from './dexOrder';
 
 /**
  * A real Minswap V2 order, taken verbatim from chain. Its pool is ADA / WorldMobileTokenX
@@ -22,7 +23,6 @@ describe('readSwapOrder', () => {
     // The UTXO also holds the 2 ₳ batcher fee and a deposit that comes back, so reading
     // it would overstate the swap by several ₳.
     expect(order.giveAmount).toBe(653198244n);
-    expect(order.wantAtLeast).toBe(3752804596n);
   });
 
   it('reads the direction the way round the SDK defines it', () => {
@@ -33,7 +33,7 @@ describe('readSwapOrder', () => {
     // 0.174 ₳ each. A SundaeSwap order for the same token in the same period priced it at
     // 708.365189 / 4128.085056 = 0.172 ₳. Reversed, this would read 5.7 WMTX per ₳ —
     // off by a factor of 33 from an independent venue.
-    const adaPerWmtx = Number(order.giveAmount) / Number(order.wantAtLeast);
+    const adaPerWmtx = Number(order.giveAmount) / 3752804596;
     expect(adaPerWmtx).toBeGreaterThan(0.15);
     expect(adaPerWmtx).toBeLessThan(0.2);
   });

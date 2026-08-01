@@ -23,8 +23,7 @@ import { stakeAddressOf } from './bech32';
 import { dappForAddress, dappForPolicy, isDex, type Dapp } from './dapps';
 import { parseMessage, type TaggedAction } from './cip20';
 import { readSettlement, type Side } from './settlement';
-import { isAda, readSwapOrder, type SwapOrder } from './minswapOrder';
-import type { PoolAsset } from './minswapPools';
+import { isAda, readOrder, type OrderAsset, type SwapOrder } from './dexOrder';
 import { formatTicker } from './layout';
 
 /** How a party's label was derived — drives its styling and colour. */
@@ -388,7 +387,7 @@ const CIP67_LABELS = ['00000000', '00001070', '000643b0', '000de140', '0014df10'
  * The CIP-67 label has to come off first — it's four binary bytes that aren't part of
  * what the token is called, and leaving them on turns `PULSE` into `\ufffdPULSE`.
  */
-function assetTicker(asset: PoolAsset): string | undefined {
+function assetTicker(asset: OrderAsset): string | undefined {
   const label = CIP67_LABELS.find((l) => asset.name.startsWith(l));
   const hex = label ? asset.name.slice(label.length) : asset.name;
   const text = (hex.match(/../g) ?? []).map((b) => String.fromCharCode(parseInt(b, 16))).join('');
@@ -650,7 +649,8 @@ export function describeTx(tx: BlockTx): Intent | null {
   // swap was placed, the datum says which one, for how much, and against what.
   if (sender) {
     for (const recipient of recipients) {
-      const order = readSwapOrder(recipient.output.datum);
+      const dapp = dappForAddress(recipient.output.address);
+      const order = readOrder(dapp?.name, recipient.output.datum);
       if (order) return describePendingSwap(sender.party, order, recipient.output, recipient.party);
     }
   }

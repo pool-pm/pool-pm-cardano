@@ -16,7 +16,8 @@
  * plausible, which is the same trap the pool table's hash check guards against.
  */
 import { asBytes, asInt, constrTag, field, parseDatum, path } from './plutus';
-import { isAda, poolPair, type PoolAsset } from './minswapPools';
+import { poolPair } from './minswapPools';
+import type { SwapOrder } from './dexOrder';
 
 /** Field indices of `OrderV2.Datum`, in the order the SDK declares them. */
 const LP_ASSET = 5;
@@ -34,18 +35,6 @@ const B_TO_A = 0;
  *  whose amount isn't known until settlement. */
 const SPECIFIC_AMOUNT = 0;
 
-export interface SwapOrder {
-  /** What the user is giving. */
-  give: PoolAsset;
-  /** The exact amount of it, from the datum — not the order UTXO, which also holds the
-   *  batcher fee and a deposit that come back. */
-  giveAmount: bigint;
-  /** What they want in return. */
-  want: PoolAsset;
-  /** The least they'll accept; the settled amount is this or better. */
-  wantAtLeast: bigint;
-}
-
 /**
  * The swap this order is asking for, or null when it isn't one this can state exactly —
  * a step that isn't a plain swap, a swap of a balance whose size isn't yet known, or a
@@ -61,8 +50,10 @@ export function readSwapOrder(datumHex: string | undefined): SwapOrder | null {
   const swapAmount = field(step, SWAP_AMOUNT);
   if (constrTag(swapAmount) !== SPECIFIC_AMOUNT) return null;
   const giveAmount = asInt(field(swapAmount, 0));
-  const wantAtLeast = asInt(field(step, MINIMUM_RECEIVED));
-  if (giveAmount === undefined || wantAtLeast === undefined) return null;
+  // The minimum is read only to confirm this is a well-formed swap step; it isn't
+  // reported, being a slippage floor rather than what will actually arrive.
+  const minimum = asInt(field(step, MINIMUM_RECEIVED));
+  if (giveAmount === undefined || minimum === undefined) return null;
 
   const lpPolicy = asBytes(path(datum, LP_ASSET, 0));
   const lpName = asBytes(path(datum, LP_ASSET, 1));
@@ -75,7 +66,5 @@ export function readSwapOrder(datumHex: string | undefined): SwapOrder | null {
   const [a, b] = pair;
   const [give, want] = direction === B_TO_A ? [b, a] : [a, b];
 
-  return { give, giveAmount, want, wantAtLeast };
+  return { give, giveAmount, want };
 }
-
-export { isAda };
