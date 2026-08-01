@@ -27,7 +27,9 @@ module does, which constants exist — read from the code.
   so txs never change DOM container and `animate:flip` suffices.
 - Prefer specific types over `any`; `unknown` + narrowing when genuinely dynamic. `any` is fine
   for untyped libraries or where correct typing would need disproportionate generics.
-- LTS/stable package versions.
+- LTS/stable package versions. Granted exception: **`@chenglou/pretext`** (pre-1.0), which measures
+  text against the browser's font engine off the DOM — nothing stable does that, and `fit.svelte.ts`
+  needs it to size a tx tile's amount and labels to the 108px width instead of ellipsising them.
 
 ## Testing
 
