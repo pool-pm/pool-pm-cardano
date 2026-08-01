@@ -2,83 +2,61 @@ use pallas::crypto::hash::Hasher;
 use pallas::ledger::primitives::{alonzo, conway, Metadatum, StakeCredential};
 use pallas::ledger::traverse::{MultiEraCert, MultiEraInput, MultiEraOutput, MultiEraTx};
 
-use crate::event::CatalystInfo;
+use crate::event::{CatalystInfo, MetadataEntry};
 
-/// CIP-20 transaction message standard (label 674 → `{ "msg": [lines] }`).
-const CIP20_MESSAGE: u64 = 674;
 /// CIP-36/CIP-15 Catalyst voting registration and its separate witness label.
 /// Surfaced as a structured `CatalystInfo` (see `extract_catalyst`), not a text line.
 const CATALYST_REGISTRATION: u64 = 61284;
 const CATALYST_WITNESS: u64 = 61285;
-/// SundaeSwap on-chain governance tally (the number is the first digits of π).
-const SUNDAE_GOVERNANCE: u64 = 31415;
-const SUNDAE_LABEL: &str = "SundaeSwap governance";
 
-/// Display lines for a tx's metadata, one per label, ordered by label value: the
-/// CIP-20 message text for 674, a Catalyst-registration badge for the CIP-36
-/// registration (its witness label is folded in), and a generic "metadata N" for
-/// any other label. `None` if the tx carries no metadata. Stateless — derived
-/// purely from the tx's auxiliary data.
-pub fn extract_tx_metadata(tx: &MultiEraTx<'_>) -> Option<Vec<String>> {
+/// A tx's metadata, label by label, as data rather than as rendered text.
+///
+/// The values travel intact so the client decides what any of it means — a metadata
+/// schema then costs a frontend deploy, not a server restart, the same reasoning that
+/// sends datums raw. Flattening here used to discard everything but the shape: label 1
+/// carries `{"timestamp": …, "absolute_slot": …}` on ~9,800 txs a month and the server
+/// sent the two key names, having thrown the values away.
+///
+/// Catalyst's two labels are omitted: they're surfaced structurally as `CatalystInfo`,
+/// and a second raw copy would only be rendered twice.
+pub fn extract_tx_metadata(tx: &MultiEraTx<'_>) -> Option<Vec<MetadataEntry>> {
     let metadata = tx.metadata();
     let mut entries: Vec<(u64, &Metadatum)> = metadata.collect();
     if entries.is_empty() {
         return None;
     }
     entries.sort_by_key(|(label, _)| *label);
-    let lines = metadata_lines(&entries);
-    if lines.is_empty() {
-        None
-    } else {
-        Some(lines)
-    }
-}
-
-/// Pure label → display-line mapping. `entries` must be sorted by label. Split out
-/// from `extract_tx_metadata` so the ordering/labeling rules are unit-testable.
-fn metadata_lines(entries: &[(u64, &Metadatum)]) -> Vec<String> {
-    let mut lines = Vec::new();
-    for (label, datum) in entries {
-        match *label {
-            CIP20_MESSAGE => match cip20_message_lines(datum) {
-                Some(msg) => lines.extend(msg),
-                None => lines.push(format!("metadata {label}")),
-            },
-            // Catalyst registration (+witness) is surfaced structurally, not as text.
-            CATALYST_REGISTRATION | CATALYST_WITNESS => {}
-            SUNDAE_GOVERNANCE => lines.push(SUNDAE_LABEL.to_string()),
-            _ => lines.push(unknown_label_line(*label, datum)),
-        }
-    }
-    lines
-}
-
-/// How many of a metadata map's keys to name before it stops being a summary.
-const MAX_METADATA_KEYS: usize = 3;
-
-/// A line for a label with no known meaning.
-///
-/// `metadata 1` names the envelope and says nothing about the contents, which for a tx
-/// whose whole purpose is the metadata leaves nothing to read at all. The map's own keys
-/// are the closest thing to a self-description on offer — label 1's `timestamp` /
-/// `absolute_slot` says what those ~9,800 txs a month are for far better than its number
-/// does — so name them when they're text, and fall back to the label when they aren't.
-fn unknown_label_line(label: u64, datum: &Metadatum) -> String {
-    let Metadatum::Map(entries) = datum else {
-        return format!("metadata {label}");
-    };
-    let keys: Vec<&str> = entries
-        .iter()
-        .filter_map(|(key, _)| match key {
-            Metadatum::Text(k) if !k.is_empty() => Some(k.as_str()),
-            _ => None,
+    let out: Vec<MetadataEntry> = entries
+        .into_iter()
+        .filter(|(label, _)| !matches!(*label, CATALYST_REGISTRATION | CATALYST_WITNESS))
+        .map(|(label, datum)| MetadataEntry {
+            label,
+            value: metadatum_to_json(datum),
         })
-        .take(MAX_METADATA_KEYS)
         .collect();
-    if keys.is_empty() {
-        format!("metadata {label}")
-    } else {
-        keys.join(" ")
+    (!out.is_empty()).then_some(out)
+}
+
+/// A `Metadatum` as JSON, shaped so nothing is lost and nothing is guessed.
+///
+/// Text and integers map to their JSON counterparts. Bytes become `{"bytes": "…"}` and
+/// maps `{"map": [{"k": …, "v": …}]}` — tagged rather than flattened, because metadata
+/// keys aren't always text and a byte string isn't distinguishable from a string once
+/// it's been rendered as one. Integers keep JSON numbers: metadata integers are bounded
+/// by the ledger to 64 bits, and every one seen in practice is a count or a timestamp.
+fn metadatum_to_json(datum: &Metadatum) -> serde_json::Value {
+    use serde_json::{json, Value};
+    match datum {
+        Metadatum::Int(i) => json!(i128::from(*i)),
+        Metadatum::Bytes(b) => json!({ "bytes": hex::encode(b.as_slice()) }),
+        Metadatum::Text(t) => Value::String(t.clone()),
+        Metadatum::Array(items) => Value::Array(items.iter().map(metadatum_to_json).collect()),
+        Metadatum::Map(entries) => json!({
+            "map": entries
+                .iter()
+                .map(|(k, v)| json!({ "k": metadatum_to_json(k), "v": metadatum_to_json(v) }))
+                .collect::<Vec<_>>()
+        }),
     }
 }
 
@@ -132,32 +110,6 @@ pub fn extract_catalyst(tx: &MultiEraTx<'_>, mainnet: bool) -> Option<CatalystIn
         stake_address: stake_address_from_cred_bytes(cred.as_ref(), mainnet),
         live_stake: None,
     })
-}
-
-/// CIP-20: the `msg` field of label 674 is an array of text lines.
-fn cip20_message_lines(datum: &Metadatum) -> Option<Vec<String>> {
-    let Metadatum::Map(entries) = datum else {
-        return None;
-    };
-    for (key, value) in entries.iter() {
-        if let Metadatum::Text(k) = key {
-            if k == "msg" {
-                if let Metadatum::Array(items) = value {
-                    let lines: Vec<String> = items
-                        .iter()
-                        .filter_map(|item| match item {
-                            Metadatum::Text(s) => Some(s.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    if !lines.is_empty() {
-                        return Some(lines);
-                    }
-                }
-            }
-        }
-    }
-    None
 }
 
 pub type DrepDelegationChange = (Vec<u8>, Option<Vec<u8>>);
@@ -446,89 +398,55 @@ mod tests {
         Metadatum::Text(s.to_string())
     }
 
-    /// A label whose datum content is irrelevant to the line it produces.
-    fn opaque() -> Metadatum {
-        Metadatum::Int(0.into())
-    }
-
-    fn cip20(lines: &[&str]) -> Metadatum {
-        let items = lines.iter().map(|s| text(s)).collect();
-        Metadatum::Map(vec![(text("msg"), Metadatum::Array(items))].into())
-    }
-
+    /// Every `Metadatum` shape survives the trip to JSON.
+    ///
+    /// This is the whole of the server's remaining job with metadata: hand the values
+    /// over intact so the client can decide what they mean. Anything lost here is lost
+    /// for good, because there's nowhere else to recover it from.
     #[test]
-    fn orders_by_label_and_labels_each_kind() {
-        let msg = cip20(&["hi", "there"]);
-        let nft = opaque();
-        let sundae = opaque();
-        // Deliberately unsorted; extract sorts, but metadata_lines documents sorted input.
-        let entries = [
-            (CIP20_MESSAGE, &msg),
-            (SUNDAE_GOVERNANCE, &sundae),
-            (CATALYST_WITNESS, &opaque()),
-            (CATALYST_REGISTRATION, &opaque()),
-            (721u64, &nft),
-        ];
-        let mut sorted = entries;
-        sorted.sort_by_key(|(l, _)| *l);
-        let lines = metadata_lines(&sorted);
-        // 674 (msg) < 721 < 31415 (Sundae) < 61284/61285 (Catalyst → structured, no line)
+    fn metadatum_shapes_survive_as_json() {
         assert_eq!(
-            lines,
-            vec![
-                "hi".to_string(),
-                "there".to_string(),
-                "metadata 721".to_string(),
-                SUNDAE_LABEL.to_string(),
-            ]
+            metadatum_to_json(&text("hello")),
+            serde_json::json!("hello")
+        );
+        assert_eq!(
+            metadatum_to_json(&Metadatum::Int(42.into())),
+            serde_json::json!(42)
+        );
+        assert_eq!(
+            metadatum_to_json(&Metadatum::Int((-7).into())),
+            serde_json::json!(-7)
+        );
+        // Tagged, not rendered as a string: a byte string and a string are different
+        // things, and flattening makes them indistinguishable.
+        assert_eq!(
+            metadatum_to_json(&Metadatum::Bytes(vec![0xde, 0xad].into())),
+            serde_json::json!({ "bytes": "dead" })
+        );
+        assert_eq!(
+            metadatum_to_json(&Metadatum::Array(vec![text("a"), Metadatum::Int(1.into())])),
+            serde_json::json!(["a", 1])
         );
     }
 
+    /// Metadata keys aren't always text, which is why a map keeps its `k`/`v` pairs
+    /// rather than collapsing into a JSON object.
     #[test]
-    fn catalyst_labels_produce_no_text_line() {
-        // Both Catalyst labels are surfaced structurally (CatalystInfo), never as text.
-        let lines = metadata_lines(&[
-            (CATALYST_REGISTRATION, &opaque()),
-            (CATALYST_WITNESS, &opaque()),
-        ]);
-        assert!(lines.is_empty());
-    }
-
-    #[test]
-    fn unparseable_674_falls_back_to_generic() {
-        let lines = metadata_lines(&[(CIP20_MESSAGE, &opaque())]);
-        assert_eq!(lines, vec!["metadata 674"]);
-    }
-
-    /// An unknown label's own keys say more than its number. Label 1 carries a timestamp
-    /// on ~9,800 txs a month, and "metadata 1" says nothing about any of them.
-    #[test]
-    fn unknown_label_is_named_by_its_keys() {
+    fn a_map_keeps_keys_that_are_not_text() {
         let datum = Metadatum::Map(
             vec![
-                (
-                    Metadatum::Text("timestamp".into()),
-                    Metadatum::Text("1785570471".into()),
-                ),
-                (
-                    Metadatum::Text("absolute_slot".into()),
-                    Metadatum::Text("194004180".into()),
-                ),
+                (text("timestamp"), Metadatum::Int(1785570471.into())),
+                (Metadatum::Int(0.into()), text("by-number")),
             ]
             .into(),
         );
         assert_eq!(
-            metadata_lines(&[(1, &datum)]),
-            vec!["timestamp absolute_slot"]
+            metadatum_to_json(&datum),
+            serde_json::json!({ "map": [
+                { "k": "timestamp", "v": 1785570471 },
+                { "k": 0, "v": "by-number" }
+            ]})
         );
-    }
-
-    /// Keys that aren't text (a map keyed by integers) leave nothing to name it by.
-    #[test]
-    fn unknown_label_without_text_keys_keeps_the_number() {
-        let datum =
-            Metadatum::Map(vec![(Metadatum::Int(0.into()), Metadatum::Text("F".into()))].into());
-        assert_eq!(metadata_lines(&[(100, &datum)]), vec!["metadata 100"]);
     }
 
     #[test]

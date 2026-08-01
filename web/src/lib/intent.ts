@@ -22,6 +22,7 @@ import { nonChangeOutputs } from './change';
 import { stakeAddressOf } from './bech32';
 import { dappForAddress, dappForPolicy, isDex, type Dapp } from './dapps';
 import { parseMessage, type TaggedAction } from './cip20';
+import { messageLines, metadataLines } from './metadata';
 import { readSettlement, type Side } from './settlement';
 import { isAda, readOrder, type OrderAsset, type SwapOrder } from './dexOrder';
 import { formatTicker } from './layout';
@@ -660,11 +661,11 @@ export function describeTx(tx: BlockTx): Intent | null {
   }
 
   // What the tx says about itself beats anything inferred from its shape.
-  const tag = parseMessage(tx.message);
+  const tag = parseMessage(messageLines(tx.metadata));
   if (tag) return describeTagged(tag, sender?.party, recipients, tx);
 
   if (!sender) return null; // several wallets funded it — "who sent" has no answer
-  return describeTransfer(sender.party, recipients, tx.outputs, tx.message);
+  return describeTransfer(sender.party, recipients, tx.outputs, metadataLines(tx.metadata));
 }
 
 /**

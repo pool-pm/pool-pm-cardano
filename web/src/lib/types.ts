@@ -231,6 +231,18 @@ export interface MintInfo {
   policies: string[];
 }
 
+/** A `Metadatum` as JSON: text and integers as themselves, bytes as `{bytes}`, maps as
+ * `{map: [{k, v}]}` — tagged rather than flattened, since metadata keys aren't always
+ * text and a byte string can't be told from a string once rendered as one. */
+export type MetadataValue =
+  string | number | { bytes: string } | { map: { k: MetadataValue; v: MetadataValue }[] } | MetadataValue[];
+
+/** One metadata label and what it holds. */
+export interface MetadataEntry {
+  label: number;
+  value: MetadataValue;
+}
+
 /** Protocol-specific description of a tx, discriminated by `kind`. Add a protocol by
  * adding a member here and rendering it in Transaction.svelte — no new BlockTx field. */
 export type TxAnnotation = ({ kind: 'oracle' } & OracleInfo) | ({ kind: 'mint' } & MintInfo);
@@ -244,7 +256,9 @@ export interface BlockTx {
   expiry?: number;
   delegations?: DelegationInfo[];
   votes?: VoteInfo[];
-  message?: string[];
+  /** The tx's metadata, label by label, values intact. Rendering and interpretation are
+   * the client's — see `metadata.ts`. */
+  metadata?: MetadataEntry[];
   stake_change?: string;
   /** Pool/DRep stake-change txs: the feed's delegator stake address(es) this tx moved (the
    * relevant account(s) among possibly many). The folded view shows these, not raw addresses. */

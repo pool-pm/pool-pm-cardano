@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { AssetInfo, BlockTx, DelegationInfo, TxInput, TxOutputInfo } from './types';
+import type { AssetInfo, BlockTx, DelegationInfo, MetadataEntry, TxInput, TxOutputInfo } from './types';
 import { describeTx, partyForAddress, shortAddress } from './intent';
 
 // --- Test addresses ---
@@ -47,6 +47,11 @@ function withdrawal(stakeAddress: string, lovelace: string): TxInput {
 
 function output(address: string, lovelace: string, assets: AssetInfo[] = [], handle?: string): TxOutputInfo {
   return { address, lovelace, assets, handle };
+}
+
+/** A CIP-20 message, as the wire now carries it: label 674 holding `{msg: [lines]}`. */
+function message(lines: string[]): MetadataEntry[] {
+  return [{ label: 674, value: { map: [{ k: 'msg', v: lines }] } }];
 }
 
 function tx(parts: Partial<BlockTx>): BlockTx {
@@ -225,7 +230,7 @@ describe('describeTx: transfers', () => {
         inputs: [input(ALICE_A, '10000000')],
         outputs: [output(ALICE_A, '9800000')],
         // Label 1's own keys, which is what these ~9,800 txs a month are actually for.
-        message: ['timestamp absolute_slot'],
+        metadata: message(['timestamp absolute_slot']),
       }),
     )!;
     // "MOVED 9.8 ₳" describes the mechanism and hides the purpose: nothing was paid to
@@ -371,7 +376,7 @@ describe('describeTx: CIP-20 tags', () => {
       tx({
         inputs: [input(ALICE_A, '110000000', { handle: 'alice' })],
         outputs: [output(MINSWAP_ORDER, '100000000'), output(ALICE_A, '9000000')],
-        message: ['Minswap: Limit Order'],
+        metadata: message(['Minswap: Limit Order']),
       }),
     )!;
     expect(intent.subject).toMatchObject({ label: '$alice' });
@@ -387,7 +392,7 @@ describe('describeTx: CIP-20 tags', () => {
       tx({
         inputs: [input(ALICE_A, '110000000')],
         outputs: [output(BOB, '100000000')],
-        message: ['Surf - Borrow - ADA / NIGHT'],
+        metadata: message(['Surf - Borrow - ADA / NIGHT']),
       }),
     )!;
     expect(intent.verb).toBe('BORROWED');
@@ -399,7 +404,7 @@ describe('describeTx: CIP-20 tags', () => {
       tx({
         inputs: [input(ALICE_A, '50000000'), input(BOB, '50000000')],
         outputs: [output(CAROL, '99000000')],
-        message: ['Minswap: Order Executed'],
+        metadata: message(['Minswap: Order Executed']),
       }),
     )!;
     // Structure alone gives up here; the message names the actor.
@@ -412,7 +417,7 @@ describe('describeTx: CIP-20 tags', () => {
       tx({
         inputs: [input(ALICE_A, '10000000')],
         outputs: [output(BOB, '9000000')],
-        message: ['Minswap: MasterChef'],
+        metadata: message(['Minswap: MasterChef']),
       }),
     )!;
     expect(intent.verb).toBe('USED');
@@ -424,7 +429,7 @@ describe('describeTx: CIP-20 tags', () => {
       tx({
         inputs: [input(MINSWAP_ORDER, '5000000')],
         outputs: [output(MINSWAP_ORDER, '4800000')],
-        message: ['Minswap: Aggregator Cancel Order'],
+        metadata: message(['Minswap: Aggregator Cancel Order']),
       }),
     )!;
     expect(intent.subject).toMatchObject({ label: 'MINSWAP' });
@@ -439,7 +444,7 @@ describe('describeTx: CIP-20 tags', () => {
       tx({
         inputs: [input(ALICE_A, '10000000')],
         outputs: [output(BOB, '9000000')],
-        message: ['thanks for lunch'],
+        metadata: message(['thanks for lunch']),
       }),
     )!;
     expect(intent.verb).toBe('SENT');

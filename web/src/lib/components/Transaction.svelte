@@ -2,6 +2,7 @@
   import type { AssetInfo, DelegationInfo, FeedTx } from '../types';
   import type { Amount, Party, PartyKind } from '../intent';
   import { describeTx } from '../intent';
+  import { metadataLines } from '../metadata';
   import { config, pool, drep, stake, address } from '../stores';
   import { poolColor, formatTicker, TX_WIDTH } from '../layout';
   import { fitFontSize, fontsAreReady } from '../fit.svelte';
@@ -160,6 +161,7 @@
   // feeds) keep their own stake-centric rendering, and `describeTx` returns null for
   // anything it can't state confidently — both fall through to the raw I/O view below.
   const intent = $derived(folded ? null : describeTx(tx));
+  const shownMetadata = $derived(metadataLines(tx.metadata));
   const shownTargets = $derived(intent ? intent.targets.slice(0, compact ? 2 : intent.targets.length) : []);
   const extraTargets = $derived(intent ? intent.hiddenTargets + (intent.targets.length - shownTargets.length) : 0);
 
@@ -377,9 +379,9 @@
       </div>
     </div>
   {/if}
-  {#if !folded && tx.message?.length && !intent?.messageRead}
+  {#if !folded && shownMetadata.length > 0 && !intent?.messageRead}
     <div class="msg-section">
-      {#each tx.message as line}
+      {#each shownMetadata as line}
         <span class="msg-line">{line}</span>
       {/each}
     </div>

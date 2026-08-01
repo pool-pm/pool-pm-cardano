@@ -184,7 +184,7 @@ pub(super) fn decode_block_txs(
                 }
             }
 
-            let message = crate::pallas::extract_tx_metadata(tx);
+            let metadata = crate::pallas::extract_tx_metadata(tx);
             let catalyst = crate::pallas::extract_catalyst(tx, mainnet);
             let mut annotations = Vec::new();
             annotations.extend(crate::oracle::extract_oracle(tx));
@@ -217,7 +217,7 @@ pub(super) fn decode_block_txs(
                 expiry: None,
                 delegations,
                 votes,
-                message,
+                metadata,
                 stake_change: None,
                 stake_addresses: Vec::new(),
                 catalyst,

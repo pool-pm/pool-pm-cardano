@@ -158,7 +158,7 @@ pub async fn extract_tx(
         }
     }
 
-    let message = extract_tx_metadata(tx);
+    let metadata = extract_tx_metadata(tx);
     let votes = extract_votes(tx, state);
     let catalyst = crate::pallas::extract_catalyst(tx, mainnet);
     let mut annotations = Vec::new();
@@ -184,7 +184,7 @@ pub async fn extract_tx(
         expiry,
         delegations,
         votes,
-        message,
+        metadata,
         stake_change: None,
         stake_addresses: Vec::new(),
         catalyst,

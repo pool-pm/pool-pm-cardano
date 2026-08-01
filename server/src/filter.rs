@@ -517,7 +517,7 @@ mod tests {
             expiry: None,
             delegations: vec![],
             votes,
-            message: None,
+            metadata: None,
             stake_change: None,
             stake_addresses: Vec::new(),
             catalyst: None,

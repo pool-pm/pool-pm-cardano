@@ -41,10 +41,10 @@ pub struct BlockTx {
     pub delegations: Vec<DelegationInfo>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub votes: Vec<VoteInfo>,
-    /// Ordered metadata display lines: CIP-20 message text plus a badge per other
-    /// metadata label (Catalyst registration, "metadata N"). See `extract_tx_metadata`.
+    /// The tx's metadata, label by label, values intact — rendering and interpretation
+    /// both belong to the client. See `extract_tx_metadata`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<Vec<String>>,
+    pub metadata: Option<Vec<MetadataEntry>>,
     /// Net stake change in lovelace for pool feed stake-change blocks.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
@@ -70,6 +70,16 @@ pub struct BlockTx {
     /// Withdrawals: (stake_credential, lovelace). Used for stake_change computation.
     #[serde(skip)]
     pub withdrawals: Vec<(Vec<u8>, u64)>,
+}
+
+/// One metadata label and what it holds. `value` is the `Metadatum` as JSON: text and
+/// integers as themselves, bytes as `{"bytes": …}`, maps as `{"map": [{"k", "v"}]}` —
+/// tagged rather than flattened, since metadata keys aren't always text and a byte
+/// string can't be told from a string once rendered as one.
+#[derive(Clone, Serialize)]
+pub struct MetadataEntry {
+    pub label: u64,
+    pub value: serde_json::Value,
 }
 
 /// A protocol-specific description of a tx, recognized by a decoder. Serialized
