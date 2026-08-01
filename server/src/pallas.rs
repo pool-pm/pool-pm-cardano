@@ -82,6 +82,27 @@ fn unknown_label_line(label: u64, datum: &Metadatum) -> String {
     }
 }
 
+/// The output's inline datum as hex, for script addresses only.
+///
+/// Gated on the address being a script because that's where protocol datums live, and
+/// sending every datum on the chain would be paying for data no reader can use. Measured
+/// over 200 blocks, script datums are ~360 bytes a block raw — around 1% of the feed.
+pub fn inline_datum_hex(
+    output: &pallas::ledger::traverse::MultiEraOutput<'_>,
+    address: &str,
+) -> Option<String> {
+    use pallas::ledger::primitives::conway::DatumOption;
+    if !address.starts_with("addr1w") && !address.starts_with("addr1z") {
+        return None;
+    }
+    match output.datum()? {
+        // `KeepRaw` hands back the bytes as they appeared on chain, so nothing is
+        // re-encoded and the client sees exactly what the protocol wrote.
+        DatumOption::Data(data) => Some(hex::encode(data.0.raw_cbor())),
+        DatumOption::Hash(_) => None,
+    }
+}
+
 /// Extract a CIP-36/CIP-15 Catalyst voting registration (label 61284). The
 /// registrant's stake address is `blake2b-224(staking vkey)` (field `2`) built into
 /// a reward address. `live_stake` is left `None` (filled by the stake-feed walk).

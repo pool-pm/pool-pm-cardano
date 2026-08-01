@@ -252,6 +252,14 @@ pub struct TxOutputInfo {
     pub assets: Vec<AssetInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub handle: Option<String>,
+    /// This output's inline datum, hex, exactly as it appears on chain — sent only for
+    /// script addresses, where it's the only place a protocol says what an order is for.
+    ///
+    /// Raw rather than decoded on purpose: the CBOR is the fact, and any interpretation
+    /// of it belongs to the client, where a protocol shipping a new datum version costs
+    /// a frontend deploy instead of a server restart. See `plutus.ts`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub datum: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
