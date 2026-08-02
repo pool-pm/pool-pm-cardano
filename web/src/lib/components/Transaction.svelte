@@ -1113,12 +1113,13 @@
     color: rgb(255 255 255 / 0.4);
   }
 
-  /* Same idea between parties: several who acted, or several who were paid. */
+  /* Same idea between parties: several who acted, or several who were paid. Matched to
+     the asset separator — at 9px and 0.35 alpha it was there but not readable. */
   .party-plus {
     align-self: center;
-    font-size: 9px;
-    line-height: 1.1;
-    color: rgb(255 255 255 / 0.35);
+    font-size: 10px;
+    line-height: 1.2;
+    color: rgb(255 255 255 / 0.45);
   }
 
   .asset-thumb {
