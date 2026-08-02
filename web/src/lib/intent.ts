@@ -12,10 +12,15 @@
  *     TO              preposition
  *     $alice          target
  *
- * `describeTx` returns `null` for anything it can't state plainly — several senders, a
- * governance vote, an oracle update — and `Transaction.svelte` then falls back to the
- * raw input/output view. Adding a case here is always preferable to guessing: a
- * confident wrong sentence is worse than the raw view it replaces.
+ * Every transaction gets a sentence. Where the shape is unusual the sentence gets less
+ * specific — a tx several wallets funded is subjectless in all but their number — but it
+ * never falls back to a list of raw addresses, which said strictly less than even the
+ * vaguest sentence does. The one exception is a tx with a purpose-built rendering of its
+ * own: `describeTx` returns null for governance votes and oracle updates, which
+ * `Transaction.svelte` draws its own way rather than as prose.
+ *
+ * Being less specific is the escape hatch, never being wrong: a confident wrong sentence
+ * is worse than a vague true one.
  */
 import type { AssetInfo, BlockTx, DelegationInfo, MintInfo, TxInput, TxOutputInfo } from './types';
 import { nonChangeOutputs } from './change';
@@ -25,7 +30,7 @@ import { parseMessage, type TaggedAction } from './cip20';
 import { messageLines, metadataLines } from './metadata';
 import { readSettlement, type Side } from './settlement';
 import { isAda, readOrder, type OrderAsset, type SwapOrder } from './dexOrder';
-import { formatTicker } from './layout';
+import { formatAdaCompact, formatCount, formatTicker } from './layout';
 
 /** How a party's label was derived — drives its styling and colour. */
 export type PartyKind = 'handle' | 'app' | 'pool' | 'drep' | 'address';
@@ -175,6 +180,18 @@ function soleSender(inputs: TxInput[]): Sender | null {
     seen.addresses.add(input.address);
     seen.handle ??= input.handle;
     if (BigInt(input.lovelace) > BigInt(seen.input.lovelace)) seen.input = input;
+  }
+  // A script UTXO the funder is taking back isn't a second funder. A cancelled DEX order
+  // is spent from an address holding the canceller's own stake credential, so it can be
+  // told apart from someone else's order — which a batcher spends, and which must keep
+  // counting, since a batcher settling other people's orders has no single sender.
+  const keys = [...wallets.keys()];
+  const funders = keys.filter((key) => !paymentIsScript(key));
+  if (funders.length === 1) {
+    const account = stakeAddressOf(funders[0]) ?? funders[0];
+    for (const key of keys) {
+      if (paymentIsScript(key) && (stakeAddressOf(key) ?? key) === account) wallets.delete(key);
+    }
   }
   if (wallets.size !== 1) return null;
   const [wallet, { input, handle, addresses }] = wallets.entries().next().value!;
@@ -521,6 +538,12 @@ function describeTagged(tag: TaggedAction, sender: Party | undefined, recipients
   };
 }
 
+/** A settled order together with the UTXO it was posted in. */
+interface SettledOrder {
+  order: SwapOrder;
+  utxo: TxInput;
+}
+
 /**
  * The orders a batch settled, read from the datums of the UTXOs it spent.
  *
@@ -528,19 +551,39 @@ function describeTagged(tag: TaggedAction, sender: Party | undefined, recipients
  * datum says what that user asked for. Without them a batch can only be counted; with
  * them it can be read.
  */
-function settledOrders(inputs: TxInput[]): SwapOrder[] {
-  return inputs.flatMap((input) => {
-    if (!input.address || !input.datum) return [];
-    const order = readOrder(dappForAddress(input.address)?.name, input.datum);
-    return order ? [order] : [];
+function settledOrders(inputs: TxInput[]): SettledOrder[] {
+  return inputs.flatMap((utxo) => {
+    if (!utxo.address || !utxo.datum) return [];
+    const order = readOrder(dappForAddress(utxo.address)?.name, utxo.datum);
+    return order ? [{ order, utxo }] : [];
   });
 }
 
-/** One settled order as a single line: `40K NIGHT → ADA`. */
-function swapPair(order: SwapOrder): Amount {
-  const give = isAda(order.give) ? '₳' : (assetTicker(order.give) ?? '?');
+/**
+ * One settled order as a single line: `40K NIGHT → ADA`.
+ *
+ * The amount is the one going *in*, which the order states exactly. What came back isn't
+ * stated: a batch settles several unrelated orders against one pool movement, so the
+ * aggregate can't be split between them, and the payout UTXO mixes the fill with the
+ * deposit the protocol returns. `readSettlement` reports both sides exactly when the
+ * batch holds a single order and that ambiguity doesn't arise.
+ */
+function swapPair({ order, utxo }: SettledOrder): Amount {
   const want = wantedName(order.want) ?? '?';
-  return { unit: `${give} → ${want}` };
+  return { unit: `${offeredText(order, utxo)} → ${want}` };
+}
+
+/** The going-in side of an order, rendered compactly enough for a 108px line. */
+function offeredText(order: SwapOrder, utxo: { lovelace: string; assets?: AssetInfo[] }): string {
+  if (isAda(order.give)) return formatAdaCompact(order.giveAmount.toString());
+  // A token order's UTXO holds exactly the token being swapped — no fee is taken in it —
+  // and the server has already scaled it by the asset's decimals and named it, which the
+  // datum's raw integer would need those decimals to do.
+  const assets = utxo.assets ?? [];
+  const asset = assets.length === 1 ? assets[0] : undefined;
+  const name = assetTicker(order.give) ?? asset?.name ?? '?';
+  if (!asset) return name;
+  return `${formatCount(Number(asset.quantity))} ${asset.name ?? name}`;
 }
 
 /**
@@ -571,7 +614,7 @@ function sumLovelace(outputs: TxOutputInfo[]): bigint {
  * amounts next to their names, since there's no one number to headline.
  */
 function describeTransfer(
-  subject: Party,
+  subject: Party | undefined,
   recipients: Recipient[],
   outputs: TxOutputInfo[],
   message?: string[],
@@ -718,8 +761,23 @@ export function describeTx(tx: BlockTx): Intent | null {
   const tag = parseMessage(messageLines(tx.metadata));
   if (tag) return describeTagged(tag, sender?.party, recipients, tx);
 
-  if (!sender) return null; // several wallets funded it — "who sent" has no answer
+  if (!sender) return describeShared(tx, recipients);
   return describeTransfer(sender.party, recipients, tx.outputs, metadataLines(tx.metadata));
+}
+
+/**
+ * Several wallets funded this tx, so "who sent" has no single answer.
+ *
+ * It still did something, and how many wallets acted is a true and useful subject —
+ * co-signed payments, exchange sweeps and collaborative txs all land here. This used to
+ * fall back to a list of raw addresses, which said strictly less than the sentence does.
+ */
+function describeShared(tx: BlockTx, recipients: Recipient[]): Intent {
+  const funders = new Set(tx.inputs.filter((i) => !isWithdrawal(i) && i.address).map((i) => walletOf(i.address!)));
+  // No funder resolved at all leaves the sentence subjectless rather than claiming
+  // "0 WALLETS" — the verb and the amount are still true without one.
+  const subject: Party | undefined = funders.size > 0 ? { label: `${funders.size} WALLETS`, kind: 'app' } : undefined;
+  return describeTransfer(subject, recipients, tx.outputs, metadataLines(tx.metadata));
 }
 
 /**

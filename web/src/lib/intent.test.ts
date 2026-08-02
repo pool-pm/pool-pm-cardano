@@ -180,15 +180,32 @@ describe('describeTx: transfers', () => {
     expect(intent.targets[0].party).toMatchObject({ id: ALICE_A });
   });
 
-  it('gives up when two wallets funded the tx', () => {
-    expect(
-      describeTx(
-        tx({
-          inputs: [input(ALICE_A, '4000000'), input(BOB, '9000000')],
-          outputs: [output(CAROL, '12000000')],
-        }),
-      ),
-    ).toBeNull();
+  it('counts the funders when more than one wallet paid', () => {
+    // "Who sent" has no single answer here, but how many acted is a true subject — and
+    // it says more than the list of raw addresses this used to fall back to.
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '4000000'), input(BOB, '9000000')],
+        outputs: [output(CAROL, '12000000')],
+      }),
+    )!;
+    expect(intent.subject).toMatchObject({ label: '2 WALLETS' });
+    expect(intent.verb).toBe('SENT');
+    expect(intent.amount).toEqual({ quantity: '12000000' });
+    expect(intent.targets[0].party).toMatchObject({ id: CAROL });
+  });
+
+  it('does not count a reclaimed order UTXO as a second funder', () => {
+    // Cancelling a DEX order spends the order script alongside the wallet's own funds.
+    // The order address carries the canceller's stake credential, which is what tells it
+    // apart from a batcher spending somebody else's order.
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '4000000'), input(MINSWAP_V2_ORDER_ALICE, '9000000')],
+        outputs: [output(ALICE_A, '12500000')],
+      }),
+    )!;
+    expect(intent.subject).toMatchObject({ id: ALICE_A });
   });
 
   it('sums several recipients into one total and lists who got it', () => {
@@ -475,7 +492,9 @@ describe('describeTx: CIP-20 tags', () => {
             index: 0,
             address: MINSWAP_ORDER,
             lovelace: '4000000',
-            assets: [],
+            // A token order's UTXO holds exactly the token being swapped, already scaled
+            // by the server — which is where the amount on this line comes from.
+            assets: [asset('asset1wmtx0000000000000000000000000000000', '40000')],
             datum: nightForAda,
           },
           input(BOB, '50000000'),
@@ -486,7 +505,13 @@ describe('describeTx: CIP-20 tags', () => {
     )!;
     expect(intent.subject).toMatchObject({ label: 'MINSWAP' });
     expect(intent.verb).toBe('EXECUTED');
-    expect(intent.targets.map((t) => t.amount?.unit)).toEqual(['₳ → WorldMobileTokenX', 'WorldMobileTokenX → ADA']);
+    // Each order says how much went in — "2 ORDERS" said neither which nor how much.
+    // What came back is left out: one pool movement covers both orders, so splitting it
+    // between them would be a guess.
+    expect(intent.targets.map((t) => t.amount?.unit)).toEqual([
+      '653 ₳ → WorldMobileTokenX',
+      '40k WorldMobileTokenX → ADA',
+    ]);
   });
 
   it('says USED when the dApp names itself but no action we have a word for', () => {
@@ -705,9 +730,11 @@ describe('describeTx: fallbacks', () => {
     ).toBeNull();
   });
 
-  it('gives up when no input address resolved', () => {
-    expect(
-      describeTx(tx({ inputs: [input(null as unknown as string, '0')], outputs: [output(BOB, '1000000')] })),
-    ).toBeNull();
+  it('still says something when no input address resolved', () => {
+    const intent = describeTx(
+      tx({ inputs: [input(null as unknown as string, '0')], outputs: [output(BOB, '1000000')] }),
+    )!;
+    expect(intent.verb).toBe('SENT');
+    expect(intent.targets[0].party).toMatchObject({ id: BOB });
   });
 });
