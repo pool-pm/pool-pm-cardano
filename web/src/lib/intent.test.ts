@@ -345,6 +345,24 @@ describe('describeTx: dApps', () => {
     expect(intent.via).toMatchObject({ label: 'MINSWAP' });
   });
 
+  it('names ADA on the wanted side rather than rendering it as nothing', () => {
+    // A real Minswap V2 order the other way round: NIGHT in, ADA out. ADA has no policy
+    // and no asset name, so there's nothing to derive a label from — left unnamed it
+    // falls through to the ADA-amount rendering and a missing quantity formats as
+    // "0 ₳", which reads as swapping 40K NIGHT for nothing.
+    const datum =
+      'd8799fd8799f581c636d0d0118a8933ac167d4c448150bb325deaf7a4fdfb44adc7f2f5affd8799fd8799f581c636d0d0118a8933ac167d4c448150bb325deaf7a4fdfb44adc7f2f5affd8799fd8799fd8799f581ce39b5f40aa85fbc121a625d777a776eca1cb4c923426949c997d8828ffffffffd87980d8799fd8799f581c636d0d0118a8933ac167d4c448150bb325deaf7a4fdfb44adc7f2f5affd8799fd8799fd8799f581ce39b5f40aa85fbc121a625d777a776eca1cb4c923426949c997d8828ffffffffd87980d8799f581cf5808c2c990d86da54bfc97d89cee6efa20cd8461616359478d96b4c5820686db0c143a3a2cc19099d8909e315c4ed761a6ac5a3c5998c651d5e9d3cb253ffd8799fd87980d8799f1a26ef03a4ff1adfaf40f4d87980ff1a001e8480d87a80ff';
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '10000000')],
+        outputs: [{ address: MINSWAP_ORDER, lovelace: '4000000', assets: [], datum }],
+      }),
+    )!;
+    expect(intent.verb).toBe('SWAPPING');
+    expect(intent.preposition).toBe('FOR');
+    expect(intent.targets[0].amount).toEqual({ unit: 'ADA' });
+  });
+
   it('reads a marketplace script as a trade', () => {
     const intent = describeTx(
       tx({

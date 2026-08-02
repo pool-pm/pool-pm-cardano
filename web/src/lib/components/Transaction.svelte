@@ -194,21 +194,36 @@
    * decimals are set smaller (`.ada-dec`) than what's measured here, so a value with a
    * fractional part lands a shade under the true maximum rather than over it.
    */
-  const headline = $derived.by(() => {
-    const amount = intent?.amount;
-    if (!amount) return null;
+  /** The size at which `text` fits the tile, as a headline. */
+  function fitHeadline(text: string): number {
+    return fitFontSize(text, HEADLINE_FAMILY, HEADLINE_WEIGHT, TX_WIDTH - SENTENCE_PADDING, {
+      min: HEADLINE_MIN_PX,
+      max: HEADLINE_MAX_PX,
+    });
+  }
+
+  function rendered(amount: Amount) {
     const html = amountText(amount);
-    const size = fitFontSize(
-      html.replace(/<[^>]*>/g, ''),
-      HEADLINE_FAMILY,
-      HEADLINE_WEIGHT,
-      TX_WIDTH - SENTENCE_PADDING,
-      {
-        min: HEADLINE_MIN_PX,
-        max: HEADLINE_MAX_PX,
-      },
-    );
-    return { html, size, plain: !!amount.unit };
+    return { html, plain: !!amount.unit, text: html.replace(/<[^>]*>/g, '') };
+  }
+
+  /**
+   * The loud line, or the two loud lines: a swap has an amount on each side and neither
+   * is the subordinate one — "40K NIGHT for ADA" is a single fact with two halves. They
+   * take one shared size, the smaller of what each would fit at, because two amounts of
+   * a pair rendered at different sizes read as a headline and a footnote.
+   *
+   * A target carrying an amount but no party is that counterpart; a target with a party
+   * is a recipient, and its amount belongs beside the name at the ordinary size.
+   */
+  const headline = $derived.by(() => {
+    const give = intent?.amount;
+    if (!give) return null;
+    const counterpart = intent?.targets.length === 1 && !intent.targets[0].party ? intent.targets[0].amount : undefined;
+    const shown = rendered(give);
+    const other = counterpart ? rendered(counterpart) : null;
+    const size = Math.min(fitHeadline(shown.text), other ? fitHeadline(other.text) : HEADLINE_MAX_PX);
+    return { give: shown, counterpart: other, size };
   });
 
   // Every fitted size on the tile changes at once when the webfont lands, and the grid
@@ -414,7 +429,7 @@
       <span class="verb">{intent.verb}</span>
       {#if headline}
         <span class="amount headline" style:font-size="{headline.size}px">
-          {#if headline.plain}{headline.html}{:else}{@html headline.html}{/if}
+          {#if headline.give.plain}{headline.give.html}{:else}{@html headline.give.html}{/if}
         </span>
       {/if}
       {#if intent.assets && $config}{@render assetThumbs(intent.assets, 0)}{/if}
@@ -426,7 +441,11 @@
       {#if intent.preposition}<span class="prep">{intent.preposition}</span>{/if}
       {#each shownTargets as target, ti}
         <div class="target">
-          {#if target.amount}{@render amountLine(target.amount)}{/if}
+          {#if headline?.counterpart && !target.party}
+            <span class="amount headline" style:font-size="{headline.size}px">
+              {#if headline.counterpart.plain}{headline.counterpart.html}{:else}{@html headline.counterpart.html}{/if}
+            </span>
+          {:else if target.amount}{@render amountLine(target.amount)}{/if}
           {#if target.assets && $config}{@render assetThumbs(target.assets, ti + 1)}{/if}
           {#if target.party}{@render partyLine(target.party)}{/if}
         </div>

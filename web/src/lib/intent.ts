@@ -352,19 +352,33 @@ function targetFor({ output, party }: Recipient): IntentTarget {
  * than the minimum asked for.
  */
 function describePendingSwap(subject: Party, order: SwapOrder, output: TxOutputInfo, app: Party): Intent {
+  // The wanted side is named but not counted. The datum's `minimumReceived` is a
+  // slippage floor, not a forecast — the fill is nearly always better — so putting a
+  // figure on it would claim a precision the order doesn't have. The settlement says
+  // what actually arrived.
+  const wanted = wantedName(order.want);
   return {
     subject,
     verb: 'SWAPPING',
     amount: offered(order, output),
-    // The wanted side is named but not counted. The datum's `minimumReceived` is a
-    // slippage floor, not a forecast — the fill is nearly always better — so putting a
-    // figure on it would claim a precision the order doesn't have. The settlement says
-    // what actually arrived.
-    preposition: 'FOR',
-    targets: [{ amount: { unit: assetTicker(order.want) } }],
+    // No name for the wanted asset means no object: "FOR" followed by nothing reads as
+    // an unfinished sentence, and an amount-less ADA unit would render as "0 ₳".
+    preposition: wanted ? 'FOR' : undefined,
+    targets: wanted ? [{ amount: { unit: wanted } }] : [],
     hiddenTargets: 0,
     via: app,
   };
+}
+
+/**
+ * What to call the asset a swap wants.
+ *
+ * ADA has no policy and no asset name, so it has nothing to derive a label from and has
+ * to be named outright — without this it falls through to the ADA-amount rendering and
+ * a missing quantity formats as `0 ₳`, which reads as a swap for nothing.
+ */
+function wantedName(asset: OrderAsset): string | undefined {
+  return isAda(asset) ? 'ADA' : assetTicker(asset);
 }
 
 /**
