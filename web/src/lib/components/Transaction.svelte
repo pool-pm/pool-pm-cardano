@@ -363,8 +363,17 @@
 {#snippet assetThumbs(assets: AssetInfo[])}
   {@const visibleCount = Math.min(assets.length, maxAssetsPerOutput)}
   <div class="assets">
-    {#each assets.slice(0, visibleCount) as asset}
+    {#each assets.slice(0, visibleCount) as asset, i}
       {@const broken = brokenThumbs[asset.fingerprint]}
+      <!-- Quantity and ticker read as one thing — "830.04 NIGHT" — so they share a line.
+           A quantity means nothing without the ticker beside it, so a fungible amount is
+           always named; the cap only applies to assets held one at a time, where an NFT
+           grid would otherwise become a wall of labels. -->
+      {@const showQuantity = broken || (thumbSize >= 32 && asset.quantity !== '1')}
+      {@const showName = broken || asset.quantity !== '1' || assets.length <= NAMED_ASSETS_MAX}
+      <!-- Several assets in one place went together, so they read as a sum: bare
+           adjacency reads as a list of unrelated lines instead. -->
+      {#if i > 0}<span class="asset-plus">+</span>{/if}
       <div class="asset">
         {#if !broken}
           <a class="asset-link" href="/{asset.fingerprint}">
@@ -385,14 +394,11 @@
             />
           </a>
         {/if}
-        {#if broken || (thumbSize >= 32 && asset.quantity !== '1')}
-          <span class="asset-label">{formatAssetQuantity(asset.quantity)}</span>
-        {/if}
-        <!-- A quantity means nothing without the ticker beside it, so a fungible amount
-             is always named. The cap only applies to assets held one at a time, where
-             an NFT grid would otherwise turn into a wall of labels. -->
-        {#if broken || asset.quantity !== '1' || assets.length <= NAMED_ASSETS_MAX}
-          <a class="asset-name" href="/{asset.fingerprint}">{assetLabel(asset)}</a>
+        {#if showQuantity || showName}
+          <span class="asset-meta">
+            {#if showQuantity}<span class="asset-label">{formatAssetQuantity(asset.quantity)}</span>{/if}
+            {#if showName}<a class="asset-name" href="/{asset.fingerprint}">{assetLabel(asset)}</a>{/if}
+          </span>
         {/if}
       </div>
     {/each}
@@ -1076,6 +1082,22 @@
     color: white;
     text-align: center;
     white-space: nowrap;
+  }
+
+  /* "830.04 NIGHT" is one fact, so the quantity and the ticker share a line. */
+  .asset-meta {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 3px;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .asset-plus {
+    align-self: center;
+    font-size: 10px;
+    color: rgb(255 255 255 / 0.4);
   }
 
   .asset-thumb {
