@@ -26,6 +26,8 @@ const MINSWAP_ORDER = 'addr1wyx22z2s4kasd3w976pnjf9xdty88epjqfvgkmfnscpd0rg3z8y6
  */
 const MINSWAP_V2_ORDER_ALICE =
   'addr1z8p79rpkcdz8x9d6tft0x0dx5mwuzac2sa4gm8cvkw5hcnrcq7dmqu20hxxtcts5zkz7jaqrwua8claa2hrghvgnwnpqjxj2vs';
+/** The reward account of Minswap's order script — a real one, seen on live traffic. */
+const MINSWAP_ORDER_REWARDS = 'stake17y02a946720zw6pw50upt2arvxsvvpvaghjtl054h0f0gjsfyjz59';
 /** Minswap's "Liquidity Pool" script — a role with no verb of its own. */
 const MINSWAP_POOL =
   'addr1z9tu3ecccgqlhgg2nkshfrt8td2zs8fmrwvrchgksl78x96j2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pq26n58l';
@@ -180,19 +182,45 @@ describe('describeTx: transfers', () => {
     expect(intent.targets[0].party).toMatchObject({ id: ALICE_A });
   });
 
-  it('counts the funders when more than one wallet paid', () => {
-    // "Who sent" has no single answer here, but how many acted is a true subject — and
-    // it says more than the list of raw addresses this used to fall back to.
+  it('does not read a reward withdrawal as a settled batch', () => {
+    // A withdrawal is a pseudo-input carrying a reward address, not a UTXO anyone can
+    // post an order in — and this reward account is Minswap's order script's own, so it
+    // resolves to a dApp with the `order` role like any of its addresses would.
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '4000000'), withdrawal(MINSWAP_ORDER_REWARDS, '7000000')],
+        outputs: [output(ALICE_A, '10800000')],
+      }),
+    )!;
+    expect(intent.verb).toBe('WITHDREW');
+  });
+
+  it('names the funders when more than one wallet paid', () => {
+    // "Who sent" has no single answer here, so it gets several — named, not counted.
+    // Addresses sharing a stake credential have already been folded into one account by
+    // now, so what's left really is distinct parties, biggest contributor first.
     const intent = describeTx(
       tx({
         inputs: [input(ALICE_A, '4000000'), input(BOB, '9000000')],
         outputs: [output(CAROL, '12000000')],
       }),
     )!;
-    expect(intent.subject).toMatchObject({ label: '2 WALLETS' });
+    expect(intent.subject).toBeUndefined();
+    expect(intent.subjects?.map((s) => s.label)).toEqual([partyForAddress(BOB).label, partyForAddress(ALICE_A).label]);
     expect(intent.verb).toBe('SENT');
     expect(intent.amount).toEqual({ quantity: '12000000' });
     expect(intent.targets[0].party).toMatchObject({ id: CAROL });
+  });
+
+  it('names a funding account by its handle, and by its stake address when it has none', () => {
+    const intent = describeTx(
+      tx({
+        // Alice funds from two of her own addresses: one account, named once.
+        inputs: [input(ALICE_A, '4000000'), input(ALICE_B, '1000000'), input(BOB, '9000000', { handle: 'bob' })],
+        outputs: [output(CAROL, '13000000')],
+      }),
+    )!;
+    expect(intent.subjects?.map((s) => s.label)).toEqual(['$bob', 'stake1u9…mky2']);
   });
 
   it('does not count a reclaimed order UTXO as a second funder', () => {

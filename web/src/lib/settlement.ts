@@ -24,6 +24,14 @@ import type { AssetInfo, TxInput, TxOutputInfo } from './types';
 import { parseQuantity, type ScaledQty } from './change';
 import { dappForAddress } from './dapps';
 
+/**
+ * The index the server gives a withdrawal's pseudo-input. It carries a reward address,
+ * not a UTXO — and a reward address matches a dApp whenever it happens to share the
+ * dApp's stake credential, so counting one as an order UTXO reads a plain withdrawal as
+ * a settled swap.
+ */
+const WITHDRAWAL_INDEX = -1;
+
 /** One side of a swap: ADA when `asset` is absent. */
 export interface Side {
   /** Lovelace, or the token's decimals-formatted quantity. */
@@ -129,7 +137,9 @@ function beneficiary(inputs: TxInput[], outputs: TxOutputInfo[], accountOf: Acco
  * between them would be a guess.
  */
 export function readSettlement(inputs: TxInput[], outputs: TxOutputInfo[], accountOf: AccountOf): Settlement | null {
-  const orders = inputs.filter((i) => i.address && dappForAddress(i.address)?.role === 'order');
+  const orders = inputs.filter(
+    (i) => i.index !== WITHDRAWAL_INDEX && i.address && dappForAddress(i.address)?.role === 'order',
+  );
   if (orders.length !== 1) return null;
 
   const pool = poolPair(inputs, outputs);

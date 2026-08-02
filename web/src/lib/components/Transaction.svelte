@@ -330,7 +330,7 @@
       <img
         class="swap-art"
         src={nftcdnUrl(asset)}
-        alt={asset.fingerprint}
+        alt={assetLabel(asset)}
         loading="lazy"
         onload={(e: Event) => {
           (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
@@ -371,7 +371,7 @@
             <img
               class="asset-thumb"
               src={nftcdnUrl(asset)}
-              alt={asset.fingerprint}
+              alt={assetLabel(asset)}
               loading="lazy"
               onload={(e: Event) => {
                 (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
@@ -388,7 +388,10 @@
         {#if broken || (thumbSize >= 32 && asset.quantity !== '1')}
           <span class="asset-label">{formatAssetQuantity(asset.quantity)}</span>
         {/if}
-        {#if broken || (asset.name && assets.length <= NAMED_ASSETS_MAX)}
+        <!-- A quantity means nothing without the ticker beside it, so a fungible amount
+             is always named. The cap only applies to assets held one at a time, where
+             an NFT grid would otherwise turn into a wall of labels. -->
+        {#if broken || asset.quantity !== '1' || assets.length <= NAMED_ASSETS_MAX}
           <a class="asset-name" href="/{asset.fingerprint}">{assetLabel(asset)}</a>
         {/if}
       </div>
@@ -455,7 +458,9 @@
   {/if}
   {#if intent}
     <div class="sentence">
-      {#if intent.subject}{@render partyLine(intent.subject)}{/if}
+      {#if intent.subjects}
+        {#each intent.subjects as funder}{@render partyLine(funder)}{/each}
+      {:else if intent.subject}{@render partyLine(intent.subject)}{/if}
       <span class="verb">{intent.verb}</span>
       {#if headline}
         {#if intent.amount?.image}{@render amountArt(intent.amount.image)}{/if}

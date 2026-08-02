@@ -72,6 +72,10 @@ export interface IntentTarget {
 export interface Intent {
   /** Who acted. Absent when the tx has no identifiable actor. */
   subject?: Party;
+  /** Who acted, when it was several accounts that can't be folded into one. Rendered in
+   *  place of `subject`: naming them is the point, since "3 wallets" says nothing a
+   *  reader can follow. */
+  subjects?: Party[];
   /** `SENT`, `WITHDREW`, `DELEGATED`, `SWAPPED`, … — always a single word. */
   verb: string;
   /** The loud line. Absent when each target carries its own amount instead. */
@@ -98,6 +102,9 @@ const ADDRESS_HEAD = 8;
 const ADDRESS_TAIL = 4;
 /** Most targets to name before collapsing the rest into "+N more". */
 const MAX_TARGETS = 4;
+/** Most funding accounts to name when several paid. Beyond this the tile is all subject
+ *  and no sentence. */
+const MAX_SUBJECTS = 3;
 /**
  * An output at or below this much ADA alongside tokens is carrying the tokens, not
  * value: Cardano requires every UTXO to hold some ADA, and ~1.2-1.5 ₳ is what a
@@ -522,7 +529,10 @@ function describeTagged(tag: TaggedAction, sender: Party | undefined, recipients
  */
 function describeSettlement(tx: BlockTx, app?: Party, verb?: string, ownWallet?: string): Intent | null {
   const orderInputs = tx.inputs.filter((i) => {
-    if (!i.address || dappForAddress(i.address)?.role !== 'order') return false;
+    // A withdrawal is a pseudo-input carrying a reward address, not a UTXO anyone can
+    // post an order in. Reward addresses match a dApp whenever they share its stake
+    // credential, so without this a plain withdrawal reads as a settled batch.
+    if (isWithdrawal(i) || !i.address || dappForAddress(i.address)?.role !== 'order') return false;
     // An order the funder is taking back is a cancellation, not a batch being settled.
     return ownWallet === undefined || (stakeAddressOf(i.address) ?? i.address) !== ownWallet;
   });
@@ -594,7 +604,7 @@ interface SettledOrder {
  */
 function settledOrders(inputs: TxInput[]): SettledOrder[] {
   return inputs.flatMap((utxo) => {
-    if (!utxo.address || !utxo.datum) return [];
+    if (isWithdrawal(utxo) || !utxo.address || !utxo.datum) return [];
     const order = readOrder(dappForAddress(utxo.address)?.name, utxo.datum);
     return order ? [{ order, utxo }] : [];
   });
@@ -800,18 +810,40 @@ export function describeTx(tx: BlockTx): Intent | null {
 }
 
 /**
- * Several wallets funded this tx, so "who sent" has no single answer.
+ * Several accounts funded this tx, so "who sent" has no single answer — it has several.
  *
- * It still did something, and how many wallets acted is a true and useful subject —
- * co-signed payments, exchange sweeps and collaborative txs all land here. This used to
- * fall back to a list of raw addresses, which said strictly less than the sentence does.
+ * They're named rather than counted. Payment addresses sharing a stake credential have
+ * already been folded into one account by then, so what's left really is distinct
+ * parties, and "3 WALLETS" hides the one thing a reader could act on.
  */
 function describeShared(tx: BlockTx, recipients: Recipient[]): Intent {
-  const funders = new Set(tx.inputs.filter((i) => !isWithdrawal(i) && i.address).map((i) => walletOf(i.address!)));
-  // No funder resolved at all leaves the sentence subjectless rather than claiming
-  // "0 WALLETS" — the verb and the amount are still true without one.
-  const subject: Party | undefined = funders.size > 0 ? { label: `${funders.size} WALLETS`, kind: 'app' } : undefined;
-  return describeTransfer(subject, recipients, tx.outputs, metadataLines(tx.metadata));
+  const funders = new Map<string, { lovelace: bigint; addresses: Set<string>; handle?: string }>();
+  for (const input of tx.inputs) {
+    if (isWithdrawal(input) || !input.address) continue;
+    const account = walletOf(input.address);
+    const seen = funders.get(account);
+    if (!seen) {
+      funders.set(account, {
+        lovelace: BigInt(input.lovelace),
+        addresses: new Set([input.address]),
+        handle: input.handle,
+      });
+      continue;
+    }
+    seen.lovelace += BigInt(input.lovelace);
+    seen.addresses.add(input.address);
+    seen.handle ??= input.handle;
+  }
+  // Biggest contributor first: with only a few lines of room, that's the one most worth
+  // showing if the rest have to be dropped. One address stays named by that address,
+  // which is the more specific truth; several are named by the account they share.
+  const sorted = [...funders.entries()].sort((a, b) => (b[1].lovelace > a[1].lovelace ? 1 : -1));
+  const named = sorted.slice(0, MAX_SUBJECTS).map(([account, f]) => {
+    const [only] = f.addresses;
+    return partyForAddress(f.addresses.size === 1 ? only : account, f.handle);
+  });
+  const transfer = describeTransfer(undefined, recipients, tx.outputs, metadataLines(tx.metadata));
+  return { ...transfer, subjects: named.length > 0 ? named : undefined };
 }
 
 /**

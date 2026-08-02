@@ -1075,6 +1075,29 @@ pub fn bootstrapper(context: &Context, config: SinkConfig) -> Result<Stage, Erro
     })
 }
 
+/// The datums of outputs this same block created, keyed the way inputs refer to them.
+///
+/// A DEX order posted and settled inside one block is routine — batchers run every block,
+/// and an order placed early in a block is often filled later in it. db-sync hasn't
+/// written the block the server is currently processing, so the query below cannot see
+/// those, and 61% of the order UTXOs that reached the frontend without a datum were of
+/// exactly this kind. The block in hand always has them: `datum_hex` already resolved
+/// each output's datum, inline or from its creating tx's witness set.
+fn same_block_datums(txs: &[BlockTx]) -> std::collections::HashMap<(Vec<u8>, i16), String> {
+    let mut datums = std::collections::HashMap::new();
+    for tx in txs {
+        let Ok(hash) = hex::decode(&tx.hash) else {
+            continue;
+        };
+        for (index, output) in tx.outputs.iter().enumerate() {
+            if let Some(datum) = &output.datum {
+                datums.insert((hash.clone(), index as i16), datum.clone());
+            }
+        }
+    }
+    datums
+}
+
 /// Fill in `TxInput::datum` for inputs at script addresses.
 ///
 /// Only script addresses are asked about — they're where protocol datums live, and there
@@ -1083,28 +1106,36 @@ pub fn bootstrapper(context: &Context, config: SinkConfig) -> Result<Stage, Erro
 /// cache and never reaches that query. The db handle is taken under a brief guard and the
 /// lookup runs outside it, so a slow query can't stall the per-block write lock.
 async fn resolve_input_datums(state: &tokio::sync::RwLock<State>, txs: &mut [BlockTx]) {
+    let local = same_block_datums(txs);
+    let is_script = |inp: &&crate::event::TxInput| {
+        inp.address
+            .as_deref()
+            .is_some_and(|a: &str| a.starts_with("addr1w") || a.starts_with("addr1z"))
+    };
     let keys: Vec<(Vec<u8>, i16)> = txs
         .iter()
         .flat_map(|tx| tx.inputs.iter())
-        .filter(|inp| {
-            inp.address
-                .as_deref()
-                .is_some_and(|a: &str| a.starts_with("addr1w") || a.starts_with("addr1z"))
-        })
+        .filter(is_script)
         .map(|inp| (hex::decode(&inp.tx_hash).unwrap_or_default(), inp.index))
+        .filter(|key| !local.contains_key(key))
         .collect();
-    if keys.is_empty() {
-        return;
-    }
-    let db = { state.read().await.db_handle() };
-    let Some(db) = db else { return };
-    let Ok(datums) = db.resolve_datums_batch(&keys).await else {
-        return;
+
+    let datums = if keys.is_empty() {
+        Default::default()
+    } else {
+        let db = { state.read().await.db_handle() };
+        match db {
+            Some(db) => db.resolve_datums_batch(&keys).await.unwrap_or_default(),
+            None => Default::default(),
+        }
     };
+
     for tx in txs {
         for inp in &mut tx.inputs {
             let key = (hex::decode(&inp.tx_hash).unwrap_or_default(), inp.index);
-            inp.datum = datums.get(&key).cloned();
+            if let Some(datum) = local.get(&key).or_else(|| datums.get(&key)) {
+                inp.datum = Some(datum.clone());
+            }
         }
     }
 }
