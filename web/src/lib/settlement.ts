@@ -48,10 +48,35 @@ export interface Settlement {
   beneficiary: TxOutputInfo;
 }
 
+function isPool(address: string | null | undefined): boolean {
+  return address !== null && address !== undefined && dappForAddress(address)?.role === 'pool';
+}
+
+/**
+ * The assets that exist anywhere outside the pool in this transaction.
+ *
+ * A pool holds more than the pair it trades. Minswap V2 keeps a pool NFT and an LP token
+ * whose remaining supply tracks liquidity, and that supply figure moves when a swap
+ * happens — so the pool showed three assets changing where a swap has two, and the whole
+ * reading was abandoned as "not this shape". Neither of those ever leaves the pool, which
+ * is exactly what separates them from the two sides: the asset going in arrives from the
+ * order UTXO, and the asset coming out lands in the payout.
+ */
+function assetsOutsidePool(inputs: TxInput[], outputs: TxOutputInfo[]): Set<string> {
+  const outside = new Set<string>();
+  for (const input of inputs) {
+    if (isPool(input.address)) continue;
+    for (const asset of input.assets ?? []) outside.add(asset.fingerprint);
+  }
+  for (const output of outputs) {
+    if (isPool(output.address)) continue;
+    for (const asset of output.assets) outside.add(asset.fingerprint);
+  }
+  return outside;
+}
+
 /** The pool UTXO on each side of the tx, when exactly one pool was touched. */
 function poolPair(inputs: TxInput[], outputs: TxOutputInfo[]): [TxInput, TxOutputInfo] | null {
-  const isPool = (address: string | null | undefined) =>
-    address !== null && address !== undefined && dappForAddress(address)?.role === 'pool';
   const ins = inputs.filter((i) => isPool(i.address));
   const outs = outputs.filter((o) => isPool(o.address));
   // More than one pool is a routed swap through several pairs — its ends don't line up
@@ -145,7 +170,10 @@ export function readSettlement(inputs: TxInput[], outputs: TxOutputInfo[], accou
   const pool = poolPair(inputs, outputs);
   if (!pool) return null;
 
-  const moved = poolDeltas(pool[0], pool[1]);
+  // Only assets that exist outside the pool can be a side of the swap; the pool's own
+  // bookkeeping tokens change without anybody trading them.
+  const outside = assetsOutsidePool(inputs, outputs);
+  const moved = poolDeltas(pool[0], pool[1]).filter((m) => !m.side.asset || outside.has(m.side.asset.fingerprint));
   const gained = moved.filter((m) => m.change > 0n);
   const lost = moved.filter((m) => m.change < 0n);
   // A swap is one thing in and one thing out. Anything else — a deposit, a withdrawal,

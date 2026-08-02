@@ -23,6 +23,16 @@ function night(quantity: string): AssetInfo {
   return { fingerprint: NIGHT, name: 'NIGHT', quantity, size: 256 };
 }
 
+/** The pool's LP token: a max-minus-liquidity counter that never leaves the pool. */
+function lp(quantity: string): AssetInfo {
+  return { fingerprint: 'asset1lptoken', quantity, size: 256 };
+}
+
+/** The pool's identity NFT, likewise never leaving it. */
+function poolNft(): AssetInfo {
+  return { fingerprint: 'asset1poolnft', name: 'MSP', quantity: '1', size: 256 };
+}
+
 function input(address: string, lovelace: string, assets: AssetInfo[] = []): TxInput {
   return { tx_hash: '00'.repeat(32), index: 0, address, lovelace, assets };
 }
@@ -63,6 +73,28 @@ describe('readSettlement', () => {
 
   it('identifies the user as the output that funded nothing', () => {
     expect(settlement()!.beneficiary.address).toBe(USER);
+  });
+
+  it('ignores the pool’s own bookkeeping tokens', () => {
+    // A Minswap V2 pool holds a pool NFT and an LP token whose remaining supply tracks
+    // liquidity, and that figure moves when a swap happens. Counting them made the pool
+    // look like it moved four assets where a swap moves two, and the whole reading was
+    // abandoned — a real settlement read as "EXECUTED 1 ORDER". Neither ever leaves the
+    // pool, which is what separates them from the two sides.
+    const settled = settlement({
+      inputs: [
+        input(POOL, '2109561210296', [night('19858645.356383'), lp('9223372036854775807'), poolNft()]),
+        input(BATCHER, '275608917'),
+        input(ORDER, '4000000', [night('42126.614528')]),
+      ],
+      outputs: [
+        output(BATCHER, '276942964'),
+        output(USER, '4454204671'),
+        output(POOL, '2105109005625', [night('19900771.970911'), lp('9223372036854775800'), poolNft()]),
+      ],
+    })!;
+    expect(settled.gave).toMatchObject({ quantity: '42126.614528' });
+    expect(settled.got).toEqual({ quantity: '4452204671' });
   });
 
   it('gives up when several orders share one pool movement', () => {

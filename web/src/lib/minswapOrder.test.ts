@@ -11,6 +11,9 @@ const ADA_FOR_WMTX =
 
 const WMTX_POLICY = 'e5a42a1a1d3d1da71b0449663c32798725888d2eb0843c4dabeca05a';
 
+const USDM_FOR_STRIKE_ROUTED =
+  'd8799fd8799f581c9abc0b287a401428b9e2205b439d834e029d3802b95155980d34be31ffd8799fd8799f581c9abc0b287a401428b9e2205b439d834e029d3802b95155980d34be31ffd8799fd8799fd8799f581c0f1dbb5c72409275b686faf739ba9df6682017e1337aa292b7900547ffffffffd87980d8799fd8799f581c9abc0b287a401428b9e2205b439d834e029d3802b95155980d34be31ffd8799fd8799fd8799f581c0f1dbb5c72409275b686faf739ba9df6682017e1337aa292b7900547ffffffffd87980d8799f581cf5808c2c990d86da54bfc97d89cee6efa20cd8461616359478d96b4c58207dd6988c5a86693c76aeec1ea94afa41770be0de21a775ca7a2a1eabdb6a0171ffd905029f82d8799fd8799f581cf5808c2c990d86da54bfc97d89cee6efa20cd8461616359478d96b4c58207dd6988c5a86693c76aeec1ea94afa41770be0de21a775ca7a2a1eabdb6a0171ffd87980ffd8799fd8799f581cf5808c2c990d86da54bfc97d89cee6efa20cd8461616359478d96b4c582073e1518e92f367fd5820ac2da1d40ab24fbca1d6cb2c28121ad92f57aff8abceffd87a80ffd8799f1a01bd722cff1a0403741bff1a001e8480d87a80ff';
+
 describe('readSwapOrder', () => {
   const order = readSwapOrder(ADA_FOR_WMTX)!;
 
@@ -62,5 +65,27 @@ describe('readSwapOrder: what it declines', () => {
     );
     expect(unknown).not.toBe(ADA_FOR_WMTX);
     expect(readSwapOrder(unknown)).toBeNull();
+  });
+
+  it('reads a swap routed through several pools', () => {
+    // A real mainnet order: 29.192748 USDM in, STRIKE out, hopping through ADA because
+    // the pair has no pool of its own. Only the ends of the chain are the swap — the
+    // intermediate asset is a mechanism, not something the user asked for.
+    const order = readSwapOrder(USDM_FOR_STRIKE_ROUTED)!;
+    expect(order.giveAmount).toBe(29_192_748n);
+    // CIP-67 labelled (0014df10) USDM in, STRIKE out.
+    expect(order.give.name).toBe('0014df105553444d');
+    expect(order.want.name).toBe('535452494b45');
+  });
+
+  it('declines a route whose far pool is outside the bundled table', () => {
+    // The last hop names the wanted asset, so an unresolved pool there leaves the swap's
+    // own end unnamed — better to say nothing than to report only where it started.
+    const unknownFarPool = USDM_FOR_STRIKE_ROUTED.replace(
+      '73e1518e92f367fd5820ac2da1d40ab24fbca1d6cb2c28121ad92f57aff8abce',
+      'ff'.repeat(32),
+    );
+    expect(unknownFarPool).not.toBe(USDM_FOR_STRIKE_ROUTED);
+    expect(readSwapOrder(unknownFarPool)).toBeNull();
   });
 });
