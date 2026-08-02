@@ -127,6 +127,24 @@ export function bech32Encode(hrp: string, bytes: Uint8Array): string {
 }
 
 /**
+ * Whether an address is locked by a script rather than a key.
+ *
+ * The CIP-19 header's type nibble has the payment credential's kind in its low bit, and
+ * every address type from 0 to 7 follows it: `addr1z…` (script + stake key) and
+ * `addr1w…` (script alone) are scripts, `addr1q…` and `addr1v…` are keys.
+ *
+ * This distinguishes a contract from a wallet, which a stake credential can't: a DEX
+ * order address carries *the user's own* stake credential, so the user keeps earning
+ * rewards while the order sits there waiting to be filled.
+ */
+export function paymentIsScript(addr: string): boolean {
+  const bytes = bech32Decode(addr);
+  if (!bytes || bytes.length === 0) return false;
+  const type = bytes[0] >> 4;
+  return type <= 0b0111 && (type & 1) === 1;
+}
+
+/**
  * The reward (stake1…) address of a base payment address, or null when it has no stake
  * part (enterprise / Byron) or isn't decodable. Rebuilds the reward address from the
  * payment address's network + stake credential (bytes 29-56) and its script/key type

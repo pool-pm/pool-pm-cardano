@@ -20,6 +20,12 @@ const CAROL = 'addr1q8e533g8x64jzcr0cwn8meau8wuzk0m5ca60sfazglxhat73zzqrg5denlr3
 
 /** Minswap's "Batch Order" script — where a swap order is posted. */
 const MINSWAP_ORDER = 'addr1wyx22z2s4kasd3w976pnjf9xdty88epjqfvgkmfnscpd0rg3z8y6v';
+/**
+ * Minswap V2's order script paired with ALICE's stake credential — the real shape of a
+ * V2 order address, which `stakeAddressOf` resolves to Alice's own reward account.
+ */
+const MINSWAP_V2_ORDER_ALICE =
+  'addr1z8p79rpkcdz8x9d6tft0x0dx5mwuzac2sa4gm8cvkw5hcnrcq7dmqu20hxxtcts5zkz7jaqrwua8claa2hrghvgnwnpqjxj2vs';
 /** Minswap's "Liquidity Pool" script — a role with no verb of its own. */
 const MINSWAP_POOL =
   'addr1z9tu3ecccgqlhgg2nkshfrt8td2zs8fmrwvrchgksl78x96j2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pq26n58l';
@@ -322,6 +328,22 @@ describe('describeTx: dApps', () => {
     )!;
     expect(intent.verb).toBe('SENT');
     expect(intent.targets).toHaveLength(2);
+  });
+
+  it('reads an order posted to a script that carries the sender’s own stake key', () => {
+    // Minswap V2's order address is its script hash plus *the user's* stake credential,
+    // so the user keeps staking while the order waits to be filled. Folding outputs by
+    // stake credential therefore read the order as Alice's own change and dropped it,
+    // and a DexHunter trade ended up headlined by the 2 ₳ fee that was left over.
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '600000000')],
+        outputs: [output(MINSWAP_V2_ORDER_ALICE, '596000000'), output(ALICE_A, '3000000')],
+      }),
+    )!;
+    expect(intent.verb).toBe('SWAPPING');
+    expect(intent.amount).toEqual({ quantity: '596000000' });
+    expect(intent.via).toMatchObject({ label: 'MINSWAP' });
   });
 
   it('reads a pending swap out of the order datum', () => {

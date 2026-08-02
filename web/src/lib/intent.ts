@@ -19,7 +19,7 @@
  */
 import type { AssetInfo, BlockTx, DelegationInfo, MintInfo, TxInput, TxOutputInfo } from './types';
 import { nonChangeOutputs } from './change';
-import { stakeAddressOf } from './bech32';
+import { paymentIsScript, stakeAddressOf } from './bech32';
 import { dappForAddress, dappForPolicy, isDex, type Dapp } from './dapps';
 import { parseMessage, type TaggedAction } from './cip20';
 import { messageLines, metadataLines } from './metadata';
@@ -137,9 +137,16 @@ function isWithdrawal(input: TxInput): boolean {
  * The account an address belongs to. Payment addresses sharing a stake credential are
  * one wallet — a wallet routinely spends from many of its own payment addresses — so
  * this, not the address, is what tells "someone else" from "myself".
+ *
+ * A script address is its own account no matter whose stake credential it carries, and
+ * that exception is load-bearing. Minswap V2 and the aggregators that route into it put
+ * *the user's* stake credential on the order address, so the user keeps staking while
+ * the order waits. Folding by stake credential alone read that order as the user's own
+ * change and dropped it, which left a DexHunter trade headlined by the only output that
+ * survived the filter — its 2 ₳ fee — instead of the swap.
  */
 function walletOf(address: string): string {
-  return stakeAddressOf(address) ?? address;
+  return paymentIsScript(address) ? address : (stakeAddressOf(address) ?? address);
 }
 
 interface Sender {
