@@ -13,7 +13,7 @@ use pallas::crypto::hash::Hasher;
 
 use crate::cip68;
 
-use crate::event::Event;
+use crate::event::{BlockTx, Event};
 use crate::event_bus::EventBus;
 use crate::mempool::extract_tx;
 use crate::model::{is_handle_policy, parse_handle_name, pool_bech32_id, TxOutput};
@@ -76,7 +76,7 @@ impl Worker {
         let height = block.number();
         let block_hash = block.hash().to_string();
         let (
-            txs,
+            mut txs,
             produced,
             consumed,
             pool_deleg,
@@ -743,6 +743,13 @@ impl Worker {
             .catchup_state_us
             .fetch_add(state_us, Ordering::Relaxed);
 
+        // Datums of the script inputs, so a settlement can say which orders it filled
+        // rather than how many. Done here rather than during input resolution: an order
+        // UTXO is created a few blocks before the batcher spends it, so it's still in
+        // the in-memory cache and never reaches that query. The lookup is a handful of
+        // keys per block and runs with no guard held, after all the state work is done.
+        resolve_input_datums(&stage.state, &mut txs).await;
+
         let tx_count = txs.len();
 
         stage
@@ -1066,4 +1073,38 @@ pub fn bootstrapper(context: &Context, config: SinkConfig) -> Result<Stage, Erro
         latest_block: Default::default(),
         input: Default::default(),
     })
+}
+
+/// Fill in `TxInput::datum` for inputs at script addresses.
+///
+/// Only script addresses are asked about — they're where protocol datums live, and there
+/// are a handful per block. Done here rather than during input resolution: an order UTXO
+/// is created a few blocks before the batcher spends it, so it's still in the in-memory
+/// cache and never reaches that query. The db handle is taken under a brief guard and the
+/// lookup runs outside it, so a slow query can't stall the per-block write lock.
+async fn resolve_input_datums(state: &tokio::sync::RwLock<State>, txs: &mut [BlockTx]) {
+    let keys: Vec<(Vec<u8>, i16)> = txs
+        .iter()
+        .flat_map(|tx| tx.inputs.iter())
+        .filter(|inp| {
+            inp.address
+                .as_deref()
+                .is_some_and(|a: &str| a.starts_with("addr1w") || a.starts_with("addr1z"))
+        })
+        .map(|inp| (hex::decode(&inp.tx_hash).unwrap_or_default(), inp.index))
+        .collect();
+    if keys.is_empty() {
+        return;
+    }
+    let db = { state.read().await.db_handle() };
+    let Some(db) = db else { return };
+    let Ok(datums) = db.resolve_datums_batch(&keys).await else {
+        return;
+    };
+    for tx in txs {
+        for inp in &mut tx.inputs {
+            let key = (hex::decode(&inp.tx_hash).unwrap_or_default(), inp.index);
+            inp.datum = datums.get(&key).cloned();
+        }
+    }
 }
