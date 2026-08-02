@@ -738,9 +738,18 @@ function tokenUnit(count: number): string {
  * one that was transferred, and since it usually lands back in the minter's own wallet
  * the tx would read as `MOVED`. A burn is worse — nothing in the outputs records it.
  */
-function describeMint(mint: MintInfo, subject: Party | undefined, recipients: Recipient[]): Intent {
+function describeMint(
+  mint: MintInfo,
+  subject: Party | undefined,
+  recipients: Recipient[],
+  tag: TaggedAction | null,
+): Intent {
   const app = mint.policies.map(dappForPolicy).find((d) => d !== undefined);
-  const via: Party | undefined = app ? { label: app.name.toUpperCase(), kind: 'app' } : undefined;
+  // The minting policy names the dApp when it's a known one; otherwise the tx's own
+  // message does. Either way, saying it in the sentence means the raw message line
+  // shouldn't also be printed above it.
+  const via: Party | undefined = app ? { label: app.name.toUpperCase(), kind: 'app' } : appParty(tag?.app);
+  const messageRead = tag !== null;
 
   if (mint.minted === 0) {
     // The assets are gone from the chain, but the annotation still carries their names
@@ -753,6 +762,7 @@ function describeMint(mint: MintInfo, subject: Party | undefined, recipients: Re
       targets: [],
       hiddenTargets: 0,
       via,
+      messageRead,
     };
   }
 
@@ -768,6 +778,7 @@ function describeMint(mint: MintInfo, subject: Party | undefined, recipients: Re
     targets: target ? [{ party: target }] : [],
     hiddenTargets: 0,
     via: target ? undefined : via,
+    messageRead,
   };
 }
 
@@ -789,7 +800,10 @@ export function describeTx(tx: BlockTx): Intent | null {
   const sender = soleSender(tx.inputs);
   const recipients = outsideRecipients(tx, sender?.wallet);
 
-  if (mint) return describeMint(mint, sender?.party, recipients);
+  // What the tx says about itself, read once and used wherever it helps.
+  const tag = parseMessage(messageLines(tx.metadata));
+
+  if (mint) return describeMint(mint, sender?.party, recipients, tag);
 
   const rewards = withdrawn(tx.inputs);
   if (rewards > 0n && recipients.length === 0) return describeWithdrawal(tx, rewards, sender?.party);
@@ -805,7 +819,6 @@ export function describeTx(tx: BlockTx): Intent | null {
   }
 
   // What the tx says about itself beats anything inferred from its shape.
-  const tag = parseMessage(messageLines(tx.metadata));
   if (tag) return describeTagged(tag, sender?.party, recipients, tx);
 
   // Nothing said, but spending a DEX's order script is itself a statement. Several
