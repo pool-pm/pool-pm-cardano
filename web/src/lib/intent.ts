@@ -498,47 +498,85 @@ function describeTagged(tag: TaggedAction, sender: Party | undefined, recipients
       messageRead: true,
     };
   }
-  // A settled order states the whole swap — both sides, exactly — in the pool's balance
-  // change, and it belongs to the user who posted the order, not to the batcher that
-  // happened to submit it.
+  return (
+    describeSettlement(tx, app, tag.verb) ?? {
+      subject: app,
+      verb: tag.verb ?? 'USED',
+      targets: [],
+      hiddenTargets: 0,
+      messageRead: true,
+    }
+  );
+}
+
+/**
+ * A batcher settling orders it holds, or null when this tx isn't one.
+ *
+ * This can't wait for the tx to name itself. SundaeSwap, WingRiders and VyFi settle
+ * without writing a CIP-20 message at all, and read as "N WALLETS SENT …" — true, but it
+ * buries the swap the transaction exists to perform. What identifies a settlement is
+ * structural and always there: it spends UTXOs from a DEX's order script.
+ *
+ * The batcher is not the actor worth naming when a single order can be attributed to the
+ * user who posted it — the swap is theirs, and the batcher only submitted it.
+ */
+function describeSettlement(tx: BlockTx, app?: Party, verb?: string, ownWallet?: string): Intent | null {
+  const orderInputs = tx.inputs.filter((i) => {
+    if (!i.address || dappForAddress(i.address)?.role !== 'order') return false;
+    // An order the funder is taking back is a cancellation, not a batch being settled.
+    return ownWallet === undefined || (stakeAddressOf(i.address) ?? i.address) !== ownWallet;
+  });
+  if (orderInputs.length === 0) return null;
+  const venue = app ?? appParty(dappForAddress(orderInputs[0].address!)?.name);
+
+  // One order against one pool states the whole swap — both sides, exactly — in the
+  // pool's balance change, and it belongs to whoever posted the order.
   const settled = readSettlement(tx.inputs, tx.outputs, walletOf);
   if (settled) {
     return {
       subject: partyForAddress(settled.beneficiary.address, settled.beneficiary.handle),
-      verb: tag.verb === 'EXECUTED' ? 'SWAPPED' : (tag.verb ?? 'SWAPPED'),
+      // "EXECUTED" is what the protocol calls it; "SWAPPED" is what happened.
+      verb: verb === 'EXECUTED' || verb === undefined ? 'SWAPPED' : verb,
       amount: sideAmount(settled.gave),
       preposition: 'FOR',
       targets: [{ amount: sideAmount(settled.got) }],
       hiddenTargets: 0,
-      via: app,
+      via: venue,
       messageRead: true,
     };
   }
 
-  // No one wallet funded it — a batcher settling orders it holds, so the dApp is the
-  // actor. Each order it spent carries a datum saying what that order asked for, which
-  // is the difference between "2 orders" and which two. The tx's ADA total says nothing:
-  // it's mostly liquidity pools rewritten and batcher change, not value anybody sent.
+  // Several orders share one pool movement, so no one of them can claim it. Each order's
+  // datum still says what it asked for, which is the difference between "2 orders" and
+  // which two. The tx's ADA total says nothing: it's mostly liquidity pools rewritten and
+  // batcher change, not value anybody sent.
   const orders = settledOrders(tx.inputs);
   if (orders.length > 0) {
     return {
-      subject: app,
-      verb: tag.verb ?? 'USED',
-      preposition: undefined,
+      subject: venue,
+      verb: verb ?? 'SETTLED',
       targets: orders.slice(0, MAX_TARGETS).map((order) => ({ amount: swapPair(order) })),
       hiddenTargets: Math.max(0, orders.length - MAX_TARGETS),
       messageRead: true,
     };
   }
-  const counted = ordersSettled(tx.inputs);
+
+  // No datum we can read — a protocol whose order shape isn't decoded yet. Counting them
+  // is the honest remainder.
+  const counted = orderInputs.length;
   return {
-    subject: app,
-    verb: tag.verb ?? 'USED',
-    amount: counted > 0 ? { quantity: String(counted), unit: counted === 1 ? 'ORDER' : 'ORDERS' } : undefined,
+    subject: venue,
+    verb: verb ?? 'SETTLED',
+    amount: { quantity: String(counted), unit: counted === 1 ? 'ORDER' : 'ORDERS' },
     targets: [],
     hiddenTargets: 0,
     messageRead: true,
   };
+}
+
+/** A dApp as the sentence's actor or venue. */
+function appParty(name: string | undefined): Party | undefined {
+  return name ? { label: name.toUpperCase(), kind: 'app' } : undefined;
 }
 
 /** A settled order together with the UTXO it was posted in. */
@@ -587,18 +625,6 @@ function offeredText(order: SwapOrder, utxo: { lovelace: string; assets?: AssetI
   const name = assetTicker(order.give) ?? asset?.name ?? '?';
   if (!asset) return name;
   return `${formatCount(Number(asset.quantity))} ${asset.name ?? name}`;
-}
-
-/**
- * Orders a batch settled: one per order UTXO it spent.
- *
- * Counted from the inputs rather than the payouts because the inputs are exact — every
- * order the batcher consumed is an input from the app's order script, while the outputs
- * mix user payouts with pool UTXOs and the batcher's own change. Zero when the order
- * script isn't one we can name, which is the honest answer rather than a guess.
- */
-function ordersSettled(inputs: TxInput[]): number {
-  return inputs.filter((i) => i.address && dappForAddress(i.address)?.role === 'order').length;
 }
 
 /** One side of a settled swap as a sentence amount: ADA carries no unit. */
@@ -763,6 +789,11 @@ export function describeTx(tx: BlockTx): Intent | null {
   // What the tx says about itself beats anything inferred from its shape.
   const tag = parseMessage(messageLines(tx.metadata));
   if (tag) return describeTagged(tag, sender?.party, recipients, tx);
+
+  // Nothing said, but spending a DEX's order script is itself a statement. Several
+  // protocols settle without ever writing a message.
+  const settlement = describeSettlement(tx, undefined, undefined, sender?.wallet);
+  if (settlement) return settlement;
 
   if (!sender) return describeShared(tx, recipients);
   return describeTransfer(sender.party, recipients, tx.outputs, metadataLines(tx.metadata));
