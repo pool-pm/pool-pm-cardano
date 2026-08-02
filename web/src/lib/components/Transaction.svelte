@@ -465,7 +465,12 @@
   {#if intent}
     <div class="sentence">
       {#if intent.subjects}
-        {#each intent.subjects as funder}{@render partyLine(funder)}{/each}
+        <!-- Several accounts acted together, so they read as a sum, the same way several
+             assets sent at once do. Bare adjacency reads as a list of unrelated lines. -->
+        {#each intent.subjects as funder, i}
+          {#if i > 0}<span class="party-plus">+</span>{/if}
+          {@render partyLine(funder)}
+        {/each}
       {:else if intent.subject}{@render partyLine(intent.subject)}{/if}
       <span class="verb">{intent.verb}</span>
       {#if headline}
@@ -481,7 +486,8 @@
         {/each}
       {/if}
       {#if intent.preposition}<span class="prep">{intent.preposition}</span>{/if}
-      {#each shownTargets as target}
+      {#each shownTargets as target, ti}
+        {#if ti > 0}<span class="party-plus">+</span>{/if}
         <div class="target">
           {#if headline?.counterpart && !target.party}
             {#if target.amount?.image}{@render amountArt(target.amount.image)}{/if}
@@ -776,9 +782,8 @@
     min-width: 0;
   }
 
-  /* Connective tissue. Small and dim on purpose: they carry the grammar, not the
+  /* Connective tissue. Small and dim on purpose: prepositions carry the grammar, not the
      information, and must never compete with the amount or the parties. */
-  .verb,
   .prep {
     font-size: 8px;
     font-weight: 600;
@@ -787,8 +792,16 @@
     color: rgb(255 255 255 / 0.35);
   }
 
+  /* The verb is not connective tissue — it is what happened, and the one word that tells
+     a swap from a send from a delegation at a glance. It reads before the amount does,
+     so it sits above the prepositions it used to share a size with, and below only the
+     headline figure. */
   .verb {
-    color: rgb(255 255 255 / 0.55);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    line-height: 1.35;
+    color: rgb(255 255 255 / 0.9);
   }
 
   .amount {
@@ -1098,6 +1111,14 @@
     align-self: center;
     font-size: 10px;
     color: rgb(255 255 255 / 0.4);
+  }
+
+  /* Same idea between parties: several who acted, or several who were paid. */
+  .party-plus {
+    align-self: center;
+    font-size: 9px;
+    line-height: 1.1;
+    color: rgb(255 255 255 / 0.35);
   }
 
   .asset-thumb {

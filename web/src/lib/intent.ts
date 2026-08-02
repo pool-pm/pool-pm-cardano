@@ -23,7 +23,14 @@
  * is worse than a vague true one.
  */
 import type { AssetInfo, BlockTx, DelegationInfo, MintInfo, TxInput, TxOutputInfo } from './types';
-import { nonChangeOutputs } from './change';
+import {
+  addQuantities,
+  formatScaled,
+  nonChangeOutputs,
+  parseQuantity,
+  subtractQuantities,
+  type ScaledQty,
+} from './change';
 import { paymentIsScript, stakeAddressOf } from './bech32';
 import { dappForAddress, dappForPolicy, isDex, type Dapp } from './dapps';
 import { parseMessage, type TaggedAction } from './cip20';
@@ -113,6 +120,19 @@ const MAX_SUBJECTS = 3;
  */
 const MIN_UTXO_DUST = 2_000_000n;
 
+/**
+ * A dApp's name as a tile label.
+ *
+ * "Protocol" and "Finance" are corporate suffixes rather than what anyone calls the
+ * project, and at 108px they cost the name itself — "Splash Protocol" ellipsised to
+ * "SPLASH PROTOCO…", which is strictly worse than "SPLASH".
+ */
+const APP_SUFFIX = /\s+(protocol|finance)$/i;
+
+export function appLabel(name: string): string {
+  return name.replace(APP_SUFFIX, '').toUpperCase();
+}
+
 /** Middle-truncated address: identifying at both ends, one line at 108px. */
 export function shortAddress(address: string): string {
   if (address.length <= ADDRESS_HEAD + ADDRESS_TAIL + 1) return address;
@@ -134,7 +154,7 @@ export function partyForAddress(address: string, handle?: string): Party {
   }
   const dapp = dappForAddress(address);
   if (dapp) {
-    return { label: dapp.name.toUpperCase(), href: hrefFor(address), id: address, kind: 'app' };
+    return { label: appLabel(dapp.name), href: hrefFor(address), id: address, kind: 'app' };
   }
   return { label: shortAddress(address), href: hrefFor(address), id: address, kind: 'address' };
 }
@@ -191,17 +211,16 @@ function soleSender(inputs: TxInput[]): Sender | null {
     seen.handle ??= input.handle;
     if (BigInt(input.lovelace) > BigInt(seen.input.lovelace)) seen.input = input;
   }
-  // A script UTXO the funder is taking back isn't a second funder. A cancelled DEX order
-  // is spent from an address holding the canceller's own stake credential, so it can be
-  // told apart from someone else's order — which a batcher spends, and which must keep
-  // counting, since a batcher settling other people's orders has no single sender.
+  // A script UTXO isn't a party. Somebody spent it — a user reclaiming a cancelled DEX
+  // order, a batcher settling one, a vault being drawn on — and that somebody is the
+  // wallet that signed and paid. Counting the script as a second funder left all of them
+  // subjectless: a Surf leveraged borrow read as "SURF REFUNDED", naming the protocol and
+  // nothing else. A batch of *other people's* orders is still attributed to the protocol,
+  // because `describeSettlement` recognises it structurally before this is consulted.
   const keys = [...wallets.keys()];
   const funders = keys.filter((key) => !paymentIsScript(key));
   if (funders.length === 1) {
-    const account = stakeAddressOf(funders[0]) ?? funders[0];
-    for (const key of keys) {
-      if (paymentIsScript(key) && (stakeAddressOf(key) ?? key) === account) wallets.delete(key);
-    }
+    for (const key of keys) if (paymentIsScript(key)) wallets.delete(key);
   }
   if (wallets.size !== 1) return null;
   const [wallet, { input, handle, addresses }] = wallets.entries().next().value!;
@@ -485,8 +504,21 @@ function dappAction(recipients: Recipient[]): Recipient | null {
  * The amount comes from the dApp output when there is one, else from what left the
  * wallet, so the loud line stays the number the reader cares about.
  */
-function describeTagged(tag: TaggedAction, sender: Party | undefined, recipients: Recipient[], tx: BlockTx): Intent {
-  const app: Party = { label: tag.app.toUpperCase(), kind: 'app' };
+function describeTagged(
+  tag: TaggedAction,
+  sender: Party | undefined,
+  recipients: Recipient[],
+  tx: BlockTx,
+  senderWallet?: string,
+): Intent {
+  const app: Party = { label: appLabel(tag.app), kind: 'app' };
+
+  // A batcher settling other people's orders funds the tx from its own wallet, so it
+  // *has* a sole sender — but the swap belongs to whoever posted the order, not to the
+  // batcher. Recognised structurally, before the sender is considered.
+  const settled = describeSettlement(tx, app, tag.verb, senderWallet);
+  if (settled) return settled;
+
   const action = dappAction(recipients) ?? (recipients.length === 1 ? recipients[0] : null);
   const target = action ? targetFor(action) : null;
 
@@ -510,15 +542,13 @@ function describeTagged(tag: TaggedAction, sender: Party | undefined, recipients
       messageRead: true,
     };
   }
-  return (
-    describeSettlement(tx, app, tag.verb) ?? {
-      subject: app,
-      verb: tag.verb ?? 'USED',
-      targets: [],
-      hiddenTargets: 0,
-      messageRead: true,
-    }
-  );
+  return {
+    subject: app,
+    verb: tag.verb ?? 'USED',
+    targets: [],
+    hiddenTargets: 0,
+    messageRead: true,
+  };
 }
 
 /**
@@ -596,7 +626,7 @@ function describeSettlement(tx: BlockTx, app?: Party, verb?: string, ownWallet?:
 
 /** A dApp as the sentence's actor or venue. */
 function appParty(name: string | undefined): Party | undefined {
-  return name ? { label: name.toUpperCase(), kind: 'app' } : undefined;
+  return name ? { label: appLabel(name), kind: 'app' } : undefined;
 }
 
 /** A settled order together with the UTXO it was posted in. */
@@ -750,7 +780,7 @@ function describeMint(
   // The minting policy names the dApp when it's a known one; otherwise the tx's own
   // message does. Either way, saying it in the sentence means the raw message line
   // shouldn't also be printed above it.
-  const via: Party | undefined = app ? { label: app.name.toUpperCase(), kind: 'app' } : appParty(tag?.app);
+  const via: Party | undefined = app ? appParty(app.name) : appParty(tag?.app);
   const messageRead = tag !== null;
 
   if (mint.minted === 0) {
@@ -821,15 +851,83 @@ export function describeTx(tx: BlockTx): Intent | null {
   }
 
   // What the tx says about itself beats anything inferred from its shape.
-  if (tag) return describeTagged(tag, sender?.party, recipients, tx);
+  if (tag) return describeTagged(tag, sender?.party, recipients, tx, sender?.wallet);
 
   // Nothing said, but spending a DEX's order script is itself a statement. Several
   // protocols settle without ever writing a message.
   const settlement = describeSettlement(tx, undefined, undefined, sender?.wallet);
   if (settlement) return settlement;
 
+  // Nothing went to anyone else, but a script was spent: value came back out of a
+  // contract rather than merely shuffling between the owner's own addresses.
+  if (recipients.length === 0) {
+    const unlock = describeUnlock(tx, sender?.party);
+    if (unlock) return unlock;
+  }
+
   if (!sender) return describeShared(tx, recipients);
   return describeTransfer(sender.party, recipients, tx.outputs, metadataLines(tx.metadata));
+}
+
+/**
+ * Value coming back out of a contract, to the account that owns it.
+ *
+ * Nothing leaves the account in these, so there are no recipients and the sentence used
+ * to fall through to "MOVED 1,992 ₳" — the account's own ADA, restated. What actually
+ * happened is that a script was spent and released something: a vesting contract paying
+ * out, collateral being reclaimed, a locked balance being drawn down. One real example
+ * held 828.1 NIGHT, kept half and handed the other half to a payment address of the same
+ * account, and read as a plain ADA shuffle.
+ *
+ * Measured across the script boundary rather than between addresses, since the addresses
+ * are all the owner's: whatever the non-script side gained is what the script let go.
+ */
+function describeUnlock(tx: BlockTx, subject: Party | undefined): Intent | null {
+  const fromScript = tx.inputs.filter((i) => !isWithdrawal(i) && i.address && paymentIsScript(i.address));
+  if (fromScript.length === 0) return null;
+
+  const held = (assets: AssetInfo[] | undefined, into: Map<string, { asset: AssetInfo; qty: ScaledQty }>) => {
+    for (const asset of assets ?? []) {
+      const seen = into.get(asset.fingerprint);
+      const qty = parseQuantity(asset.quantity);
+      into.set(asset.fingerprint, seen ? { asset, qty: addQuantities(seen.qty, qty) } : { asset, qty });
+    }
+  };
+  const before = new Map<string, { asset: AssetInfo; qty: ScaledQty }>();
+  const after = new Map<string, { asset: AssetInfo; qty: ScaledQty }>();
+  let lovelaceBefore = 0n;
+  let lovelaceAfter = 0n;
+  for (const input of tx.inputs) {
+    if (isWithdrawal(input) || !input.address || paymentIsScript(input.address)) continue;
+    lovelaceBefore += BigInt(input.lovelace);
+    held(input.assets, before);
+  }
+  for (const output of tx.outputs) {
+    if (paymentIsScript(output.address)) continue;
+    lovelaceAfter += BigInt(output.lovelace);
+    held(output.assets, after);
+  }
+
+  const released: AssetInfo[] = [];
+  for (const [fingerprint, { asset, qty }] of after) {
+    const gained = subtractQuantities(qty, before.get(fingerprint)?.qty ?? [0n, 0]);
+    if (gained[0] > 0n) released.push({ ...asset, quantity: formatScaled(gained) });
+  }
+  // ADA can only be counted as released once it exceeds the fee, which every tx spends
+  // from this same side of the boundary.
+  const releasedAda = lovelaceAfter + BigInt(tx.fee) - lovelaceBefore;
+  if (released.length === 0 && releasedAda <= 0n) return null;
+
+  const dapp = fromScript.map((i) => dappForAddress(i.address!)).find((d) => d !== undefined);
+  return {
+    subject,
+    verb: 'UNLOCKED',
+    amount: released.length > 0 ? undefined : { quantity: releasedAda.toString() },
+    assets: released.length > 0 ? released : undefined,
+    targets: [],
+    hiddenTargets: 0,
+    via: appParty(dapp?.name),
+  };
 }
 
 /**

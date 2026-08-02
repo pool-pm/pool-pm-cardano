@@ -22,6 +22,21 @@ export function addQuantities(a: ScaledQty, b: ScaledQty): ScaledQty {
   return [va + vb, scale];
 }
 
+/** Subtract two scaled quantities, aligning decimals. */
+export function subtractQuantities(a: ScaledQty, b: ScaledQty): ScaledQty {
+  return addQuantities(a, [-b[0], b[1]]);
+}
+
+/** Render a scaled quantity back to the decimal string the rest of the code passes
+ *  around. Exact: string slicing, never float arithmetic. */
+export function formatScaled([value, decimals]: ScaledQty): string {
+  const negative = value < 0n;
+  const digits = (negative ? -value : value).toString().padStart(decimals + 1, '0');
+  const whole = digits.slice(0, digits.length - decimals);
+  const fraction = decimals === 0 ? '' : digits.slice(digits.length - decimals).replace(/0+$/, '');
+  return (negative ? '-' : '') + whole + (fraction ? '.' + fraction : '');
+}
+
 /** Compare two scaled quantities. Returns true if a > b. */
 function gtQuantity(a: ScaledQty, b: ScaledQty): boolean {
   const scale = Math.max(a[1], b[1]);
