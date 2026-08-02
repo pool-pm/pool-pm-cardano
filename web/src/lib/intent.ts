@@ -57,6 +57,9 @@ export interface Amount {
   unit?: string;
   /** Asset fingerprint, so the amount can link to its asset page. */
   fingerprint?: string;
+  /** The asset itself, when its art should be shown beside the figure. A swap is about
+   *  two things, and the tokens are quicker to recognise as pictures than as tickers. */
+  image?: AssetInfo;
 }
 
 /** One object of the sentence: who, and optionally how much went to them. */
@@ -417,7 +420,7 @@ function wantedName(asset: OrderAsset): string | undefined {
 function offered(order: SwapOrder, output: TxOutputInfo): Amount {
   if (isAda(order.give)) return { quantity: order.giveAmount.toString() };
   const asset = output.assets.length === 1 ? output.assets[0] : undefined;
-  if (asset) return { quantity: asset.quantity, unit: asset.name, fingerprint: asset.fingerprint };
+  if (asset) return { quantity: asset.quantity, unit: asset.name, fingerprint: asset.fingerprint, image: asset };
   return { quantity: order.giveAmount.toString(), unit: assetTicker(order.give) };
 }
 
@@ -601,7 +604,7 @@ function ordersSettled(inputs: TxInput[]): number {
 /** One side of a settled swap as a sentence amount: ADA carries no unit. */
 function sideAmount(side: Side): Amount {
   if (!side.asset) return { quantity: side.quantity };
-  return { quantity: side.quantity, unit: side.asset.name, fingerprint: side.asset.fingerprint };
+  return { quantity: side.quantity, unit: side.asset.name, fingerprint: side.asset.fingerprint, image: side.asset };
 }
 
 function sumLovelace(outputs: TxOutputInfo[]): bigint {

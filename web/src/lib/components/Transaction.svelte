@@ -9,6 +9,7 @@
   import { nonChangeOutputs as computeNonChangeOutputs } from '../change';
   import { stakeCredential, rewardCredential } from '../bech32';
   import { dappForAddress } from '../dapps';
+  import { assetLabel } from '../assetName';
 
   // On a stake or address feed, highlight inputs/outputs belonging to the feed's
   // subject (stake feed: any address sharing the credential, incl. handles;
@@ -54,7 +55,9 @@
   // feed): a delegation tx shows only its delegation change (no live_stake, no fee I/O);
   // any other stake-affecting tx shows only its net stake change + the account(s) it moved.
   let { tx, compact = false, folded = false }: { tx: FeedTx; compact?: boolean; folded?: boolean } = $props();
-  let failedAssets = $state<Record<number, number>>({});
+  /** Assets whose picture failed to load — named instead of hidden. Keyed by
+   *  fingerprint, since the same asset can appear in more than one group. */
+  let brokenThumbs = $state<Record<string, boolean>>({});
 
   // Above this rendered thumbnail size the art is already legible, so the hover
   // preview only kicks in for small (densely packed) thumbnails.
@@ -321,7 +324,30 @@
 {/snippet}
 
 <!-- `headline` is the loud line under the verb; the small form sits next to a target. -->
+{#snippet amountArt(asset: AssetInfo)}
+  {#if $config && !brokenThumbs[asset.fingerprint]}
+    <a class="asset-link" href="/{asset.fingerprint}">
+      <img
+        class="swap-art"
+        src={nftcdnUrl(asset)}
+        alt={asset.fingerprint}
+        loading="lazy"
+        onload={(e: Event) => {
+          (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
+        }}
+        onerror={(e: Event) => {
+          brokenThumbs = { ...brokenThumbs, [asset.fingerprint]: true };
+          (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
+        }}
+        onmouseenter={showPreview}
+        onmouseleave={hidePreview}
+      />
+    </a>
+  {/if}
+{/snippet}
+
 {#snippet amountLine(amount: Amount)}
+  {#if amount.image}{@render amountArt(amount.image)}{/if}
   {#if amount.unit}
     <span class="amount">{amountText(amount)}</span>
   {:else}
@@ -329,42 +355,46 @@
   {/if}
 {/snippet}
 
-<!-- Asset thumbnails. `slot` keys the failed-image tally so a broken image is counted
-     against the group it belongs to, whichever rendering asked for it. -->
-{#snippet assetThumbs(assets: AssetInfo[], slot: number)}
+<!-- Asset thumbnails, which fall back to naming the asset when it has no picture.
+     Not every asset is art: a protocol's state token has no image at all, and hiding it
+     on a failed load left a mint reading "+1 asset" — a tally where the thing itself
+     should be. The fingerprint always identifies it even when the on-chain name is bytes
+     that don't render, so something identifying is always shown. -->
+{#snippet assetThumbs(assets: AssetInfo[])}
   {@const visibleCount = Math.min(assets.length, maxAssetsPerOutput)}
   <div class="assets">
     {#each assets.slice(0, visibleCount) as asset}
+      {@const broken = brokenThumbs[asset.fingerprint]}
       <div class="asset">
-        <a class="asset-link" href="/{asset.fingerprint}">
-          <img
-            class="asset-thumb"
-            src={nftcdnUrl(asset)}
-            alt={asset.fingerprint}
-            loading="lazy"
-            onload={(e: Event) => {
-              (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
-            }}
-            onerror={(e: Event) => {
-              const el = (e.target as HTMLElement).closest('.asset') as HTMLElement;
-              el.style.display = 'none';
-              el.dispatchEvent(new Event('remeasure', { bubbles: true }));
-              failedAssets = { ...failedAssets, [slot]: (failedAssets[slot] ?? 0) + 1 };
-            }}
-            onmouseenter={showPreview}
-            onmouseleave={hidePreview}
-          />
-        </a>
-        {#if thumbSize >= 32 && asset.quantity !== '1'}
+        {#if !broken}
+          <a class="asset-link" href="/{asset.fingerprint}">
+            <img
+              class="asset-thumb"
+              src={nftcdnUrl(asset)}
+              alt={asset.fingerprint}
+              loading="lazy"
+              onload={(e: Event) => {
+                (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
+              }}
+              onerror={(e: Event) => {
+                brokenThumbs = { ...brokenThumbs, [asset.fingerprint]: true };
+                (e.target as HTMLElement).dispatchEvent(new Event('remeasure', { bubbles: true }));
+              }}
+              onmouseenter={showPreview}
+              onmouseleave={hidePreview}
+            />
+          </a>
+        {/if}
+        {#if broken || (thumbSize >= 32 && asset.quantity !== '1')}
           <span class="asset-label">{formatAssetQuantity(asset.quantity)}</span>
         {/if}
-        {#if asset.name && assets.length <= NAMED_ASSETS_MAX}
-          <span class="asset-name">{asset.name}</span>
+        {#if broken || (asset.name && assets.length <= NAMED_ASSETS_MAX)}
+          <a class="asset-name" href="/{asset.fingerprint}">{assetLabel(asset)}</a>
         {/if}
       </div>
     {/each}
   </div>
-  {@const hiddenAssets = assets.length - visibleCount + (failedAssets[slot] ?? 0)}
+  {@const hiddenAssets = assets.length - visibleCount}
   {#if hiddenAssets > 0}
     <span class="more-outputs">+{hiddenAssets} asset{hiddenAssets > 1 ? 's' : ''}</span>
   {/if}
@@ -428,25 +458,27 @@
       {#if intent.subject}{@render partyLine(intent.subject)}{/if}
       <span class="verb">{intent.verb}</span>
       {#if headline}
+        {#if intent.amount?.image}{@render amountArt(intent.amount.image)}{/if}
         <span class="amount headline" style:font-size="{headline.size}px">
           {#if headline.give.plain}{headline.give.html}{:else}{@html headline.give.html}{/if}
         </span>
       {/if}
-      {#if intent.assets && $config}{@render assetThumbs(intent.assets, 0)}{/if}
+      {#if intent.assets && $config}{@render assetThumbs(intent.assets)}{/if}
       {#if intent.note}
         {#each intent.note as line}
           <span class="note">{line}</span>
         {/each}
       {/if}
       {#if intent.preposition}<span class="prep">{intent.preposition}</span>{/if}
-      {#each shownTargets as target, ti}
+      {#each shownTargets as target}
         <div class="target">
           {#if headline?.counterpart && !target.party}
+            {#if target.amount?.image}{@render amountArt(target.amount.image)}{/if}
             <span class="amount headline" style:font-size="{headline.size}px">
               {#if headline.counterpart.plain}{headline.counterpart.html}{:else}{@html headline.counterpart.html}{/if}
             </span>
           {:else if target.amount}{@render amountLine(target.amount)}{/if}
-          {#if target.assets && $config}{@render assetThumbs(target.assets, ti + 1)}{/if}
+          {#if target.assets && $config}{@render assetThumbs(target.assets)}{/if}
           {#if target.party}{@render partyLine(target.party)}{/if}
         </div>
       {/each}
@@ -555,11 +587,11 @@
     {#if !folded && (tx.inputs.length > 0 || tx.outputs.length > 0)}
       <div class="tx-body">
         <div class="addr-list">
-          {#each visibleOutputs as output, oi}
+          {#each visibleOutputs as output}
             <div class="addr-item">
               <span class="ada">{@html formatAda(output.lovelace)}</span>
               {#if output.assets.length > 0 && $config}
-                {@render assetThumbs(output.assets, oi)}
+                {@render assetThumbs(output.assets)}
               {/if}
               {#if addressLabel(output.address, output.handle)}
                 <svelte:element
@@ -1044,6 +1076,17 @@
   .asset-thumb {
     max-width: var(--thumb-size, 96px);
     max-height: var(--thumb-size, 96px);
+    align-self: center;
+    border-radius: 3px;
+    background: transparent;
+  }
+
+  /* A swap side's art. Fixed and small: the sentence already carries the amount and the
+     ticker, so this is there to be recognised at a glance, not read. */
+  .swap-art {
+    width: 36px;
+    height: 36px;
+    object-fit: contain;
     align-self: center;
     border-radius: 3px;
     background: transparent;
