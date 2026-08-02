@@ -565,8 +565,10 @@ describe('describeTx: CIP-20 tags', () => {
     expect(intent.subject).toMatchObject({ label: 'MINSWAP' });
     expect(intent.verb).toBe('CANCELLED');
     expect(intent.via).toBeUndefined();
-    // Nothing left the wallet, so the tx's own output total is the only number there is.
-    expect(intent.amount).toEqual({ quantity: '4800000' });
+    // Nothing went to anyone else, so there is no amount to headline. The tx's own output
+    // total is the actor's funds coming back — stating it would describe the size of the
+    // wallet rather than of what was done.
+    expect(intent.amount).toBeUndefined();
   });
 
   it('leaves a human memo to the ordinary reading', () => {

@@ -486,19 +486,21 @@ function dappAction(recipients: Recipient[]): Recipient | null {
  * wallet, so the loud line stays the number the reader cares about.
  */
 function describeTagged(tag: TaggedAction, sender: Party | undefined, recipients: Recipient[], tx: BlockTx): Intent {
-  const outputs = tx.outputs;
   const app: Party = { label: tag.app.toUpperCase(), kind: 'app' };
   const action = dappAction(recipients) ?? (recipients.length === 1 ? recipients[0] : null);
   const target = action ? targetFor(action) : null;
 
   if (sender) {
-    // Nothing left the wallet — a cancellation, or a settlement that only returns funds
-    // — so the tx's own output total is the only number there is to show.
-    const moved = recipients.length > 0 ? sumLovelace(recipients.map((r) => r.output)) : sumLovelace(outputs);
+    // Nothing went to anyone else, so the tx's outputs are the sender's own funds coming
+    // back. Headlining that total states the size of their wallet, not of what they did:
+    // a DexHunter cancellation whose order lives off-chain moves one UTXO to itself, and
+    // read as "CANCELLED 93,619 ₳" — a figure with nothing to do with the cancelled order.
+    const moved =
+      recipients.length > 0 ? { quantity: sumLovelace(recipients.map((r) => r.output)).toString() } : undefined;
     return {
       subject: sender,
       verb: tag.verb ?? 'USED',
-      amount: target?.amount ?? { quantity: moved.toString() },
+      amount: target?.amount ?? moved,
       assets: target?.assets,
       targets: [],
       hiddenTargets: 0,
