@@ -465,12 +465,7 @@
   {#if intent}
     <div class="sentence">
       {#if intent.subjects}
-        <!-- Several accounts acted together, so they read as a sum, the same way several
-             assets sent at once do. Bare adjacency reads as a list of unrelated lines. -->
-        {#each intent.subjects as funder, i}
-          {#if i > 0}<span class="party-plus">+</span>{/if}
-          {@render partyLine(funder)}
-        {/each}
+        {#each intent.subjects as funder}{@render partyLine(funder)}{/each}
       {:else if intent.subject}{@render partyLine(intent.subject)}{/if}
       <span class="verb">{intent.verb}</span>
       {#if headline}
@@ -486,8 +481,7 @@
         {/each}
       {/if}
       {#if intent.preposition}<span class="prep">{intent.preposition}</span>{/if}
-      {#each shownTargets as target, ti}
-        {#if ti > 0}<span class="party-plus">+</span>{/if}
+      {#each shownTargets as target}
         <div class="target">
           {#if headline?.counterpart && !target.party}
             {#if target.amount?.image}{@render amountArt(target.amount.image)}{/if}
@@ -1111,15 +1105,6 @@
     align-self: center;
     font-size: 10px;
     color: rgb(255 255 255 / 0.4);
-  }
-
-  /* Same idea between parties: several who acted, or several who were paid. Matched to
-     the asset separator — at 9px and 0.35 alpha it was there but not readable. */
-  .party-plus {
-    align-self: center;
-    font-size: 10px;
-    line-height: 1.2;
-    color: rgb(255 255 255 / 0.45);
   }
 
   .asset-thumb {
