@@ -430,6 +430,43 @@ describe('describeTx: CIP-20 tags', () => {
     expect(intent.verb).toBe('EXECUTED');
   });
 
+  it('names the orders a batch settled, not just how many', () => {
+    // Two real Minswap V2 order datums: ADA→WMTX and NIGHT→ADA. "EXECUTED 2 ORDERS"
+    // counts them; the datums say which two.
+    const adaForWmtx =
+      'd8799fd8799f581c636d0d0118a8933ac167d4c448150bb325deaf7a4fdfb44adc7f2f5affd8799fd8799f581c636d0d0118a8933ac167d4c448150bb325deaf7a4fdfb44adc7f2f5affd8799fd8799fd8799f581ce39b5f40aa85fbc121a625d777a776eca1cb4c923426949c997d8828ffffffffd87980d8799fd8799f581c636d0d0118a8933ac167d4c448150bb325deaf7a4fdfb44adc7f2f5affd8799fd8799fd8799f581ce39b5f40aa85fbc121a625d777a776eca1cb4c923426949c997d8828ffffffffd87980d8799f581cf5808c2c990d86da54bfc97d89cee6efa20cd8461616359478d96b4c5820686db0c143a3a2cc19099d8909e315c4ed761a6ac5a3c5998c651d5e9d3cb253ffd8799fd87a80d8799f1a26ef03a4ff1adfaf40f4d87980ff1a001e8480d87a80ff';
+    const nightForAda = adaForWmtx.replace('ffd8799fd87a80d8799f', 'ffd8799fd87980d8799f');
+    const intent = describeTx(
+      tx({
+        // A batcher's inputs: two order UTXOs and its own funding, so no single sender.
+        inputs: [
+          {
+            tx_hash: '00'.repeat(32),
+            index: 0,
+            address: MINSWAP_ORDER,
+            lovelace: '4000000',
+            assets: [],
+            datum: adaForWmtx,
+          },
+          {
+            tx_hash: '11'.repeat(32),
+            index: 0,
+            address: MINSWAP_ORDER,
+            lovelace: '4000000',
+            assets: [],
+            datum: nightForAda,
+          },
+          input(BOB, '50000000'),
+        ],
+        outputs: [output(CAROL, '30000000'), output(ALICE_A, '20000000')],
+        metadata: message(['Minswap: Order Executed']),
+      }),
+    )!;
+    expect(intent.subject).toMatchObject({ label: 'MINSWAP' });
+    expect(intent.verb).toBe('EXECUTED');
+    expect(intent.targets.map((t) => t.amount?.unit)).toEqual(['₳ → WorldMobileTokenX', 'WorldMobileTokenX → ADA']);
+  });
+
   it('says USED when the dApp names itself but no action we have a word for', () => {
     const intent = describeTx(
       tx({

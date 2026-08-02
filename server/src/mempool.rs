@@ -77,6 +77,7 @@ pub async fn extract_tx(
             lovelace,
             assets,
             handle,
+            datum: None,
         });
     }
 
@@ -154,6 +155,7 @@ pub async fn extract_tx(
                 lovelace: amount,
                 assets: vec![],
                 handle: None,
+                datum: None,
             });
         }
     }

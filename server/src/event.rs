@@ -252,6 +252,11 @@ pub struct TxInput {
     pub assets: Vec<AssetInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub handle: Option<String>,
+    /// The datum of the UTXO being spent, hex, for script inputs. A settlement's inputs
+    /// *are* the orders it fills, and this is where each says what it asked for — the
+    /// difference between "2 orders" and which two.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub datum: Option<String>,
 }
 
 #[derive(Clone, Serialize)]

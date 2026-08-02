@@ -790,6 +790,43 @@ impl DbSync {
 
     /// Batch-resolve UTXOs. Returns (address, lovelace, assets, unspent).
     /// `unspent` is true when consumed_by_tx_id IS NULL — callers can cache these.
+    /// Datums of the given UTXOs, by `(tx hash, index)`.
+    ///
+    /// Separate from `resolve_utxos_batch` because it asks a different question of a
+    /// different set: only script inputs have datums worth reading, and they're wanted
+    /// even when the UTXO itself came from the in-memory cache — which is the common
+    /// case for a DEX order, created a few blocks before the batcher spends it. The
+    /// two datum joins cover inline and hash-referenced alike; `id = ... OR hash = ...`
+    /// in one join makes neither index usable.
+    pub async fn resolve_datums_batch(
+        &self,
+        inputs: &[(Vec<u8>, i16)],
+    ) -> Result<std::collections::HashMap<(Vec<u8>, i16), String>, sqlx::Error> {
+        if inputs.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let hashes: Vec<Vec<u8>> = inputs.iter().map(|(h, _)| h.clone()).collect();
+        let indices: Vec<i16> = inputs.iter().map(|(_, i)| *i).collect();
+        let rows = sqlx::query!(
+            r#"SELECT tx.hash AS "hash!", tx_out.index AS "index!: i16",
+                      COALESCE(di.bytes, dh.bytes) AS "bytes?"
+            FROM tx_out
+            JOIN tx ON tx.id = tx_out.tx_id
+            LEFT JOIN datum di ON di.id = tx_out.inline_datum_id
+            LEFT JOIN datum dh ON dh.hash = tx_out.data_hash
+            WHERE (tx.hash, tx_out.index) IN (SELECT * FROM UNNEST($1::bytea[], $2::smallint[]))"#,
+            &hashes,
+            &indices
+        )
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| Some(((r.hash, r.index), hex::encode(r.bytes?))))
+            .collect())
+    }
+
     pub async fn resolve_utxos_batch(
         &self,
         inputs: &[(Vec<u8>, i16)],

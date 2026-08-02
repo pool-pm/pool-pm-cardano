@@ -97,6 +97,7 @@ pub(super) fn decode_block_txs(
                     lovelace: 0,
                     assets: vec![],
                     handle: None,
+                    datum: None,
                 })
                 .collect();
 
@@ -180,6 +181,7 @@ pub(super) fn decode_block_txs(
                         lovelace: amount,
                         assets: vec![],
                         handle: None,
+                        datum: None,
                     });
                 }
             }
@@ -332,9 +334,37 @@ pub(super) async fn resolve_block_inputs(
         }
     }
 
+    // Phase 4: datums of the script inputs, with no lock held. A settlement's order
+    // UTXOs are usually still in the in-memory cache, so they never reach the resolver
+    // query above — and the datum is what tells one order from another. Only script
+    // addresses are asked about; there are a handful per block at most.
+    let script_inputs: Vec<(Vec<u8>, i16)> = txs
+        .iter()
+        .flat_map(|tx| tx.inputs.iter())
+        .filter(|inp| {
+            resolved
+                .get(&(hex::decode(&inp.tx_hash).unwrap_or_default(), inp.index))
+                .is_some_and(|(addr, _, _)| {
+                    addr.starts_with("addr1w") || addr.starts_with("addr1z")
+                })
+        })
+        .map(|inp| (hex::decode(&inp.tx_hash).unwrap_or_default(), inp.index))
+        .collect();
+    let datums = match (
+        script_inputs.is_empty(),
+        chain_state.read().await.db_handle(),
+    ) {
+        (false, Some(db)) => db
+            .resolve_datums_batch(&script_inputs)
+            .await
+            .unwrap_or_default(),
+        _ => Default::default(),
+    };
+
     for tx in txs {
         for inp in &mut tx.inputs {
             let key = (hex::decode(&inp.tx_hash).unwrap_or_default(), inp.index);
+            inp.datum = datums.get(&key).cloned();
             if let Some((addr, lovelace, raw_assets)) = resolved.get(&key) {
                 inp.address = Some(addr.clone());
                 inp.lovelace = *lovelace;

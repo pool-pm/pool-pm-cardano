@@ -20,6 +20,9 @@ export interface TxInput {
   lovelace: string;
   assets?: AssetInfo[];
   handle?: string;
+  /** Datum of the UTXO being spent, hex, for script inputs. A settlement's inputs *are*
+   * the orders it fills, and this is where each says what it asked for. */
+  datum?: string;
 }
 
 export interface TxOutputInfo {

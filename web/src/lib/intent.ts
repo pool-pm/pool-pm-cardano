@@ -489,18 +489,51 @@ function describeTagged(tag: TaggedAction, sender: Party | undefined, recipients
   }
 
   // No one wallet funded it — a batcher settling orders it holds, so the dApp is the
-  // actor. How many orders it settled is the number that means something; the tx's ADA
-  // total does not, being mostly liquidity pools rewritten and batcher change rather
-  // than value anybody sent. Better to show no figure than that one.
-  const orders = ordersSettled(tx.inputs);
+  // actor. Each order it spent carries a datum saying what that order asked for, which
+  // is the difference between "2 orders" and which two. The tx's ADA total says nothing:
+  // it's mostly liquidity pools rewritten and batcher change, not value anybody sent.
+  const orders = settledOrders(tx.inputs);
+  if (orders.length > 0) {
+    return {
+      subject: app,
+      verb: tag.verb ?? 'USED',
+      preposition: undefined,
+      targets: orders.slice(0, MAX_TARGETS).map((order) => ({ amount: swapPair(order) })),
+      hiddenTargets: Math.max(0, orders.length - MAX_TARGETS),
+      messageRead: true,
+    };
+  }
+  const counted = ordersSettled(tx.inputs);
   return {
     subject: app,
     verb: tag.verb ?? 'USED',
-    amount: orders > 0 ? { quantity: String(orders), unit: orders === 1 ? 'ORDER' : 'ORDERS' } : undefined,
+    amount: counted > 0 ? { quantity: String(counted), unit: counted === 1 ? 'ORDER' : 'ORDERS' } : undefined,
     targets: [],
     hiddenTargets: 0,
     messageRead: true,
   };
+}
+
+/**
+ * The orders a batch settled, read from the datums of the UTXOs it spent.
+ *
+ * A settlement's inputs *are* the orders — each one is a user's order UTXO, and its
+ * datum says what that user asked for. Without them a batch can only be counted; with
+ * them it can be read.
+ */
+function settledOrders(inputs: TxInput[]): SwapOrder[] {
+  return inputs.flatMap((input) => {
+    if (!input.address || !input.datum) return [];
+    const order = readOrder(dappForAddress(input.address)?.name, input.datum);
+    return order ? [order] : [];
+  });
+}
+
+/** One settled order as a single line: `40K NIGHT → ADA`. */
+function swapPair(order: SwapOrder): Amount {
+  const give = isAda(order.give) ? '₳' : (assetTicker(order.give) ?? '?');
+  const want = wantedName(order.want) ?? '?';
+  return { unit: `${give} → ${want}` };
 }
 
 /**
