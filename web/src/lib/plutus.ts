@@ -211,3 +211,14 @@ export function asInt(data: PlutusData | null | undefined): bigint | undefined {
 export function asBytes(data: PlutusData | null | undefined): string | undefined {
   return data?.kind === 'bytes' ? data.hex : undefined;
 }
+
+/** The items of `data`, when it's a list. Empty for anything else, so a caller can index
+ *  into the result without checking — same total-function discipline as `field`. */
+export function asList(data: PlutusData | null | undefined): PlutusData[] {
+  return data?.kind === 'list' ? data.items : [];
+}
+
+/** The `index`th item of a list, wherever a protocol uses one in place of a constructor. */
+export function item(data: PlutusData | null | undefined, index: number): PlutusData | undefined {
+  return asList(data)[index];
+}

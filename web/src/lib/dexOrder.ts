@@ -14,6 +14,8 @@
 import { readSwapOrder as readMinswapOrder } from './minswapOrder';
 import { readSundaeSwapOrder } from './sundaeOrder';
 import { readSpectrumOrder } from './spectrumOrder';
+import { readSplashOrder } from './splashOrder';
+import { readCSwapOrder } from './cswapOrder';
 
 /** One side of a swap: the asset's on-chain identity. ADA is `("", "")`. */
 export interface OrderAsset {
@@ -25,8 +27,10 @@ export interface SwapOrder {
   /** What the user is giving. */
   give: OrderAsset;
   /** The exact amount of it, from the datum — not the order UTXO, which also holds the
-   *  protocol's fee and a deposit that come back. */
-  giveAmount: bigint;
+   *  protocol's fee and a deposit that come back. Absent where the protocol doesn't
+   *  record it (CSwap states only the output it wants), leaving the UTXO as the only
+   *  source and its ADA side slightly overstated by the fee inside it. */
+  giveAmount?: bigint;
   /**
    * What they want in return, named but not counted. Every one of these datums records
    * only a minimum — a slippage floor rather than a forecast — and the fill is nearly
@@ -41,8 +45,15 @@ export function isAda(asset: OrderAsset): boolean {
   return asset.policy === '' && asset.name === '';
 }
 
+/** The UTXO an order was posted in, for the protocols whose datum doesn't state what's
+ *  going in — only what's wanted back. */
+export interface OrderUtxo {
+  lovelace: string;
+  assets?: { name?: string; quantity: string }[];
+}
+
 /** The swap `datumHex` asks for, if `dapp` is a DEX whose orders we can read. */
-export function readOrder(dapp: string | undefined, datumHex: string | undefined): SwapOrder | null {
+export function readOrder(dapp: string | undefined, datumHex: string | undefined, utxo?: OrderUtxo): SwapOrder | null {
   switch (dapp) {
     case 'Minswap':
       return readMinswapOrder(datumHex);
@@ -50,6 +61,10 @@ export function readOrder(dapp: string | undefined, datumHex: string | undefined
       return readSundaeSwapOrder(datumHex);
     case 'Spectrum Finance':
       return readSpectrumOrder(datumHex);
+    case 'Splash Protocol':
+      return readSplashOrder(datumHex);
+    case 'CSWAP DEX':
+      return readCSwapOrder(datumHex, utxo);
     default:
       return null;
   }

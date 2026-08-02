@@ -401,6 +401,9 @@ function describePendingSwap(subject: Party, order: SwapOrder, output: TxOutputI
     targets: wanted ? [{ amount: { unit: wanted } }] : [],
     hiddenTargets: 0,
     via: app,
+    // The tx's own "Minswap: Market Order" says exactly this and less precisely, so it
+    // shouldn't also be printed above the sentence that replaced it.
+    messageRead: true,
   };
 }
 
@@ -425,10 +428,10 @@ function wantedName(asset: OrderAsset): string | undefined {
  * would need those decimals to do.
  */
 function offered(order: SwapOrder, output: TxOutputInfo): Amount {
-  if (isAda(order.give)) return { quantity: order.giveAmount.toString() };
+  if (isAda(order.give)) return { quantity: (order.giveAmount ?? BigInt(output.lovelace)).toString() };
   const asset = output.assets.length === 1 ? output.assets[0] : undefined;
   if (asset) return { quantity: asset.quantity, unit: asset.name, fingerprint: asset.fingerprint, image: asset };
-  return { quantity: order.giveAmount.toString(), unit: assetTicker(order.give) };
+  return { quantity: order.giveAmount?.toString(), unit: assetTicker(order.give) };
 }
 
 /** CIP-67 label prefixes, as the server's `display_asset_name` strips them. */
@@ -532,7 +535,12 @@ function describeSettlement(tx: BlockTx, app?: Party, verb?: string, ownWallet?:
     // A withdrawal is a pseudo-input carrying a reward address, not a UTXO anyone can
     // post an order in. Reward addresses match a dApp whenever they share its stake
     // credential, so without this a plain withdrawal reads as a settled batch.
-    if (isWithdrawal(i) || !i.address || dappForAddress(i.address)?.role !== 'order') return false;
+    if (isWithdrawal(i) || !i.address) return false;
+    const dapp = dappForAddress(i.address);
+    // The registry's role label is a naming convention, and several protocols don't
+    // follow it — CSwap's order scripts carry no role at all. A datum that decodes as an
+    // order is the stronger evidence, so either qualifies.
+    if (dapp?.role !== 'order' && !readOrder(dapp?.name, i.datum, i)) return false;
     // An order the funder is taking back is a cancellation, not a batch being settled.
     return ownWallet === undefined || (stakeAddressOf(i.address) ?? i.address) !== ownWallet;
   });
@@ -605,7 +613,7 @@ interface SettledOrder {
 function settledOrders(inputs: TxInput[]): SettledOrder[] {
   return inputs.flatMap((utxo) => {
     if (isWithdrawal(utxo) || !utxo.address || !utxo.datum) return [];
-    const order = readOrder(dappForAddress(utxo.address)?.name, utxo.datum);
+    const order = readOrder(dappForAddress(utxo.address)?.name, utxo.datum, utxo);
     return order ? [{ order, utxo }] : [];
   });
 }
@@ -626,7 +634,7 @@ function swapPair({ order, utxo }: SettledOrder): Amount {
 
 /** The going-in side of an order, rendered compactly enough for a 108px line. */
 function offeredText(order: SwapOrder, utxo: { lovelace: string; assets?: AssetInfo[] }): string {
-  if (isAda(order.give)) return formatAdaCompact(order.giveAmount.toString());
+  if (isAda(order.give)) return formatAdaCompact((order.giveAmount ?? BigInt(utxo.lovelace)).toString());
   // A token order's UTXO holds exactly the token being swapped — no fee is taken in it —
   // and the server has already scaled it by the asset's decimals and named it, which the
   // datum's raw integer would need those decimals to do.
@@ -791,7 +799,7 @@ export function describeTx(tx: BlockTx): Intent | null {
   if (sender) {
     for (const recipient of recipients) {
       const dapp = dappForAddress(recipient.output.address);
-      const order = readOrder(dapp?.name, recipient.output.datum);
+      const order = readOrder(dapp?.name, recipient.output.datum, recipient.output);
       if (order) return describePendingSwap(sender.party, order, recipient.output, recipient.party);
     }
   }
