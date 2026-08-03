@@ -290,6 +290,20 @@
       : nonChangeOutputs.reduce((sum, o) => sum + o.assets.length, 0),
   );
   let thumbSize = $derived(totalAssets <= 1 ? 96 : Math.max(16, Math.floor(96 / Math.sqrt(totalAssets))));
+  /**
+   * A token's quantity and ticker, sized with the thumbnail they sit under.
+   *
+   * At a fixed 9px they were a caption on a 96px picture, and unreadable beside a 20px
+   * ADA headline in the same sentence — "SENT 340,407 ₳ ... 2.8M IAG" put the two halves
+   * of one fact at opposite ends of the type scale. Scaling with the thumbnail keeps the
+   * rule the tile already follows: one asset is shown big, several share the room. Capped
+   * just under the headline, which is still the line to land on first.
+   */
+  const ASSET_LABEL_MIN_PX = 9;
+  const ASSET_LABEL_MAX_PX = HEADLINE_MAX_PX - 2;
+  let assetLabelSize = $derived(
+    Math.min(ASSET_LABEL_MAX_PX, Math.max(ASSET_LABEL_MIN_PX, Math.round(thumbSize * 0.2))),
+  );
   let sortedOutputs = $derived([...nonChangeOutputs].sort((a, b) => Number(BigInt(b.lovelace) - BigInt(a.lovelace))));
   let visibleOutputs = $derived.by(() => {
     let assets = 0;
@@ -397,7 +411,7 @@
           </a>
         {/if}
         {#if showQuantity || showName}
-          <span class="asset-meta">
+          <span class="asset-meta" style:font-size="{assetLabelSize}px">
             {#if showQuantity}<span class="asset-label">{formatAssetQuantity(asset.quantity)}</span>{/if}
             {#if showName}<a class="asset-name" href="/{asset.fingerprint}">{assetLabel(asset)}</a>{/if}
           </span>
@@ -1077,7 +1091,6 @@
 
   /* The token's on-chain name, under its art. */
   .asset-name {
-    font-size: 9px;
     color: rgb(255 255 255 / 0.75);
     text-align: center;
     max-width: 100%;
@@ -1087,7 +1100,6 @@
   }
 
   .asset-label {
-    font-size: 9px;
     color: white;
     text-align: center;
     white-space: nowrap;
