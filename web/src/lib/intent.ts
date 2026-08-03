@@ -38,6 +38,7 @@ import { messageLines, metadataLines } from './metadata';
 import { readSettlement, type Side } from './settlement';
 import { isAda, readOrder, type OrderAsset, type SwapOrder } from './dexOrder';
 import { formatAdaCompact, formatCount, formatTicker } from './layout';
+import { assetLabel } from './assetName';
 
 /** How a party's label was derived — drives its styling and colour. */
 export type PartyKind = 'handle' | 'app' | 'pool' | 'drep' | 'address';
@@ -819,6 +820,11 @@ function describeMint(
  * renders the raw inputs and outputs.
  */
 export function describeTx(tx: BlockTx): Intent | null {
+  const intent = readTx(tx);
+  return intent === null ? null : headlineAsset(intent);
+}
+
+function readTx(tx: BlockTx): Intent | null {
   // Votes, Catalyst registrations and oracle updates each have a purpose-built
   // rendering already; a generic sentence would only bury them.
   const annotations = tx.annotations ?? [];
@@ -965,6 +971,31 @@ function describeShared(tx: BlockTx, recipients: Recipient[]): Intent {
   });
   const transfer = describeTransfer(undefined, recipients, tx.outputs, metadataLines(tx.metadata));
   return { ...transfer, subjects: named.length > 0 ? named : undefined };
+}
+
+/**
+ * One asset is a headline, not a caption.
+ *
+ * A lone token carries the whole point of the transaction, and rendering its quantity as
+ * a 9px label under a 96px thumbnail buried it: "UNLOCKED 1,549 NIGHT" read as a picture
+ * with a footnote, while the same transaction denominated in ADA got the loud line. This
+ * is the thumbnail rule one level down — one thing is shown big, several share the room.
+ *
+ * Several assets stay a group: there is no single figure to headline, and the quantities
+ * belong with the art they each label. A lone NFT stays a picture: "1" is not a figure
+ * anyone needs read to them.
+ */
+function headlineAsset(intent: Intent): Intent {
+  if (intent.amount !== undefined || intent.assets?.length !== 1) return intent;
+  const [asset] = intent.assets;
+  // A single NFT has no figure worth reading: its art is its identity, and a loud "1"
+  // above it would be noise where the picture is already the whole message.
+  if (asset.quantity === '1') return intent;
+  return {
+    ...intent,
+    amount: { quantity: asset.quantity, unit: assetLabel(asset), fingerprint: asset.fingerprint, image: asset },
+    assets: undefined,
+  };
 }
 
 /**

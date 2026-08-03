@@ -278,10 +278,15 @@
 
   let nonChangeOutputs = $derived(computeNonChangeOutputs(tx.inputs, tx.outputs));
 
-  // Total asset count → scale thumbnails, from whichever rendering is in use.
+  // Total asset count → scale thumbnails, from whichever rendering is in use. A swap's
+  // sides count too: their art hangs off the amount rather than off an asset list, and
+  // leaving it out of the tally sized it by a rule of its own — one asset drew at 96px in
+  // a transfer and 36px in a swap, for no reason a reader could see.
   let totalAssets = $derived(
     intent
-      ? (intent.assets?.length ?? 0) + shownTargets.reduce((sum, t) => sum + (t.assets?.length ?? 0), 0)
+      ? (intent.assets?.length ?? 0) +
+          (intent.amount?.image ? 1 : 0) +
+          shownTargets.reduce((sum, t) => sum + (t.assets?.length ?? 0) + (t.amount?.image ? 1 : 0), 0)
       : nonChangeOutputs.reduce((sum, o) => sum + o.assets.length, 0),
   );
   let thumbSize = $derived(totalAssets <= 1 ? 96 : Math.max(16, Math.floor(96 / Math.sqrt(totalAssets))));
@@ -1115,11 +1120,12 @@
     background: transparent;
   }
 
-  /* A swap side's art. Fixed and small: the sentence already carries the amount and the
-     ticker, so this is there to be recognised at a glance, not read. */
+  /* A swap side's art, sized by the same rule as every other thumbnail: how many are
+     being shown. A swap for ADA shows one and gets the full size; token for token shows
+     two and they each come down. */
   .swap-art {
-    width: 36px;
-    height: 36px;
+    max-width: var(--thumb-size, 96px);
+    max-height: var(--thumb-size, 96px);
     object-fit: contain;
     align-self: center;
     border-radius: 3px;

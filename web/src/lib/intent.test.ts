@@ -319,6 +319,43 @@ describe('describeTx: tokens', () => {
     expect(intent.assets).toEqual([asset('asset1nft')]);
   });
 
+  it('headlines a lone fungible amount instead of captioning it', () => {
+    // A quantity rendered as a 9px label under a 96px thumbnail read as a footnote, while
+    // the same transaction denominated in ADA got the loud line. One asset is one figure,
+    // so it goes where the figure goes — the thumbnail rule, one level down.
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '10000000')],
+        outputs: [output(BOB, '1500000', [{ fingerprint: 'asset1night', name: 'NIGHT', quantity: '1549', size: 256 }])],
+      }),
+    )!;
+    expect(intent.amount).toEqual({
+      quantity: '1549',
+      unit: 'NIGHT',
+      fingerprint: 'asset1night',
+      image: { fingerprint: 'asset1night', name: 'NIGHT', quantity: '1549', size: 256 },
+    });
+    // Promoted, not duplicated: the group is gone, so the art renders once beside it.
+    expect(intent.assets).toBeUndefined();
+  });
+
+  it('leaves several assets as a group, each with its own quantity', () => {
+    const intent = describeTx(
+      tx({
+        inputs: [input(ALICE_A, '10000000')],
+        outputs: [
+          output(BOB, '1500000', [
+            { fingerprint: 'asset1night', name: 'NIGHT', quantity: '1549', size: 256 },
+            { fingerprint: 'asset1snek', name: 'SNEK', quantity: '200', size: 256 },
+          ]),
+        ],
+      }),
+    )!;
+    // No single figure to headline; the quantities belong with the art they each label.
+    expect(intent.amount).toBeUndefined();
+    expect(intent.assets).toHaveLength(2);
+  });
+
   it('keeps the ADA when it is more than dust', () => {
     const intent = describeTx(
       tx({
