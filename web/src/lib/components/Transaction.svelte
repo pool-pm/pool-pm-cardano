@@ -368,7 +368,7 @@
 {#snippet assetThumbs(assets: AssetInfo[])}
   {@const visibleCount = Math.min(assets.length, maxAssetsPerOutput)}
   <div class="assets">
-    {#each assets.slice(0, visibleCount) as asset, i}
+    {#each assets.slice(0, visibleCount) as asset}
       {@const broken = brokenThumbs[asset.fingerprint]}
       <!-- Quantity and ticker read as one thing — "830.04 NIGHT" — so they share a line.
            A quantity means nothing without the ticker beside it, so a fungible amount is
@@ -376,9 +376,6 @@
            grid would otherwise become a wall of labels. -->
       {@const showQuantity = broken || (thumbSize >= 32 && asset.quantity !== '1')}
       {@const showName = broken || asset.quantity !== '1' || assets.length <= NAMED_ASSETS_MAX}
-      <!-- Several assets in one place went together, so they read as a sum: bare
-           adjacency reads as a list of unrelated lines instead. -->
-      {#if i > 0}<span class="asset-plus">+</span>{/if}
       <div class="asset">
         {#if !broken}
           <a class="asset-link" href="/{asset.fingerprint}">
@@ -1104,12 +1101,6 @@
     gap: 3px;
     max-width: 100%;
     overflow: hidden;
-  }
-
-  .asset-plus {
-    align-self: center;
-    font-size: 10px;
-    color: rgb(255 255 255 / 0.4);
   }
 
   .asset-thumb {

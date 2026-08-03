@@ -356,6 +356,49 @@ describe('describeTx: tokens', () => {
     expect(intent.assets).toHaveLength(2);
   });
 
+  it('names the protocol when the funder only relayed the transaction', () => {
+    // A Liqwid tx splitting 206,599 iUSD across four positions. The submitter puts in a
+    // UTXO and gets it back less the fee, so naming them as the actor claims they did
+    // something they didn't — this read as the relayer having "ORDERED 3 ₳", that being
+    // a min-UTXO on a script output.
+    const LIQWID_BATCH = 'addr1wyr3h4l5khs9n65sua35vl84tyt8kgwg9mcukhlrf7m6negqfmr8f';
+    const LIQWID_MARKET = 'addr1w94gxm5tksyw75gs5arhqwdf7h7yre2ma878ad2xfhhcy6cq7q4tp';
+    const iusd = (quantity: string) => ({ fingerprint: 'asset1iusd', name: 'iUSD', quantity, size: 128 });
+    const intent = describeTx(
+      tx({
+        fee: '494282',
+        inputs: [
+          input(LIQWID_MARKET, '3000000', { assets: [asset('asset1mk')] }),
+          input(LIQWID_BATCH, '15000000', { assets: [asset('asset1b1'), iusd('206599.097466')] }),
+          input(ALICE_A, '1688489403'),
+        ],
+        outputs: [
+          output(LIQWID_MARKET, '3000000', [asset('asset1mk')]),
+          output(BOB, '3000000', [asset('asset1p1'), iusd('103299.548733')]),
+          output(BOB, '3000000', [asset('asset1p2'), iusd('103299.548733')]),
+          output(ALICE_A, '1687995121'),
+        ],
+      }),
+    )!;
+    expect(intent.subject).toMatchObject({ label: 'LIQWID' });
+    expect(intent.verb).toBe('MOVED');
+    expect(intent.amount).toMatchObject({ quantity: '206599.097466', unit: 'iUSD' });
+  });
+
+  it('leaves the funder as the actor when their own balance moved', () => {
+    // Same shape, except Alice is short 100 ₳ at the end: she paid for something, so the
+    // ordinary reading has more to say about her than the protocol does.
+    const LIQWID_BATCH = 'addr1wyr3h4l5khs9n65sua35vl84tyt8kgwg9mcukhlrf7m6negqfmr8f';
+    const intent = describeTx(
+      tx({
+        fee: '494282',
+        inputs: [input(LIQWID_BATCH, '15000000', { assets: [] }), input(ALICE_A, '1688489403')],
+        outputs: [output(BOB, '103000000'), output(ALICE_A, '1599995121')],
+      }),
+    )!;
+    expect(intent.subject).not.toMatchObject({ label: 'LIQWID' });
+  });
+
   it('keeps the ADA when it is more than dust', () => {
     const intent = describeTx(
       tx({

@@ -574,6 +574,10 @@ function describeSettlement(tx: BlockTx, app?: Party, verb?: string, ownWallet?:
     // follow it — CSwap's order scripts carry no role at all. A datum that decodes as an
     // order is the stronger evidence, so either qualifies.
     if (dapp?.role !== 'order' && !readOrder(dapp?.name, i.datum, i)) return false;
+    // ...but only an exchange settles swaps. The role comes from matching words in the
+    // script's registry name, and Liqwid's *batch* script matched "batch" — so a lending
+    // protocol reorganising its own reserves read as "LIQWID SETTLED 1 ORDER".
+    if (!dapp || !isDex(dapp)) return false;
     // An order the funder is taking back is a cancellation, not a batch being settled.
     return ownWallet === undefined || (stakeAddressOf(i.address) ?? i.address) !== ownWallet;
   });
@@ -864,6 +868,13 @@ function readTx(tx: BlockTx): Intent | null {
   const settlement = describeSettlement(tx, undefined, undefined, sender?.wallet);
   if (settlement) return settlement;
 
+  // The funder only paid the fee and a protocol's own scripts did the moving — so the
+  // protocol is the actor, not whoever relayed the transaction for it.
+  if (sender) {
+    const relayed = describeProtocolMove(tx, sender);
+    if (relayed) return relayed;
+  }
+
   // Nothing went to anyone else, but a script was spent: value came back out of a
   // contract rather than merely shuffling between the owner's own addresses.
   if (recipients.length === 0) {
@@ -971,6 +982,74 @@ function describeShared(tx: BlockTx, recipients: Recipient[]): Intent {
   });
   const transfer = describeTransfer(undefined, recipients, tx.outputs, metadataLines(tx.metadata));
   return { ...transfer, subjects: named.length > 0 ? named : undefined };
+}
+
+/**
+ * A protocol moving its own funds, relayed by somebody who only paid the fee.
+ *
+ * Lending and staking protocols reorganise their reserves constantly — splitting a
+ * balance across UTXOs, rolling a market's state forward — and somebody has to submit
+ * the transaction. That submitter puts in a UTXO and gets it back less the fee, so
+ * naming them as the actor claims they did something they didn't: one real Liqwid tx
+ * split 206,599 iUSD into four positions and read as the relayer having "ORDERED 3 ₳",
+ * that being a min-UTXO on a script output.
+ *
+ * Null unless the funder really is a relayer — anyone whose own balance moved is a
+ * participant, and the ordinary reading has more to say about them.
+ */
+function describeProtocolMove(tx: BlockTx, sender: Sender): Intent | null {
+  const own = (address: string | null | undefined) => address != null && walletOf(address) === sender.wallet;
+  let ownBefore = 0n;
+  let ownAfter = 0n;
+  for (const input of tx.inputs) {
+    if (isWithdrawal(input) || !own(input.address)) continue;
+    if (input.assets?.length) return null;
+    ownBefore += BigInt(input.lovelace);
+  }
+  for (const output of tx.outputs) {
+    if (!own(output.address)) continue;
+    if (output.assets.length) return null;
+    ownAfter += BigInt(output.lovelace);
+  }
+  // Everything they put in came back, less exactly the fee: they relayed, they didn't act.
+  if (ownBefore === 0n || ownAfter + BigInt(tx.fee) !== ownBefore) return null;
+
+  // Every script the tx spends has to belong to one dApp, or there's no single actor.
+  const dapps = new Set<string>();
+  const held = new Map<string, { asset: AssetInfo; qty: ScaledQty }>();
+  for (const input of tx.inputs) {
+    if (isWithdrawal(input) || !input.address || !paymentIsScript(input.address)) continue;
+    const dapp = dappForAddress(input.address);
+    if (!dapp) return null;
+    dapps.add(dapp.name);
+    for (const asset of input.assets ?? []) {
+      const seen = held.get(asset.fingerprint);
+      const qty = parseQuantity(asset.quantity);
+      held.set(asset.fingerprint, seen ? { asset, qty: addQuantities(seen.qty, qty) } : { asset, qty });
+    }
+  }
+  if (dapps.size !== 1) return null;
+
+  // The largest holding it moved. Protocol scripts also carry identity NFTs, which say
+  // nothing about the size of what happened.
+  const moved = [...held.values()]
+    .filter((h) => h.qty[0] > 1n)
+    .sort((a, b) => Number(formatScaled(b.qty)) - Number(formatScaled(a.qty)))[0];
+  if (!moved) return null;
+
+  const quantity = formatScaled(moved.qty);
+  return {
+    subject: appParty([...dapps][0]),
+    verb: 'MOVED',
+    amount: {
+      quantity,
+      unit: assetLabel(moved.asset),
+      fingerprint: moved.asset.fingerprint,
+      image: { ...moved.asset, quantity },
+    },
+    targets: [],
+    hiddenTargets: 0,
+  };
 }
 
 /**
