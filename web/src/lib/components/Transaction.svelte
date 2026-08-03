@@ -301,9 +301,22 @@
    */
   const ASSET_LABEL_MIN_PX = 9;
   const ASSET_LABEL_MAX_PX = HEADLINE_MAX_PX - 2;
-  let assetLabelSize = $derived(
-    Math.min(ASSET_LABEL_MAX_PX, Math.max(ASSET_LABEL_MIN_PX, Math.round(thumbSize * 0.2))),
-  );
+  /** The thumbnail sets the ceiling; the text decides how far under it the label lands. */
+  let assetLabelCap = $derived(Math.min(ASSET_LABEL_MAX_PX, Math.max(ASSET_LABEL_MIN_PX, Math.round(thumbSize * 0.2))));
+
+  /**
+   * The size at which a token's quantity and ticker fit the tile.
+   *
+   * Scaling by the thumbnail alone is blind to how wide the text is, and a long name
+   * ("StagAlliance32", "WorldMobileToken") then ran off the edge of the card. Measured
+   * against the font engine like every other label here, so it shrinks to fit instead.
+   */
+  function assetMetaSize(text: string): number {
+    return fitFontSize(text, HEADLINE_FAMILY, 600, TX_WIDTH - SENTENCE_PADDING, {
+      min: ASSET_LABEL_MIN_PX,
+      max: assetLabelCap,
+    });
+  }
   let sortedOutputs = $derived([...nonChangeOutputs].sort((a, b) => Number(BigInt(b.lovelace) - BigInt(a.lovelace))));
   let visibleOutputs = $derived.by(() => {
     let assets = 0;
@@ -390,6 +403,9 @@
            grid would otherwise become a wall of labels. -->
       {@const showQuantity = broken || (thumbSize >= 32 && asset.quantity !== '1')}
       {@const showName = broken || asset.quantity !== '1' || assets.length <= NAMED_ASSETS_MAX}
+      {@const metaText = [showQuantity ? formatAssetQuantity(asset.quantity) : '', showName ? assetLabel(asset) : '']
+        .filter(Boolean)
+        .join(' ')}
       <div class="asset">
         {#if !broken}
           <a class="asset-link" href="/{asset.fingerprint}">
@@ -411,7 +427,7 @@
           </a>
         {/if}
         {#if showQuantity || showName}
-          <span class="asset-meta" style:font-size="{assetLabelSize}px">
+          <span class="asset-meta" style:font-size="{assetMetaSize(metaText)}px">
             {#if showQuantity}<span class="asset-label">{formatAssetQuantity(asset.quantity)}</span>{/if}
             {#if showName}<a class="asset-name" href="/{asset.fingerprint}">{assetLabel(asset)}</a>{/if}
           </span>
@@ -1093,6 +1109,7 @@
   .asset-name {
     color: rgb(255 255 255 / 0.75);
     text-align: center;
+    min-width: 0;
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
