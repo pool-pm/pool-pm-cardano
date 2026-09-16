@@ -201,13 +201,17 @@ cd web && pnpm dev         # frontend dev server (Vite)
   `--listen` for page (HTML) requests, while serving the static SPA to everyone else. Static
   files — including `web/dist/logo.jpg` / `logo_square.jpg` (the non-asset card image) — must be
   served directly even to crawlers, so `og:image` fetches return the image, not a card. Forward
-  the original `Host` so the card's absolute `og:url` / `og:image` use the real domain. Any web
+  the original `Host` so the card's absolute `og:url` / `og:image` use the real domain. **Do not
+  route search engines** (Googlebot, bingbot, Applebot, …) to the card: they render JS fine and
+  must see the same page as users — serving them the short card instead got pool.pm dropped
+  from Google's index as cloaking / thin content. `index.html` carries the SEO baseline (meta
+  description, canonical, JSON-LD) and `robots.txt` limits indexing to the home page. Any web
   server works; a minimal nginx form:
 
   ```nginx
   map $http_user_agent $og_crawler {
       default 0;
-      "~*(Twitterbot|facebookexternalhit|TelegramBot|Discordbot|Slackbot|WhatsApp|LinkedInBot|redditbot|Applebot)" 1;
+      "~*(Twitterbot|facebookexternalhit|Facebot|TelegramBot|Discordbot|Slackbot|WhatsApp|LinkedInBot|redditbot)" 1;
   }
   server {
       root /path/to/web/dist;

@@ -2,9 +2,12 @@
 //! Discord, Slack, …). Crawlers don't run the SPA's JavaScript, so these `<meta>` tags have to
 //! be in the HTML the server returns — the client-set `document.title` never reaches them.
 //!
-//! nginx routes *only* crawler User-Agents to the axum fallback (`og_page` in `server.rs`);
-//! humans keep getting the static SPA shell. This module is the pure card model + HTML renderer
-//! + formatting helpers (all unit-tested); `og_page` gathers the per-page data.
+//! nginx routes *only* link-unfurl crawler User-Agents to the axum fallback (`og_page` in
+//! `server.rs`); humans keep getting the static SPA shell. Search engines (Googlebot, bingbot,
+//! Applebot, …) must NOT be routed here: they render JS and have to see the same page as users —
+//! serving them this short card got pool.pm dropped from Google's index as cloaking / thin
+//! content. `index.html` carries the SEO baseline instead. This module is the pure card model +
+//! HTML renderer + formatting helpers (all unit-tested); `og_page` gathers the per-page data.
 
 /// A resolved social card. `image` / `image_twitter` are absolute URLs.
 pub struct Card {
@@ -14,10 +17,10 @@ pub struct Card {
     pub image_twitter: String,
     /// `summary_large_image` (a big banner, for the NFT image) vs `summary` (the logo).
     pub large: bool,
-    /// Optional SEO overrides for `<title>` / `<meta name="description">` (the search snippet),
-    /// independent of the social `og:` / `twitter:` title & description. `None` derives them from
-    /// `title` / `description` — set them (e.g. on the home page) to show a tagline to search
-    /// engines while the social card keeps its own text.
+    /// Optional overrides for the document `<title>` / `<meta name="description">`, independent
+    /// of the social `og:` / `twitter:` title & description. `None` derives them from `title` /
+    /// `description` — set them (e.g. on the home page) to show the tagline in unfurlers that
+    /// fall back to `<title>` while the social card keeps its own text.
     pub seo_title: Option<String>,
     pub seo_description: Option<String>,
 }
@@ -50,11 +53,10 @@ impl Card {
     }
 }
 
-/// The full HTML document a crawler receives. Serves double duty: the `og:` / `twitter:` head for
-/// social unfurls, and — since nginx also routes search-engine bots here — SEO essentials (a
-/// descriptive `<title>`, `<meta name="description">`, `<link rel="canonical">`, `robots`) plus a
-/// small crawlable body (`<h1>` + the facts + a link) so Bing/Brave, which barely run JS, index
-/// real content instead of the bare `pool.pm` shell. Humans never reach this route.
+/// The full HTML document an unfurl crawler receives: the `og:` / `twitter:` head, plus a
+/// descriptive `<title>`, `<meta name="description">` and `<link rel="canonical">` for unfurlers
+/// that fall back to those, and a minimal body (`<h1>` + the facts + a link) so the page is not
+/// blank if one renders it. Humans and search engines never reach this route (see module docs).
 pub fn render(card: &Card, url: &str) -> String {
     let twitter_card = if card.large {
         "summary_large_image"
