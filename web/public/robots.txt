@@ -1,8 +1,7 @@
 # Social / link-unfurl crawlers fetch only a single shared URL on demand — they don't crawl the
 # site — so allow them everything, keeping social cards working on every subject page.
-# Search engines never belong in this group: Applebot (Siri / Spotlight / Safari suggestions) is
-# a search crawler, not a preview fetcher — iMessage previews come from the sender's device as
-# facebookexternalhit / Facebot / Twitterbot — so it falls under the `*` rules below.
+# Search engines never belong in this group: iMessage / Safari previews come from the sender's
+# device as facebookexternalhit / Facebot / Twitterbot, never from Applebot.
 User-agent: Twitterbot
 User-agent: facebookexternalhit
 User-agent: Facebot
@@ -24,7 +23,10 @@ Disallow:
 # AI-training crawlers get nothing: they enumerate the whole subject space, execute the page's
 # JavaScript (so each visit also opens an SSE stream and hits the API), and return no traffic.
 # Meta's two crawlers are distinct — facebookexternalhit above serves link unfurls and stays
-# allowed; meta-externalagent only collects training data.
+# allowed; meta-externalagent only collects training data. Applebot (Siri / Spotlight / Safari
+# suggestions) is blocked outright too: it renders the SPA's JavaScript and replays millions of
+# stored subject URLs (2026-09-16), and Apple search brings no traffic worth that load.
+User-agent: Applebot
 User-agent: meta-externalagent
 User-agent: Meta-ExternalAgent
 User-agent: GPTBot
