@@ -1,5 +1,8 @@
 # Social / link-unfurl crawlers fetch only a single shared URL on demand — they don't crawl the
 # site — so allow them everything, keeping social cards working on every subject page.
+# Search engines never belong in this group: Applebot (Siri / Spotlight / Safari suggestions) is
+# a search crawler, not a preview fetcher — iMessage previews come from the sender's device as
+# facebookexternalhit / Facebot / Twitterbot — so it falls under the `*` rules below.
 User-agent: Twitterbot
 User-agent: facebookexternalhit
 User-agent: Facebot
@@ -11,7 +14,6 @@ User-agent: WhatsApp
 User-agent: LinkedInBot
 User-agent: Pinterest
 User-agent: redditbot
-User-agent: Applebot
 User-agent: SkypeUriPreview
 User-agent: Embedly
 User-agent: Iframely
