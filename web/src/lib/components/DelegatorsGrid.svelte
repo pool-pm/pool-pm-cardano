@@ -269,7 +269,10 @@
         <div class="filter">
           <input
             class="filter-input"
-            type="text"
+            type="search"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
             placeholder="Filter by handle or address"
             value={q}
             oninput={onFilterInput}
@@ -420,6 +423,10 @@
     border: none;
   }
   .filter-input {
+    /* type="search" keeps browsers from offering saved contact data (Chrome ignores
+       autocomplete="off" for that); undo WebKit's native search-field chrome. */
+    appearance: none;
+    -webkit-appearance: none;
     flex: 1;
     min-width: 0;
     height: 100%;
@@ -433,6 +440,9 @@
     outline: none;
     background: var(--bg);
     transition: background 0.18s ease;
+  }
+  .filter-input::-webkit-search-cancel-button {
+    display: none;
   }
   .filter-input::placeholder {
     color: rgb(255 255 255 / 0.4);

@@ -498,7 +498,10 @@
         <div class="filter">
           <input
             class="filter-input"
-            type="text"
+            type="search"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
             placeholder="Filter by name"
             value={q}
             oninput={onFilterInput}
@@ -757,6 +760,10 @@
   /* Recessed input carved into the panel (left, fills the room): inverted darker-top →
      lighter-bottom gradient, an inner top shadow + faint lit bottom edge, no drop shadow. */
   .filter-input {
+    /* type="search" keeps browsers from offering saved contact data (Chrome ignores
+       autocomplete="off" for that); undo WebKit's native search-field chrome. */
+    appearance: none;
+    -webkit-appearance: none;
     flex: 1;
     min-width: 0;
     height: 100%;
@@ -770,6 +777,9 @@
     outline: none;
     background: var(--bg);
     transition: background 0.18s ease;
+  }
+  .filter-input::-webkit-search-cancel-button {
+    display: none;
   }
   .filter-input::placeholder {
     color: rgb(255 255 255 / 0.4);

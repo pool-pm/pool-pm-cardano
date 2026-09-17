@@ -161,7 +161,10 @@
       oninput={onInput}
       onkeydown={onKeydown}
       class="search-input"
-      type="text"
+      type="search"
+      autocomplete="off"
+      autocapitalize="off"
+      spellcheck="false"
       placeholder="Search…"
       tabindex={open ? 0 : -1}
     />
@@ -295,6 +298,10 @@
   }
 
   .search-input {
+    /* type="search" keeps browsers from offering saved contact data (Chrome ignores
+       autocomplete="off" for that); undo WebKit's native search-field chrome. */
+    appearance: none;
+    -webkit-appearance: none;
     width: 0;
     border: none;
     outline: none;
@@ -306,6 +313,9 @@
     transition:
       width 0.25s ease,
       padding 0.25s ease;
+  }
+  .search-input::-webkit-search-cancel-button {
+    display: none;
   }
   .search.open .search-input {
     /* Extend to the top-left margin: viewport minus the left margin (12) + this bar's
