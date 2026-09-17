@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH act AS MATERIALIZED (\n                 SELECT gap.id, b.epoch_no AS opened,\n                        COALESCE(gap.ratified_epoch, gap.enacted_epoch, gap.dropped_epoch,\n                                 gap.expired_epoch, gap.expiration) AS closed\n                 FROM gov_action_proposal gap\n                 JOIN tx t ON t.id = gap.tx_id\n                 JOIN block b ON b.id = t.block_id\n                 WHERE gap.tx_id <= $1\n               ), ev AS MATERIALIZED (\n                 -- Registration certs: deposit > 0 registers, < 0 deregisters, NULL = an\n                 -- anchor/metadata update, which changes nothing here.\n                 SELECT dr.drep_hash_id AS drep, b.epoch_no AS epoch,\n                        dr.deposit < 0 AS is_dereg, dr.tx_id, dr.cert_index\n                 FROM drep_registration dr\n                 JOIN tx t ON t.id = dr.tx_id\n                 JOIN block b ON b.id = t.block_id\n                 WHERE dr.tx_id <= $1 AND dr.deposit IS NOT NULL\n               ), per AS MATERIALIZED (\n                 -- One row per registration: the epoch it started, and the epoch of the next\n                 -- deregistration after it (NULL = still registered).\n                 SELECT r.drep, r.epoch AS from_epoch,\n                        (SELECT MIN(d.epoch) FROM ev d\n                          WHERE d.drep = r.drep AND d.is_dereg\n                            AND (d.tx_id, d.cert_index) > (r.tx_id, r.cert_index)) AS to_epoch\n                 FROM ev r\n                 WHERE NOT r.is_dereg\n               )\n               SELECT dh.raw AS \"raw!\", dh.has_script AS \"has_script!\",\n                      COUNT(DISTINCT a.id) AS \"eligible!\"\n               FROM per p\n               JOIN drep_hash dh ON dh.id = p.drep\n               JOIN act a ON a.closed >= p.from_epoch\n                         AND a.opened <= COALESCE(p.to_epoch, 2147483647)\n               WHERE dh.raw IS NOT NULL\n               GROUP BY dh.raw, dh.has_script",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "raw!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "has_script!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "eligible!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "ee9f5397426a2a47ef1ae31b994a905f57b93846f07642455544ef0965b5ade1"
+}

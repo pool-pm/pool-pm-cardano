@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ph.hash_raw AS \"hash!\", SUM(es.amount)::bigint AS \"amount!\"\n               FROM epoch_stake es\n               JOIN pool_hash ph ON ph.id = es.pool_id\n               WHERE es.epoch_no = $1\n               GROUP BY ph.hash_raw",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hash!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "13fab028acacfb3dd7af8c7ccc3906096d7937cebfca6a2c049087644af38fef"
+}

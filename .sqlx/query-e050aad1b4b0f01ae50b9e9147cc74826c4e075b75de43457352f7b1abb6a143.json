@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH ev AS (\n                SELECT addr_id, tx_id, cert_index, drep_hash_id AS target\n                FROM delegation_vote WHERE tx_id <= $1\n                UNION ALL\n                SELECT addr_id, tx_id, cert_index, NULL::bigint\n                FROM stake_deregistration\n                WHERE tx_id <= $1\n                  AND tx_id >= (SELECT MIN(tx_id) FROM delegation_vote)\n            ), lagged AS (\n                SELECT addr_id, tx_id, cert_index, target,\n                       (target IS DISTINCT FROM\n                        LAG(target) OVER (PARTITION BY addr_id ORDER BY tx_id, cert_index))::int\n                        AS brk\n                FROM ev\n            ), grouped AS (\n                SELECT addr_id, target, tx_id,\n                       SUM(brk) OVER (PARTITION BY addr_id ORDER BY tx_id, cert_index) AS grp\n                FROM lagged\n            ), runs AS (\n                SELECT addr_id, target, grp, MIN(tx_id) AS since_tx\n                FROM grouped GROUP BY addr_id, target, grp\n            ), cur AS (\n                SELECT DISTINCT ON (addr_id) addr_id, target, since_tx\n                FROM runs ORDER BY addr_id, grp DESC\n            )\n            SELECT sa.hash_raw AS \"stake_address!\",\n                   dh.raw AS drep_raw,\n                   dh.has_script AS \"drep_has_script!\",\n                   dh.view AS \"drep_view!\",\n                   b.slot_no AS \"since_slot!\"\n            FROM cur\n            JOIN stake_address sa ON sa.id = cur.addr_id\n            JOIN drep_hash dh ON dh.id = cur.target\n            JOIN tx t ON t.id = cur.since_tx\n            JOIN block b ON b.id = t.block_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stake_address!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "drep_raw",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "drep_has_script!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "drep_view!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "since_slot!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "e050aad1b4b0f01ae50b9e9147cc74826c4e075b75de43457352f7b1abb6a143"
+}
