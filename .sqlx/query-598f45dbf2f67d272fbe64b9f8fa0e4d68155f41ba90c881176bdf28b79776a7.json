@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH ref AS MATERIALIZED (\n                -- real 333/444 user token paired with its (100) reference id\n                SELECT ft.policy AS policy, ft.name AS user_name, rma.id AS ref_id\n                FROM multi_asset ft\n                JOIN multi_asset rma ON rma.policy = ft.policy\n                  AND rma.name = '\\x000643b0'::bytea || substring(ft.name FROM 5)\n                WHERE substring(ft.name FROM 1 FOR 4) IN ('\\x0014df10', '\\x001bc280')\n            ),\n            held AS MATERIALIZED (\n                -- reference-token UTXO held as of last_tx_id. `ident = ANY(array)`\n                -- keeps the index path; a plain join from the ref set flips to a\n                -- parallel seq scan of all 472M ma_tx_out rows.\n                SELECT mto.ident AS ref_id, txo.inline_datum_id, txo.data_hash\n                FROM ma_tx_out mto\n                JOIN tx_out txo ON txo.id = mto.tx_out_id\n                WHERE mto.ident = ANY(ARRAY(SELECT DISTINCT ref_id FROM ref))\n                  AND txo.tx_id <= $1\n                  AND (txo.consumed_by_tx_id IS NULL OR txo.consumed_by_tx_id > $1)\n            )\n            SELECT ref.policy AS \"policy!\", ref.user_name AS \"name!\",\n                   e->'v'->>'int' AS \"decimals\"\n            FROM held\n            JOIN ref ON ref.ref_id = held.ref_id\n            LEFT JOIN datum di ON di.id = held.inline_datum_id\n            LEFT JOIN datum dh ON dh.hash = held.data_hash\n            CROSS JOIN LATERAL jsonb_array_elements(\n                COALESCE(di.value, dh.value)->'fields'->0->'map'\n            ) AS e\n            WHERE (e->'k') @> '{\"bytes\":\"646563696d616c73\"}'\n              AND (e->'v'->>'int') IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "policy!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "name!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "decimals",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "598f45dbf2f67d272fbe64b9f8fa0e4d68155f41ba90c881176bdf28b79776a7"
+}
