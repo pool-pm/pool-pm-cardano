@@ -149,6 +149,24 @@ cargo install sqlx-cli --no-default-features --features rustls,postgres
 DATABASE_URL='postgresql:///mainnet?host=/var/run/postgresql' cargo sqlx prepare --workspace
 ```
 
+## Releases
+
+Pushing a `vX.Y.Z` tag runs the [release workflow](.github/workflows/release.yml), which
+builds both parts from a clean checkout and publishes a GitHub release with
+`pool-pm-cardano-X.Y.Z-linux-amd64.tar.gz` (`server` and `dist/` at the archive root) plus
+its `.sha256`. The tag must match the `version` in `server/Cargo.toml`, so a release is:
+
+```bash
+# bump version in server/Cargo.toml, then refresh Cargo.lock and commit
+cargo update --workspace
+git commit -am 'release: vX.Y.Z'
+git tag vX.Y.Z && git push origin main vX.Y.Z
+```
+
+The binary links the runner's glibc (Ubuntu 24.04, 2.39), so it runs on Ubuntu 24.04 or
+newer. Nothing from the environment goes into the bundle: the build has no `.env`, `sqlx`
+runs offline from `.sqlx/`, and `NFTCDN_KEY` is only ever read at runtime.
+
 ## Run
 
 ```bash
