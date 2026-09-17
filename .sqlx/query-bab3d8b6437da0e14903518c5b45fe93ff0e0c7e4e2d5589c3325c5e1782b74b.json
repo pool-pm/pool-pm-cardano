@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT dh.raw AS \"raw!\", dh.has_script AS \"has_script!\",\n                      encode(t.hash, 'hex') AS \"action_tx!\", gap.index AS \"action_index!\"\n               FROM voting_procedure vp\n               JOIN tx vt ON vt.id = vp.tx_id\n               JOIN block b ON b.id = vt.block_id\n               JOIN drep_hash dh ON dh.id = vp.drep_voter\n               JOIN gov_action_proposal gap ON gap.id = vp.gov_action_proposal_id\n               JOIN tx t ON t.id = gap.tx_id\n               WHERE vp.tx_id <= $1 AND b.epoch_no = $2 AND dh.raw IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "raw!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "has_script!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "action_tx!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "action_index!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "bab3d8b6437da0e14903518c5b45fe93ff0e0c7e4e2d5589c3325c5e1782b74b"
+}
