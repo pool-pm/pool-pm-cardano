@@ -1,0 +1,78 @@
+# Builds the linux-amd64 bundle for a tagged release and attaches it to a GitHub release, so
+# a deployment (smaug-ansible's pool-pm role) installs straight from
+#   https://github.com/pool-pm/pool-pm-cardano/releases/download/vX.Y.Z/pool-pm-cardano-X.Y.Z-linux-amd64.tar.gz
+#
+# Cut a release with:  git tag vX.Y.Z && git push origin vX.Y.Z
+# The tag must equal the version in server/Cargo.toml (checked below).
+#
+# The bundle is built from a clean checkout with only the repo's contents and the runner's
+# toolchains: no .env, no DATABASE_URL (sqlx runs offline from the committed .sqlx/ cache),
+# no NFTCDN key. Nothing secret ever reaches the asset.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail the build if a query is missing from .sqlx/ instead of looking for a database.
+  SQLX_OFFLINE: 'true'
+
+jobs:
+  release:
+    name: Build and publish linux-amd64
+    # Pinned, not ubuntu-latest: the server binary links against the runner's glibc, so the
+    # image must not be newer than the oldest deployment host (Ubuntu 24.04, glibc 2.39).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check the tag matches the crate version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(cargo metadata --no-deps --locked --format-version 1 \
+            | jq -r '.packages[] | select(.name == "server") | .version')"
+          if [ "$tag" != "$crate" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match server/Cargo.toml version ${crate}"
+            exit 1
+          fi
+          echo "VERSION=${tag}" >> "$GITHUB_ENV"
+          echo "ASSET=pool-pm-cardano-${tag}-linux-amd64.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Build server
+        run: cargo build --release --locked
+
+      - name: Build frontend
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm test
+          pnpm build
+
+      # Same layout the deployment expects: `server` and `dist/` at the archive root.
+      - name: Package
+        run: |
+          tar czf "$ASSET" --owner=0 --group=0 -C target/release server -C ../../web dist
+          sha256sum "$ASSET" > "$ASSET.sha256"
+          ls -l "$ASSET"
+          tar tzf "$ASSET" | head
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes "$ASSET" "$ASSET.sha256"
